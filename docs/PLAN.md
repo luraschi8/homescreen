@@ -108,13 +108,18 @@ Not specified in either source document. Derived from what the firmware actually
   "aircraft": [
     { "lat": 40.51, "lon": -3.62, "nose": 143.0, "trk": 143.0, "gs": 421.0,
       "ve": 0.130, "vn": -0.173, "age": 3.1, "dst": 7.4,
-      "cs": "IBE3221", "ty": "A320", "alt": "FL340" }
+      "cs": "IBE3221", "ty": "A320", "alt": "34000 ft" }
   ]
 }
 ```
 
 Short keys deliberately: 20 aircraft ≈ 1.8 KB, and ArduinoJson's filter can be retired
 because the Pi already sends only these fields.
+
+`alt` is a pre-formatted tag, never a flight level: the firmware's
+`formatAltitudeTag` emits only `"<N> ft"`, `"GND"`, or `""`, and
+`radar_display.cpp` renders the string verbatim. `dst` is **nautical miles**
+while `radius_km` is kilometres — convert at every comparison.
 
 `ve`/`vn` are `vel_e_km_s`/`vel_n_km_s`, computed server-side — this removes a `sinf`
 and a `cosf` per aircraft per fetch from the C3, and is the "server sends better numbers"
@@ -151,6 +156,14 @@ Inserting the Pi breaks three things at once:
 Note `radar_display.cpp` tests the two staleness causes **separately and deliberately** —
 the comment there records that summing them made targets blink once per cycle. Preserve
 that structure; substitute `feed.age_s` for `fetch_age_raw`, do not merge them.
+
+**Two requirements this places on the firmware (Phase A4):**
+
+- **On a `304` the device must not reset its fetch timestamp.** It computes
+  `age + secondsSinceUpdate()`; resetting that timer on an unchanged body freezes every
+  age and stalls dead reckoning. Reset only on a `200`.
+- **Test staleness against `feed.age_s`, not the device's own fetch age** — see cause 3
+  above.
 
 `dst` (`dst_nm`) is currently the API's own distance, kept as the independent check that
 caught a missing `cos(latitude)` term, with `test_geo` asserting against it. If the Pi
