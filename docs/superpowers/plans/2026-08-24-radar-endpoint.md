@@ -256,6 +256,17 @@ def test_failure_with_no_previous_cache_is_readable(tmp_path: Path):
     assert env["data"] == {}
 
 
+def test_write_refuses_to_persist_non_finite(tmp_path: Path):
+    # Belt-and-braces behind adsb_map._num: bare Infinity/NaN is not strict
+    # JSON, and the firmware's parser rejects the entire body over one. If a
+    # future field bypasses _num, the cache must refuse rather than poison.
+    p = tmp_path / "radar.json"
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(ValueError):
+            write_cache(p, {"aircraft": [{"gs": bad}]})
+    assert not p.exists(), "a refused write must leave no file behind"
+
+
 def test_write_leaves_no_temp_file(tmp_path: Path):
     p = tmp_path / "radar.json"
     write_cache(p, {"a": 1})
@@ -316,7 +327,9 @@ def _write(path: Path, env: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(env, fh, separators=(",", ":"))
+        # allow_nan=False: bare Infinity/NaN is not strict JSON and the
+        # firmware's parser rejects the whole body. Belt-and-braces with _num.
+        json.dump(env, fh, separators=(",", ":"), allow_nan=False)
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
@@ -341,7 +354,7 @@ def write_failure(path: Path, error: str) -> None:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_cache.py -v`
-Expected: PASS — **13 tests** (6 functions, one parametrized 7 ways)
+Expected: PASS — **14 tests** (7 functions, one parametrized 7 ways)
 
 - [ ] **Step 5: Commit**
 
@@ -400,6 +413,7 @@ EOF
 ```python
 # tests/test_adsb_map.py
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -518,6 +532,25 @@ def test_missing_dst_is_negative_sentinel():
     assert map_aircraft({"lat": 1, "lon": 1})["dst"] == -1.0
 
 
+def test_non_finite_numbers_are_rejected():
+    # 1e400 is legal RFC-8259 and json.loads makes it inf. Unfiltered it either
+    # raises OverflowError out of the fetch loop or serialises as bare
+    # `Infinity`, which the firmware's parser rejects wholesale.
+    import json as _json
+    raw = _json.loads('{"lat":40.5,"lon":-3.6,"alt_baro":1e400,"gs":1e400}')
+    out = map_aircraft(raw)          # must not raise
+    assert out["alt"] == ""
+    assert out["gs"] == 0.0
+    assert math.isfinite(out["ve"]) and math.isfinite(out["vn"])
+    nan = _json.loads('{"lat":40.5,"lon":-3.6,"alt_baro":NaN}')
+    assert map_aircraft(nan)["alt"] == ""
+
+
+def test_non_finite_position_drops_the_record():
+    import json as _json
+    assert map_aircraft(_json.loads('{"lat":1e400,"lon":-3.6}')) is None
+
+
 def test_booleans_are_not_treated_as_numbers():
     # ArduinoJson's is<int>() rejects bool; Python's isinstance(True, int) is True.
     assert map_aircraft({"lat": 1, "lon": 1, "gs": True})["gs"] == 0.0
@@ -551,11 +584,22 @@ ALT_MAX = 11
 
 
 def _num(raw: dict, key: str) -> float | None:
-    """Numeric read that rejects bool, matching ArduinoJson's is<int>()."""
+    """Numeric read that rejects bool (matching ArduinoJson's is<int>()) and
+    non-finite values.
+
+    `1e400` is legal RFC-8259 and `json.loads` turns it into `inf`. Unfiltered
+    that does two separate kinds of damage: `_round_half_up(inf)` raises
+    OverflowError out of the fetch loop, and any field that skips rounding
+    serialises as bare `Infinity`, which is not strict JSON. ArduinoJson is
+    built with ARDUINOJSON_ENABLE_INFINITY/NAN = 0, so one poisoned record
+    would make `deserializeJson` reject the ENTIRE body and blank the radar for
+    every device on the LAN. inf/nan is not a value; it is a broken feed.
+    """
     v = raw.get(key)
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
-    return float(v)
+    v = float(v)
+    return v if math.isfinite(v) else None
 
 
 def _first_num(raw: dict, keys: tuple[str, ...]) -> float:
@@ -631,7 +675,7 @@ def map_aircraft(raw: dict, *, show_ground: bool = False) -> dict | None:
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_adsb_map.py -v`
-Expected: PASS — **15 tests**
+Expected: PASS — **17 tests**
 
 - [ ] **Step 6: Commit**
 
@@ -665,6 +709,7 @@ git commit -m "Add pure adsb.fi record mapping matching firmware fallback chains
 ```python
 # tests/test_adsb.py
 import copy
+import json
 from pathlib import Path
 
 import pytest
@@ -828,6 +873,20 @@ def test_local_config_overlays_secrets(tmp_path: Path):
     assert cfg["feeds"]["adsb"]["fetch_seconds"] == 3
 
 
+def test_non_finite_payload_is_a_failure_not_a_crash(tmp_path: Path):
+    # The daemon must not die: an escaping exception exits run_forever, and
+    # Restart=always then refetches the same poisoned record ~8,640 times a day.
+    import json as _json
+    p = tmp_path / "radar.json"
+    write_cache(p, {"aircraft": [{"cs": "REAL", "dst": 1.0}]})
+    payload = _json.loads('{"ac":[{"lat":40.5,"lon":-3.6,"alt_baro":1e400,"dst":1.0}]}')
+    s = FakeSession(FakeResponse(payload))
+    assert fetch_radar(CFG, p, session=s) is True, "a finite-able record still maps"
+    # And nothing non-finite can be persisted even if a future field skips _num.
+    env = read_cache(p)
+    assert "Infinity" not in json.dumps(env)
+
+
 def test_http_error_is_a_failure_not_a_crash(tmp_path: Path):
     s = FakeSession(FakeResponse({}, status=503))
     assert fetch_radar(CFG, tmp_path / "radar.json", session=s) is False
@@ -937,7 +996,12 @@ from homescreen.sources.adsb_map import map_aircraft
 log = logging.getLogger(__name__)
 
 KM_PER_NM = 1.852
-REQUEST_TIMEOUT_S = 10
+# (connect, read). INVARIANT: fetch_seconds + read_timeout < STALE_HORIZON_S
+# (12.0). run_forever sleeps AFTER the request, so worst-case dwell is
+# fetch_duration + fetch_seconds; a scalar timeout=10 would put that at 13 s,
+# past the device's hard kExtrapolationHorizonSec, dimming every target once
+# per cycle on a slow-but-successful fetch.
+REQUEST_TIMEOUT_S = (3.05, 5)
 
 
 def _url(endpoint: str, lat: float, lon: float, radius_km: float) -> str:
@@ -983,6 +1047,22 @@ def fetch_radar(cfg: dict, cache_path: Path, *, session=None) -> bool:
     radius_nm = radius_km / KM_PER_NM
     show_ground = bool(dev.get("show_ground", False))
     aircraft = []
+    try:
+        aircraft = _map_all(raw_list, radius_nm, show_ground)
+        # write_cache is INSIDE the try on purpose: it refuses to serialise a
+        # non-finite, and that refusal must become a recorded failure rather
+        # than an exception escaping into run_forever's loop.
+        write_cache(cache_path,
+                    {"aircraft": aircraft[:int(dev.get("max_aircraft", 20))]})
+    except Exception as exc:  # noqa: BLE001 - "never raises" must be structural
+        log.warning("adsb mapping failed: %s", exc)
+        write_failure(cache_path, f"mapping failed: {exc}")
+        return False
+    return True
+
+
+def _map_all(raw_list: list, radius_nm: float, show_ground: bool) -> list:
+    aircraft = []
     for raw in raw_list:
         if not isinstance(raw, dict):
             continue
@@ -999,8 +1079,7 @@ def fetch_radar(cfg: dict, cache_path: Path, *, session=None) -> bool:
 
     # Nearest first so the cap keeps what matters; dst-less records sort last.
     aircraft.sort(key=lambda a: a["dst"] if a["dst"] >= 0 else float("inf"))
-    write_cache(cache_path, {"aircraft": aircraft[:int(dev.get("max_aircraft", 20))]})
-    return True
+    return aircraft
 
 
 def run_forever(cfg: dict, cache_path: Path) -> None:
@@ -1031,7 +1110,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_adsb.py -v`
-Expected: PASS — **20 tests** (14 functions, one parametrized 6 ways)
+Expected: PASS — **21 tests** (15 functions, one parametrized 6 ways)
 
 - [ ] **Step 6: Commit**
 
@@ -1190,6 +1269,16 @@ def test_malformed_cache_never_500s_on_health(ctx, junk):
     assert resp.status_code == 200, f"/health must degrade, not raise, on {junk!r}"
 
 
+def test_health_count_matches_what_data_serves(ctx):
+    client, path, _ = ctx
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"fetched_at": "2026-01-01T00:00:00+00:00", "ok": true,'
+                    ' "data": {"aircraft": [{"age": "zz"}, [1, 2]]}}')
+    served = len(client.get("/api/display/radar/data").get_json()["aircraft"])
+    reported = client.get("/api/display/radar/health").get_json()["feed"]["aircraft"]
+    assert served == reported == 0, "/health must not count records /data drops"
+
+
 def test_cache_epoch_honours_the_utc_offset():
     # Pins both ends regardless of the machine's TZ. Without this, stripping
     # tzinfo anywhere in the chain is invisible to the suite.
@@ -1323,6 +1412,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import time
 from datetime import datetime
 from pathlib import Path
@@ -1373,8 +1463,27 @@ def _aircraft(env: dict | None) -> list:
     return raw if isinstance(raw, list) else []
 
 
+def _servable(env: dict | None, dwell: float) -> list:
+    """The aircraft /data actually serves. /health reports len() of THIS, not of
+    the raw list, or the debug endpoint misleads exactly when the cache is bad."""
+    out = []
+    for a in _aircraft(env):
+        if not isinstance(a, dict):
+            continue
+        try:
+            age = float(a.get("age", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(age):
+            continue
+        out.append({**a, "age": age + dwell})
+    return out
+
+
 def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
     app = Flask(__name__)
+    # A non-finite that somehow reached the cache must not reach the wire.
+    app.json.allow_nan = False
     telemetry: dict[str, dict] = {}
 
     def _lookup(device_id: str):
@@ -1398,18 +1507,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
         env = read_cache(feed_cache_path(cache_dir, dev))
         ok, dwell = _feed_state(env, now)
 
-        aircraft = []
-        if env is not None:
-            for a in _aircraft(env):
-                if not isinstance(a, dict):
-                    continue
-                try:
-                    # Fix age + time the record sat in our cache. Without the
-                    # dwell term the device under-extrapolates by exactly this
-                    # much, against a 12 s horizon (VALIDATION F4).
-                    aircraft.append({**a, "age": float(a.get("age", 0.0)) + dwell})
-                except (TypeError, ValueError):
-                    continue
+        # Fix age + time the record sat in our cache. Without the dwell term
+        # the device under-extrapolates by exactly that much (VALIDATION F4).
+        aircraft = _servable(env, dwell)
 
         body = {
             "server_time": int(now),
@@ -1460,7 +1560,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
             "feed": {"ok": ok, "age_s": dwell,
                      "error": (env or {}).get("error"),
                      "fetched_at": (env or {}).get("fetched_at"),
-                     "aircraft": len(_aircraft(env))},
+                     "aircraft": len(_servable(env, dwell))},
             "last_telemetry": telemetry.get(device_id),
         })
 
@@ -1491,12 +1591,12 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_serve.py -v`
-Expected: PASS — **28 tests** (16 functions, two parametrized 7 ways each)
+Expected: PASS — **29 tests** (17 functions, two parametrized 7 ways each)
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `venv/bin/pytest -v`
-Expected: PASS — **76 tests** (13 + 15 + 20 + 28)
+Expected: PASS — **81 tests** (14 + 17 + 21 + 29)
 
 - [ ] **Step 6: Commit**
 
@@ -1689,17 +1789,31 @@ The Mac is Python 3.14 and the Pi is 3.13; the suite must pass on the machine th
 ssh pi@dashboard.local 'cd /home/pi/dashboard && venv/bin/pytest -q'
 ```
 
-Expected: `76 passed`
+Expected: `81 passed`
 
-- [ ] **Step 4: Cap journald before anything runs 24/7**
+- [ ] **Step 4: Keep the journal off the SD card**
 
-CLAUDE.md §2: *"SD card, not SSD. Cap journald retention before timers run 24/7."* The
-serve daemon logs per request; uncapped, that writes to the microSD forever.
+Measured on this Pi: the journal is **entirely in RAM today** — every file under
+`/run/log/journal`, `/var/log/journal` empty, `#Storage=auto` in `journald.conf`. Current
+SD journal writes: **zero**.
+
+That inverts the obvious fix. `Storage=persistent` would *start* writing to the card and
+grant it a permanent rotating budget — creating the wear this step exists to prevent. And
+`SystemMaxUse` governs `/var/log/journal`; the store actually in use is capped by
+`RuntimeMaxUse`. So: pin it to RAM and cap the RAM store.
 
 ```bash
-ssh pi@dashboard.local 'sudo mkdir -p /etc/systemd/journald.conf.d && printf "[Journal]\nSystemMaxUse=64M\nStorage=persistent\n" | sudo tee /etc/systemd/journald.conf.d/10-cap.conf && sudo systemctl restart systemd-journald'
-ssh pi@dashboard.local 'journalctl --disk-usage'
+ssh pi@dashboard.local 'sudo mkdir -p /etc/systemd/journald.conf.d && printf "[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\n" | sudo tee /etc/systemd/journald.conf.d/10-cap.conf && sudo systemctl restart systemd-journald'
+ssh pi@dashboard.local 'journalctl --disk-usage && ls /var/log/journal'
 ```
+
+Expected: usage reported against `/run/log/journal`, and `/var/log/journal` still empty.
+
+**The trade:** logs do not survive a reboot. SPEC §12 chose systemd partly so
+`journalctl -u` is useful at 1am, and that still works for a live fault — you lose only
+post-mortem after a power cut. If you would rather keep history, `Storage=persistent`
+with `SystemMaxUse=64M` is the alternative, and it is a deliberate decision against
+CLAUDE.md §2's SD-wear line, not a mitigation of it.
 
 - [ ] **Step 5: Install and start the units**
 
@@ -1750,42 +1864,74 @@ Expected: `304` for unchanged content, then **`200`** once past the 12 s horizon
 feed must never be answered with a bodiless 304, or `feed.age_s` can never reach the device.
 Aircraft are still served with a growing `feed.age_s` (SPEC §11.3).
 
-- [ ] **Step 8: Amend the two documents this plan supersedes**
+- [ ] **Step 8: Amend the three documents this plan supersedes**
 
 ```bash
 cd /Users/matias/Documents/repos/HomeScreen
 ```
 
-In `docs/PLAN.md` §2 A2 and `docs/ADDENDUM-01-multi-display.md` §7, change
-`cache/feed/radar.json` to `cache/feed/adsb.json` and note that the cache is keyed by
-**feed**, not device, so several devices can share one file. Commit:
+Change `cache/feed/radar.json` to `cache/feed/adsb.json` in all three, and note that the
+cache is keyed by **feed**, not device, so several devices can share one file:
+
+- `docs/VALIDATION-01.md` (finding C7) — **the one that matters most.** CLAUDE.md ranks it
+  above the addendum and names it the tiebreaker, so leaving it saying `radar.json` would
+  leave the *winning* document contradicting the code.
+- `docs/ADDENDUM-01-multi-display.md` §7
+- `docs/PLAN.md` §2 A2
+
+Commit the three by name — **not `git commit -am`**. This plan file is tracked and the
+executing agent flips its `- [ ]` boxes to `- [x]` as it goes, so `-a` would sweep several
+dozen checkbox changes into a commit about a filename.
 
 ```bash
-git commit -am "Key the feed cache by feed rather than device"
+cd /Users/matias/Documents/repos/HomeScreen
+git commit docs/VALIDATION-01.md docs/ADDENDUM-01-multi-display.md docs/PLAN.md \
+  -m "Key the feed cache by feed rather than device"
+git push
 ```
+
+Push matters: the Pi's clone came from `origin/main` at Step 1, so an unpushed amendment
+never reaches it.
 
 - [ ] **Step 9: Verify survival across a reboot**
 
+`sudo reboot` returns immediately and systemd takes seconds to tear down, while ssh
+round-trip to this Pi is 0.2–0.9 s. A loop that polls `/health` straight away therefore
+hits the **still-running pre-reboot server**, breaks, and reports success without a reboot
+having happened. Gate on the boot id instead.
+
 ```bash
-ssh pi@dashboard.local 'sudo reboot' || true
+BEFORE=$(ssh pi@dashboard.local 'cat /proc/sys/kernel/random/boot_id')
+ssh pi@dashboard.local 'sudo systemctl reboot' || true
+AFTER=""
 for i in $(seq 1 36); do
+  sleep 5
+  AFTER=$(ssh -o ConnectTimeout=5 -o BatchMode=yes pi@dashboard.local \
+          'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)
+  [ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ] && break
+done
+[ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ] \
+  || { echo "FAIL: Pi never rebooted (boot_id unchanged)"; exit 1; }
+
+for i in $(seq 1 24); do
   curl -sf -o /dev/null http://dashboard.local:8080/api/display/radar/health && break
   sleep 5
 done
 curl -sf -o /dev/null http://dashboard.local:8080/api/display/radar/health \
-  || { echo "FAIL: Pi did not serve /health within 3 minutes of reboot"; exit 1; }
+  || { echo "FAIL: no /health within 2 min of a confirmed reboot"; exit 1; }
 ssh pi@dashboard.local 'systemctl is-active homescreen-fetch homescreen-serve'
 curl -s http://dashboard.local:8080/api/display/radar/health | python3 -m json.tool
 ```
 
-Expected: `active` twice and a healthy feed, with no manual intervention. The loop is
-bounded — an unbounded `until` would hang forever if the Pi did not come back.
+Expected: a changed boot id, then `active` twice and a healthy feed, with no manual
+intervention. Both loops are bounded — an unbounded wait would hang forever if the Pi
+did not come back.
 
 ---
 
 ## Done when
 
-- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (76 tests)
+- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (81 tests)
 - [ ] `curl http://dashboard.local:8080/api/display/radar/data` returns aircraft with `feed.ok: true`
 - [ ] Served `age` and `feed.age_s` advance in real time while the fetch daemon is stopped
 - [ ] A matching `If-None-Match` yields `304` for unchanged content **across a refetch**,
@@ -1805,7 +1951,10 @@ firmware work until the server path is proven end-to-end.
 1. **On a 304 the device must not reset its fetch timestamp.** The device computes
    `age + secondsSinceUpdate()`. If a 304 resets that timer while the body is unchanged,
    ages freeze and dead reckoning stalls. Reset it only on a `200`.
-2. **Staleness must be tested against `feed.age_s`, not the device's own fetch age.**
+2. **Read `X-Feed-Age` / `X-Feed-Ok`, not just the body.** They are set on the 304 as
+   well as the 200 precisely because a 304 has no body — without them a device that
+   conditional-fetches cannot see the feed's liveness at all.
+3. **Staleness must be tested against `feed.age_s` (or `X-Feed-Age`), not the device's own fetch age.**
    Via the Pi the device's fetch keeps succeeding while the upstream rots. Keep
    `radar_display.cpp`'s two staleness causes tested *separately* — its comment records
    that summing them made targets blink once per cycle — and substitute `feed.age_s` for
