@@ -1,0 +1,8 @@
+cache/
+venv/
+__pycache__/
+*.pyc
+build/
+*.png
+.DS_Store
+config.local.yaml
