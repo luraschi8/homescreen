@@ -380,11 +380,15 @@ Inserting the Pi between them:
 Fixes, both cheap: the server recomputes age **at serve time**
 (`api_seen_pos + (now − server_fetch_time)`), which keeps the device's existing arithmetic
 correct with no render-path change; and the response carries `feed.age_s` / `feed.ok` for
-the firmware to test against in place of `fetch_age_raw`.
+the firmware to test as a **third** staleness cause alongside `fetch_age_raw` — never in
+place of it. Substituting would remove the device's only detection of *its own* link
+failing: both causes would then derive from Pi-side timestamps carried in the body, so a
+device that loses the LAN sees both frozen and never dims.
 
 `radar_display.cpp` tests the two staleness causes separately and deliberately — its
 comment records that summing them made targets blink once per cycle. Preserve that
-structure; substitute, do not merge. Full endpoint schema in `PLAN.md` §3.
+structure and add the new cause as a third `||` term. Do not merge them, and do not
+substitute. Full endpoint schema in `PLAN.md` §3.
 
 ---
 

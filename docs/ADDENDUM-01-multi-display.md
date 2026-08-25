@@ -118,6 +118,8 @@ Devices report telemetry as query params so failures are visible before they mat
 | `ETag` | Content hash. Device sends `If-None-Match`; unchanged content returns **304** and the device skips the refresh entirely. Saves panel wear and pointless SPI traffic. |
 | `X-Poll-Seconds` | How long until the next poll. **Server-side cadence control** — tune per device, slow overnight, no reflashing. (Renamed from `X-Sleep-Seconds` in earlier discussion; nothing sleeps now.) |
 | `X-Full-Refresh` | `1` instructs the device to do a full refresh rather than partial, so the server owns the anti-ghosting schedule. |
+| `X-Feed-Age` | Seconds since the server's last **successful** upstream fetch. Set on `304` as well as `200` — a 304 has no body, so this is the only way the device can see a stalled feed. Added after ADDENDUM-01; see `VALIDATION-01.md` F4. |
+| `X-Feed-Ok` | `1`/`0`: whether that last upstream fetch succeeded. Same rationale. |
 
 ### Frame format (pixel push)
 

@@ -149,13 +149,18 @@ Inserting the Pi breaks three things at once:
   `age = api_seen_pos + (now − server_fetch_time)`. The device's existing
   `pos_age_s + fetch_age_s` arithmetic then stays correct with **no change to the render
   path**.
-- The response carries `feed.age_s` and `feed.ok`. The firmware must test staleness
-  against `feed.age_s` in place of `fetch_age_raw`, because its own fetch age no longer
-  measures the feed.
+- The response carries `feed.age_s` and `feed.ok` (and, on a bodiless `304`, the
+  `X-Feed-Age` / `X-Feed-Ok` headers). The firmware tests staleness against `feed.age_s`
+  **in addition to** `fetch_age_raw`, as a third cause — **not instead of it**.
+  Substituting would delete the device's only detection of *its own* link failing: both
+  causes would then derive from Pi-side timestamps carried in the body, so a device that
+  loses the LAN sees both frozen at their last-received values and never dims, leaving
+  only the 60 s `kDataExpirySec` — five times slower than today.
 
 Note `radar_display.cpp` tests the two staleness causes **separately and deliberately** —
 the comment there records that summing them made targets blink once per cycle. Preserve
-that structure; substitute `feed.age_s` for `fetch_age_raw`, do not merge them.
+that structure and add `feed.age_s` as a **third** separately-tested cause. Do not merge
+them, and do not substitute it for `fetch_age_raw`.
 
 **Two requirements this places on the firmware (Phase A4):**
 
