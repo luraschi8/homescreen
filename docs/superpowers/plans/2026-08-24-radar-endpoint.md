@@ -214,6 +214,17 @@ def test_write_then_read_round_trip(tmp_path: Path):
     assert datetime.fromisoformat(env["fetched_at"]).utcoffset() is not None
 
 
+def test_read_rejects_bare_infinity_and_nan(tmp_path: Path):
+    # json.load's default parse_constant returns inf/nan happily. Bare
+    # Infinity/NaN is not strict JSON and the firmware's parser rejects the
+    # ENTIRE body over one, so a poisoned cache must read as no-data.
+    for bad in ("Infinity", "-Infinity", "NaN"):
+        p = tmp_path / "bad.json"
+        p.write_text('{"fetched_at":"2026-01-01T00:00:00+00:00","ok":true,'
+                     '"data":{"aircraft":[{"gs":%s}]}}' % bad)
+        assert read_cache(p) is None, f"{bad} must not survive a read"
+
+
 def test_read_missing_returns_none(tmp_path: Path):
     assert read_cache(tmp_path / "nope.json") is None
 
@@ -304,6 +315,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
 
+def _reject_constant(name: str):
+    """json.load's default parse_constant happily returns inf/nan. Refuse."""
+    raise ValueError(f"non-finite {name} is not strict JSON")
+
+
 def read_cache(path: Path) -> dict | None:
     """Return the envelope, or None if it is absent, corrupt or malformed.
 
@@ -313,8 +329,13 @@ def read_cache(path: Path) -> dict | None:
     """
     try:
         with open(path, encoding="utf-8") as fh:
-            env = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+            # parse_constant catches bare Infinity/NaN, which are not strict
+            # JSON and which the firmware's parser rejects for the WHOLE body.
+            # Refusing here degrades to "no data" (SPEC §11.1); a strict JSON
+            # provider on the Flask side would instead make jsonify raise,
+            # which is the thing that must never happen in the serve path.
+            env = json.load(fh, parse_constant=_reject_constant)
+    except (OSError, json.JSONDecodeError, ValueError):
         return None
     if not isinstance(env, dict):
         return None
@@ -364,7 +385,7 @@ def write_failure(path: Path, error: str) -> None:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_cache.py -v`
-Expected: PASS — **14 tests** (7 functions, one parametrized 7 ways)
+Expected: PASS — **15 tests** (8 functions, one parametrized 7 ways)
 
 - [ ] **Step 5: Commit**
 
@@ -708,11 +729,16 @@ git commit -m "Add pure adsb.fi record mapping matching firmware fallback chains
 **Interfaces:**
 - Consumes: `map_aircraft` (Task 2), `write_cache`/`write_failure` (Task 1)
 - Produces:
-  - `load_config(path: Path) -> dict` — raises `ValueError` on an empty or non-mapping file
+  - `load_config(path: Path) -> dict` — raises `ValueError` on an empty or non-mapping
+    file; overlays `config.local.yaml` when present
   - `device(cfg: dict, device_id: str) -> dict | None`
-  - `feed_cache_path(cache_dir: Path, dev: dict) -> Path` — `cache/feed/{dev['feed']}.json`
-  - `fetch_radar(cfg: dict, cache_path: Path, *, session=None) -> bool` — never raises
-  - `run_forever(cfg: dict, cache_path: Path) -> None`
+  - `feed_cache_path(cache_dir: Path, dev: dict) -> Path` — **`cache/feed/{dev['id']}.json`**
+  - `fetch_radar(cfg: dict, dev: dict, cache_path: Path, *, session=None) -> bool` —
+    True on success, False on any failure, **never raises**
+  - `fetch_targets(cfg: dict, cache_dir: Path) -> list[tuple[dict, Path]]`
+  - `run_forever(cfg: dict, targets: list) -> None`
+  - `check_cadence(cfg: dict) -> None` — raises `ValueError` if the cycle budget could
+    exceed the firmware's staleness horizon
 
 - [ ] **Step 1: Write the failing test**
 
@@ -726,7 +752,7 @@ import pytest
 
 from homescreen.cache import read_cache, write_cache
 from homescreen.config import device, feed_cache_path, load_config
-from homescreen.sources.adsb import fetch_radar
+from homescreen.sources.adsb import check_cadence, fetch_radar, fetch_targets
 
 CFG = {
     "feeds": {"adsb": {"endpoint": "https://example.invalid/api", "fetch_seconds": 3}},
@@ -838,6 +864,8 @@ def test_non_array_ac_is_a_failure_and_keeps_the_last_good_list(tmp_path: Path, 
     assert fetch_radar(CFG, DEV, p, session=s) is False
     env = read_cache(p)
     assert env["ok"] is False
+    assert env["error"] == "response is not the aircraft feed", (
+        "the deliberate refusal must not decay into a generic mapping error")
     assert env["data"]["aircraft"][0]["cs"] == "REAL", "real traffic must survive"
 
 
@@ -887,6 +915,35 @@ def test_repeated_identical_failures_do_not_rewrite_the_cache(tmp_path: Path):
     # A DIFFERENT error must still be recorded.
     fetch_radar(CFG, DEV, p, session=FakeSession(exc=OSError("dns failure")))
     assert "dns failure" in read_cache(p)["error"]
+
+
+def test_failure_recording_that_itself_fails_does_not_raise(tmp_path: Path, monkeypatch):
+    # A read-only SD card is the canonical Pi failure and makes every write
+    # throw. If recording the failure raises, run_forever exits and
+    # Restart=always turns it into a restart loop.
+    def boom(*a, **k):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr("homescreen.sources.adsb.write_failure", boom)
+    s = FakeSession(exc=OSError("no route to host"))
+    assert fetch_radar(CFG, DEV, tmp_path / "radar.json", session=s) is False
+
+
+def test_fetch_targets_picks_every_data_push_device(tmp_path: Path):
+    cfg = {"devices": [
+        {"id": "radar", "render": "device", "feed": "adsb"},
+        {"id": "radar2", "render": "device", "feed": "adsb"},
+        {"id": "kitchen", "render": "server", "feed": "adsb"},   # pixel push
+        {"id": "other", "render": "device", "feed": "weather"},  # other feed
+    ]}
+    got = [(d["id"], p.name) for d, p in fetch_targets(cfg, tmp_path)]
+    assert got == [("radar", "radar.json"), ("radar2", "radar2.json")]
+
+
+def test_check_cadence_rejects_an_interval_past_the_horizon():
+    check_cadence({"feeds": {"adsb": {"fetch_seconds": 3}}})   # 3.05+5+3 = 11.05 < 12
+    with pytest.raises(ValueError, match="horizon"):
+        check_cadence({"feeds": {"adsb": {"fetch_seconds": 5}}})  # 13.05 >= 12
 
 
 def test_local_config_overlays_secrets(tmp_path: Path):
@@ -1026,13 +1083,39 @@ from homescreen.sources.adsb_map import map_aircraft
 
 log = logging.getLogger(__name__)
 
+
+def _record_failure(cache_path: Path, error: str) -> None:
+    """write_failure does I/O and can raise -- a read-only SD card (the
+    canonical Pi failure, CLAUDE.md §2) makes every write throw. fetch_radar's
+    "never raises" has to survive that too, or each cycle exits run_forever and
+    Restart=always turns it into the restart loop Task 6 Step 4 exists to
+    prevent."""
+    try:
+        write_failure(cache_path, error)
+    except Exception as exc:  # noqa: BLE001
+        log.error("could not record failure %r: %s", error, exc)
+
+
 KM_PER_NM = 1.852
-# (connect, read). INVARIANT: fetch_seconds + read_timeout < STALE_HORIZON_S
-# (12.0). run_forever sleeps AFTER the request, so worst-case dwell is
-# fetch_duration + fetch_seconds; a scalar timeout=10 would put that at 13 s,
-# past the device's hard kExtrapolationHorizonSec, dimming every target once
-# per cycle on a slow-but-successful fetch.
+# (connect, read). INVARIANT: connect + read + fetch_seconds < STALE_HORIZON_S
+# (12.0, the firmware's kExtrapolationHorizonSec). run_forever sleeps AFTER the
+# request, so the worst case for a slow-but-SUCCESSFUL cycle is the full
+# timeout plus the interval. Exceed 12 s and feed.age_s crosses the device's
+# hard horizon on a healthy feed, dimming every target once per cycle -- the
+# blink pathology radar_display.cpp was rewritten to remove.
 REQUEST_TIMEOUT_S = (3.05, 5)
+STALE_HORIZON_S = 12.0
+
+
+def check_cadence(cfg: dict) -> None:
+    """Fail loudly at startup rather than blinking mysteriously at runtime.
+    fetch_seconds is user-editable config with nothing else guarding it."""
+    interval = float(cfg.get("feeds", {}).get("adsb", {}).get("fetch_seconds", 3))
+    budget = sum(REQUEST_TIMEOUT_S) + interval
+    if budget >= STALE_HORIZON_S:
+        raise ValueError(
+            f"fetch_seconds={interval} leaves a worst-case dwell of {budget}s, "
+            f"at or past the firmware's {STALE_HORIZON_S}s horizon")
 
 
 def _url(endpoint: str, lat: float, lon: float, radius_km: float) -> str:
@@ -1042,7 +1125,9 @@ def _url(endpoint: str, lat: float, lon: float, radius_km: float) -> str:
 
 
 def fetch_radar(cfg: dict, dev: dict, cache_path: Path, *, session=None) -> bool:
-    """Fetch, map and cache for ONE device. Returns True. Never raises.
+    """Fetch, map and cache for ONE device. True on success, False on any
+    failure. Never raises -- every failure path, including recording the
+    failure itself, is guarded.
 
     `dev` is passed in rather than looked up by the literal "radar": the cache
     is per-device, so the parameters must be too.
@@ -1063,7 +1148,7 @@ def fetch_radar(cfg: dict, dev: dict, cache_path: Path, *, session=None) -> bool
         payload = resp.json()
     except Exception as exc:  # noqa: BLE001 - nothing may escape into the cache
         log.warning("adsb fetch failed: %s", exc)
-        write_failure(cache_path, str(exc))
+        _record_failure(cache_path, str(exc))
         return False
 
     raw_list = payload.get("ac") if isinstance(payload, dict) else None
@@ -1075,7 +1160,7 @@ def fetch_radar(cfg: dict, dev: dict, cache_path: Path, *, session=None) -> bool
         # it expires"); moving the fetch here REMOVES that guard, because we
         # would hand the device a well-formed empty list its own check passes.
         log.warning("adsb: response is not the aircraft feed")
-        write_failure(cache_path, "response is not the aircraft feed")
+        _record_failure(cache_path, "response is not the aircraft feed")
         return False
 
     radius_nm = radius_km / KM_PER_NM
@@ -1090,7 +1175,7 @@ def fetch_radar(cfg: dict, dev: dict, cache_path: Path, *, session=None) -> bool
                     {"aircraft": aircraft[:int(dev.get("max_aircraft", 20))]})
     except Exception as exc:  # noqa: BLE001 - "never raises" must be structural
         log.warning("adsb mapping failed: %s", exc)
-        write_failure(cache_path, f"mapping failed: {exc}")
+        _record_failure(cache_path, f"mapping failed: {exc}")
         return False
     return True
 
@@ -1116,14 +1201,29 @@ def _map_all(raw_list: list, radius_nm: float, show_ground: bool) -> list:
     return aircraft
 
 
-def run_forever(cfg: dict, dev: dict, cache_path: Path) -> None:
+def fetch_targets(cfg: dict, cache_dir: Path) -> list:
+    """Every data-push device on the adsb feed, with its own cache file.
+
+    Per-device rather than a hardcoded "radar": `home`/`radius_km` are
+    per-device, so each gets its own cache. Note N devices means N upstream
+    requests per cycle -- keep N x (1/fetch_seconds) under adsb.fi's 1 req/s.
+    """
+    return [(d, feed_cache_path(cache_dir, d))
+            for d in cfg.get("devices", [])
+            if isinstance(d, dict) and d.get("render") == "device"
+            and d.get("feed") == "adsb"]
+
+
+def run_forever(cfg: dict, targets: list) -> None:
     interval = float(cfg.get("feeds", {}).get("adsb", {}).get("fetch_seconds", 3))
     import requests
     session = requests.Session()
-    log.info("adsb fetch loop starting for %s, interval %.1fs", dev["id"], interval)
+    log.info("adsb fetch loop starting for %s, interval %.1fs",
+             [d["id"] for d, _ in targets], interval)
     while True:
-        fetch_radar(cfg, dev, cache_path, session=session)
-        # Sleep AFTER the request completes, so a slow upstream stretches the
+        for dev, cache_path in targets:
+            fetch_radar(cfg, dev, cache_path, session=session)
+        # Sleep AFTER the requests complete, so a slow upstream stretches the
         # cycle instead of queueing a second in-flight request.
         time.sleep(interval)
 
@@ -1133,10 +1233,11 @@ def main() -> None:
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "config.yaml")
-    dev = device(cfg, "radar")
-    if dev is None:
-        raise SystemExit("config.yaml has no device with id 'radar'")
-    run_forever(cfg, dev, feed_cache_path(root / "cache", dev))
+    check_cadence(cfg)
+    targets = fetch_targets(cfg, root / "cache")
+    if not targets:
+        raise SystemExit("config.yaml has no device with render: device and feed: adsb")
+    run_forever(cfg, targets)
 
 
 if __name__ == "__main__":
@@ -1146,7 +1247,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_adsb.py -v`
-Expected: PASS — **22 tests** (16 functions, one parametrized 6 ways)
+Expected: PASS — **25 tests** (19 functions, one parametrized 6 ways)
 
 - [ ] **Step 6: Commit**
 
@@ -1198,6 +1299,7 @@ from homescreen.cache import write_cache, write_failure
 from homescreen.serve import create_app
 
 CFG = {
+    "feeds": {"adsb": {"source": "api"}},
     "devices": [{"id": "radar", "kind": "gc9a01_client", "render": "device",
                  "feed": "adsb", "poll_seconds": 7,
                  "home": {"lat": 40.4168, "lon": -3.7038},
@@ -1391,6 +1493,24 @@ def test_etag_changes_when_the_cache_changes(ctx):
     assert a != b
 
 
+def test_feed_source_reports_the_provider_not_the_config_mode(ctx):
+    # ADDENDUM §6's `source` is a mode (api | dump1090); PLAN.md §3's
+    # feed.source is the provider. "api" is never a provider name.
+    client, path, _ = ctx
+    _seed(path)
+    body = client.get("/api/display/radar/data").get_json()
+    assert body["feed"]["source"] == "adsb.fi"
+
+
+def test_health_answers_for_a_pixel_push_device_too(tmp_path):
+    # ADDENDUM §5 defines /health for every device, unconditionally.
+    cfg = {"devices": [{"id": "kitchen", "kind": "epaper_client",
+                        "render": "server", "feed": "adsb"}]}
+    client = create_app(cfg, tmp_path).test_client()
+    assert client.get("/api/display/kitchen/health").status_code == 200
+    assert client.get("/api/display/kitchen/data").status_code == 404
+
+
 def test_unknown_device_is_404(ctx):
     client, _, _ = ctx
     assert client.get("/api/display/nope/data").status_code == 404
@@ -1406,6 +1526,8 @@ def test_routing_is_on_render_not_kind(tmp_path):
     assert c.get("/api/display/odd/data").status_code == 404, (
         "render: server must not be served from the data endpoint, "
         "even for a gc9a01_client")
+    assert c.get("/api/display/odd/health").status_code == 200, (
+        "but /health is defined for every device")
 
     novel_kind = {"devices": [{"id": "newthing", "kind": "some_future_client",
                                "render": "device", "feed": "adsb",
@@ -1487,6 +1609,11 @@ log = logging.getLogger(__name__)
 # data-push device class then declares itself instead of needing a Python edit.
 DATA_RENDER = "device"
 
+# ADDENDUM §6's `source` is an acquisition MODE (api | dump1090); PLAN.md §3's
+# `feed.source` is the PROVIDER name in a diagnostic response. Map, don't pipe:
+# "api" is never a provider, and tells a debugger nothing.
+SOURCE_LABEL = {"api": "adsb.fi", "dump1090": "dump1090"}
+
 # kExtrapolationHorizonSec in the firmware (adsb_client.h). Past this the device
 # treats a fix as unusable, so past this we must stop serving 304s.
 STALE_HORIZON_S = 12.0
@@ -1512,6 +1639,11 @@ def _feed_state(env: dict | None, now: float) -> tuple[bool, float]:
         # arbitrarily old data -- the exact inverse of SPEC §11.4.
         return False, 0.0
     return bool(env["ok"]), max(0.0, delta)
+
+
+def _source_label(cfg: dict) -> str:
+    mode = cfg.get("feeds", {}).get("adsb", {}).get("source", "api")
+    return SOURCE_LABEL.get(mode, mode)
 
 
 def _aircraft(env: dict | None) -> list:
@@ -1543,13 +1675,15 @@ def _servable(env: dict | None, dwell: float) -> list:
 
 def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
     app = Flask(__name__)
-    # A non-finite that somehow reached the cache must not reach the wire.
-    app.json.allow_nan = False
     telemetry: dict[str, dict] = {}
 
-    def _lookup(device_id: str):
+    def _lookup(device_id: str, *, require_data_render: bool = True):
+        """`/data` is data-push only; `/health` is defined for every device
+        (ADDENDUM §5: "server-side status, for debugging")."""
         dev = device(cfg, device_id)
-        if dev is None or dev.get("render") != DATA_RENDER:
+        if dev is None:
+            return None
+        if require_data_render and dev.get("render") != DATA_RENDER:
             return None
         return dev
 
@@ -1575,7 +1709,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
         body = {
             "server_time": int(now),
             "feed": {"ok": ok, "age_s": dwell,
-                     "source": cfg.get("feeds", {}).get("adsb", {}).get("source", "api")},
+                     "source": _source_label(cfg)},
             "aircraft": aircraft,
         }
 
@@ -1609,7 +1743,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
 
     @app.get("/api/display/<device_id>/health")
     def health(device_id: str):
-        dev = _lookup(device_id)
+        dev = _lookup(device_id, require_data_render=False)
         if dev is None:
             return jsonify({"error": "unknown device"}), 404
         now = clock()
@@ -1652,12 +1786,12 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_serve.py -v`
-Expected: PASS — **30 tests** (18 functions, two parametrized 7 ways each)
+Expected: PASS — **32 tests** (20 functions, two parametrized 7 ways each)
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `venv/bin/pytest -v`
-Expected: PASS — **83 tests** (14 + 17 + 22 + 30)
+Expected: PASS — **89 tests** (15 + 17 + 25 + 32)
 
 - [ ] **Step 6: Commit**
 
@@ -1690,7 +1824,7 @@ cd /Users/matias/Documents/repos/HomeScreen
 venv/bin/python - <<'EOF'
 from pathlib import Path
 from homescreen.config import load_config, device, feed_cache_path
-from homescreen.sources.adsb import fetch_radar
+from homescreen.sources.adsb import check_cadence, fetch_radar, fetch_targets
 cfg = load_config(Path("config.yaml"))
 dev = device(cfg, "radar")
 path = feed_cache_path(Path("cache"), dev)
@@ -1842,6 +1976,24 @@ in later phases (CLAUDE.md §2), and PEP 668 forbids installing outside a venv.
 ssh pi@dashboard.local 'cd /home/pi/dashboard && python3 -m venv --system-site-packages venv && venv/bin/pip install --quiet -r requirements.txt && venv/bin/python -c "import flask, requests, yaml; print(\"deps ok\")"'
 ```
 
+- [ ] **Step 2b: Copy the local secrets overlay, if one exists**
+
+`config.local.yaml` is gitignored, so the clone in Step 1 cannot carry it. This must land BEFORE the daemons start: both read config once in `main()`,
+so an overlay copied later is not in effect until a restart. adsb.fi needs
+no key, so this is a no-op today — but the moment a fetcher with credentials lands
+(SPEC §7.4 Twelve Data, §7.2 the secret ICS URL) the overlay must reach the Pi or the Pi
+runs on public config alone.
+
+```bash
+cd /Users/matias/Documents/repos/HomeScreen
+if [ -f config.local.yaml ]; then
+  scp config.local.yaml pi@dashboard.local:/home/pi/dashboard/config.local.yaml
+  echo "overlay copied"
+else
+  echo "no config.local.yaml — nothing to copy (expected for Phase A)"
+fi
+```
+
 - [ ] **Step 3: Run the tests on the Pi**
 
 The Mac is Python 3.14 and the Pi is 3.13; the suite must pass on the machine that runs it.
@@ -1850,25 +2002,32 @@ The Mac is Python 3.14 and the Pi is 3.13; the suite must pass on the machine th
 ssh pi@dashboard.local 'cd /home/pi/dashboard && venv/bin/pytest -q'
 ```
 
-Expected: `83 passed`
+Expected: `89 passed`
 
 - [ ] **Step 4: Keep the journal off the SD card**
 
 Measured on this Pi: the journal is **entirely in RAM today** — every file under
-`/run/log/journal`, `/var/log/journal` empty, `#Storage=auto` in `journald.conf`. Current
-SD journal writes: **zero**.
+`/run/log/journal`, `/var/log/journal` empty. SD journal writes: **zero**. Raspberry Pi OS
+ships `/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf` with
+`Storage=volatile`, so RAM is already the effective setting — this step does not establish
+it, it caps it.
 
 That inverts the obvious fix. `Storage=persistent` would *start* writing to the card and
-grant it a permanent rotating budget — creating the wear this step exists to prevent. And
+grant it a permanent rotating budget, creating the wear this step exists to prevent. And
 `SystemMaxUse` governs `/var/log/journal`; the store actually in use is capped by
-`RuntimeMaxUse`. So: pin it to RAM and cap the RAM store.
+**`RuntimeMaxUse`**.
+
+The filename matters: drop-ins merge in **filename order**, so a `10-` file loses to the
+vendor's `40-`. Use `50-` so ours wins if it ever needs to.
 
 ```bash
-ssh pi@dashboard.local 'sudo mkdir -p /etc/systemd/journald.conf.d && printf "[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\n" | sudo tee /etc/systemd/journald.conf.d/10-cap.conf && sudo systemctl restart systemd-journald'
-ssh pi@dashboard.local 'journalctl --disk-usage && ls /var/log/journal'
+ssh pi@dashboard.local 'sudo mkdir -p /etc/systemd/journald.conf.d && printf "[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\n" | sudo tee /etc/systemd/journald.conf.d/50-cap.conf && sudo systemctl restart systemd-journald'
+ssh pi@dashboard.local 'ls -A /var/log/journal; systemd-analyze cat-config systemd/journald.conf | grep -E "Storage|RuntimeMaxUse"'
 ```
 
-Expected: usage reported against `/run/log/journal`, and `/var/log/journal` still empty.
+Expected: `/var/log/journal` still **empty** (that is the real check — `journalctl
+--disk-usage` prints a size with no path and proves nothing), and the merged config showing
+`Storage=volatile` with `RuntimeMaxUse=32M`.
 
 **The trade:** logs do not survive a reboot. SPEC §12 chose systemd partly so
 `journalctl -u` is useful at 1am, and that still works for a live fault — you lose only
@@ -1913,7 +2072,7 @@ ssh pi@dashboard.local 'sudo systemctl stop homescreen-fetch'          # Pi
 # requires ok, so if the daemon's LAST cycle happened to fail, the first check
 # below would return 200 for the wrong reason and look like a failure.
 curl -sI http://dashboard.local:8080/api/display/radar/data | grep -qi 'x-feed-ok: 1' \
-  || { echo "SKIP: feed was already unhealthy; restart the fetcher and retry"; }
+  || { echo "SKIP: feed was already unhealthy; restart the fetcher and retry"; exit 1; }
 ETAG=$(curl -sI http://dashboard.local:8080/api/display/radar/data \
        | awk -F'"' '/[Ee][Tt]ag/{print $2}')                            # Mac
 curl -s -o /dev/null -w "unchanged content -> %{http_code}\n" \
@@ -1929,23 +2088,6 @@ ssh pi@dashboard.local 'sudo systemctl start homescreen-fetch'          # Pi
 Expected: `304` for unchanged content, then **`200`** once past the 12 s horizon — a stale
 feed must never be answered with a bodiless 304, or `feed.age_s` can never reach the device.
 Aircraft are still served with a growing `feed.age_s` (SPEC §11.3).
-
-- [ ] **Step 8: Copy the local secrets overlay, if one exists**
-
-`config.local.yaml` is gitignored, so the clone in Step 1 cannot carry it. adsb.fi needs
-no key, so this is a no-op today — but the moment a fetcher with credentials lands
-(SPEC §7.4 Twelve Data, §7.2 the secret ICS URL) the overlay must reach the Pi or the Pi
-runs on public config alone.
-
-```bash
-cd /Users/matias/Documents/repos/HomeScreen
-if [ -f config.local.yaml ]; then
-  scp config.local.yaml pi@dashboard.local:/home/pi/dashboard/config.local.yaml
-  echo "overlay copied"
-else
-  echo "no config.local.yaml — nothing to copy (expected for Phase A)"
-fi
-```
 
 - [ ] **Step 9: Verify survival across a reboot**
 
@@ -1985,7 +2127,7 @@ did not come back.
 
 ## Done when
 
-- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (83 tests)
+- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (89 tests)
 - [ ] `curl http://dashboard.local:8080/api/display/radar/data` returns aircraft with `feed.ok: true`
 - [ ] Served `age` and `feed.age_s` advance in real time while the fetch daemon is stopped
 - [ ] A matching `If-None-Match` yields `304` for unchanged content **across a refetch**,
@@ -2000,7 +2142,7 @@ did not come back.
 **Then, and only then**, start the firmware plan (Phase A4). ADDENDUM §0.5: do not begin
 firmware work until the server path is proven end-to-end.
 
-### Two things the firmware plan must carry
+### Three things the firmware plan must carry
 
 1. **On a 304 the device must not reset its fetch timestamp.** The device computes
    `age + secondsSinceUpdate()`. If a 304 resets that timer while the body is unchanged,
