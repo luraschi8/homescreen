@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+# pytest's prepend import mode does not add the rootdir to sys.path on its own.
+pythonpath = ["."]
+testpaths = ["tests"]
+# The whole suite runs in well under a second; anything that takes 30s has hung.
+# See requirements.txt for why this matters to run_forever specifically.
+timeout = 30

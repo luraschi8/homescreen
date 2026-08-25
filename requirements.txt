@@ -1,0 +1,8 @@
+flask>=3.0
+requests>=2.31
+pyyaml>=6.0
+pytest>=8.0
+# run_forever is a `while True` loop. A regression that removes its exit guard
+# hangs the suite instead of failing it, which reads as a stuck CI rather than
+# a bug. A global timeout turns that into a normal red test.
+pytest-timeout>=2.3

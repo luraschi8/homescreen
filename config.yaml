@@ -1,0 +1,24 @@
+# Copy to config.yaml. Structure lives here and IS committed; secrets go in
+# config.local.yaml, which is gitignored.
+server:
+  host: 0.0.0.0
+  port: 8080
+
+devices:
+  - id: radar
+    kind: gc9a01_client
+    render: device
+    feed: adsb
+    home: { lat: 40.4168, lon: -3.7038 }
+    radius_km: 60
+    max_aircraft: 20
+    show_ground: false
+    poll_seconds: 5
+
+feeds:
+  adsb:
+    source: api
+    endpoint: "https://opendata.adsb.fi/api/v3"
+    # Upstream cadence. adsb.fi's public limit is 1 req/s; keep well clear.
+    # This is the ONLY place the fetch interval is defined (VALIDATION C6).
+    fetch_seconds: 3
