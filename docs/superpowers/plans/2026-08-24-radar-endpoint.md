@@ -28,6 +28,10 @@ Deploy path on the Pi is **`/home/pi/dashboard`** (CLAUDE.md §4, SPEC §12). Ne
 - ADDENDUM §5's `X-Full-Refresh` and VALIDATION C3's `X-Partial-Window` are **deliberately
   absent**: both are pixel-push anti-ghosting concerns and a GC9A01 has no ghosting.
   They land with `/frame` in Phase C (PLAN.md §5, S1).
+- **`X-Feed-Age` and `X-Feed-Ok` are additions to ADDENDUM §5's response-header table.**
+  They exist because a 304 carries no body, so `feed.age_s` — the device's only signal
+  that the upstream has stalled — could not otherwise reach it. Amend §5's table when
+  this ships; the firmware plan consumes both.
 - venv created with `--system-site-packages`. Never `pip --break-system-packages`. (CLAUDE.md §2)
 - String field widths are fixed by the firmware struct: `cs` ≤ 8, `ty` ≤ 4, `alt` ≤ 11.
 - Upstream `https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{nm}` → `{"ac": [...]}`. Public limit **1 req/s**.
@@ -280,7 +284,8 @@ def test_write_refuses_to_persist_non_finite(tmp_path: Path):
     for bad in (float("inf"), float("-inf"), float("nan")):
         with pytest.raises(ValueError):
             write_cache(p, {"aircraft": [{"gs": bad}]})
-    assert not p.exists(), "a refused write must leave no file behind"
+    assert not p.exists(), "no cache file"
+    assert list(tmp_path.iterdir()) == [], "and no .tmp residue either"
 
 
 def test_write_leaves_no_temp_file(tmp_path: Path):
@@ -352,12 +357,17 @@ def _write(path: Path, env: dict) -> None:
     """Write atomically so a reader never sees a half-written envelope."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        # allow_nan=False: bare Infinity/NaN is not strict JSON and the
-        # firmware's parser rejects the whole body. Belt-and-braces with _num.
-        json.dump(env, fh, separators=(",", ":"), allow_nan=False)
-        fh.flush()
-        os.fsync(fh.fileno())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            # allow_nan=False: bare Infinity/NaN is not strict JSON and the
+            # firmware's parser rejects the whole body. Belt-and-braces with
+            # adsb_map._num and read_cache's parse_constant.
+            json.dump(env, fh, separators=(",", ":"), allow_nan=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except Exception:
+        tmp.unlink(missing_ok=True)   # a refused write must leave nothing behind
+        raise
     os.replace(tmp, path)
 
 
@@ -622,9 +632,10 @@ def _num(raw: dict, key: str) -> float | None:
     that does two separate kinds of damage: `_round_half_up(inf)` raises
     OverflowError out of the fetch loop, and any field that skips rounding
     serialises as bare `Infinity`, which is not strict JSON. ArduinoJson is
-    built with ARDUINOJSON_ENABLE_INFINITY/NAN = 0, so one poisoned record
-    would make `deserializeJson` reject the ENTIRE body and blank the radar for
-    every device on the LAN. inf/nan is not a value; it is a broken feed.
+    defaults ARDUINOJSON_ENABLE_INFINITY/NAN to 0 (a library default under a
+    ^7.4.2 pin, not an explicit build flag), so one poisoned record makes
+    deserializeJson reject the ENTIRE body and blank the radar for every device
+    on the LAN. inf/nan is not a value; it is a broken feed.
     """
     v = raw.get(key)
     if isinstance(v, bool) or not isinstance(v, (int, float)):
@@ -941,9 +952,37 @@ def test_fetch_targets_picks_every_data_push_device(tmp_path: Path):
 
 
 def test_check_cadence_rejects_an_interval_past_the_horizon():
-    check_cadence({"feeds": {"adsb": {"fetch_seconds": 3}}})   # 3.05+5+3 = 11.05 < 12
+    check_cadence({"feeds": {"adsb": {"fetch_seconds": 3}}})   # 8.05+3 = 11.05 < 12
     with pytest.raises(ValueError, match="horizon"):
         check_cadence({"feeds": {"adsb": {"fetch_seconds": 5}}})  # 13.05 >= 12
+
+
+def test_check_cadence_scales_the_budget_with_device_count():
+    # run_forever fetches every target THEN sleeps, so dwell is
+    # N x full_timeout + interval. A single-target budget would give a false
+    # all-clear the moment a second radar is registered.
+    cfg = {"feeds": {"adsb": {"fetch_seconds": 3}}}
+    check_cadence(cfg, 1)
+    with pytest.raises(ValueError, match="horizon"):
+        check_cadence(cfg, 2)          # 8.05*2 + 3 = 19.1 >= 12
+
+
+def test_check_cadence_rejects_bursting_past_the_rate_limit(monkeypatch):
+    # adsb.fi enforces spacing, not an average rate. Shrink the timeout to
+    # isolate this check: at the shipped (3.05, 5) the horizon check fires
+    # first for every N > 1, so the rate check would be unreachable.
+    monkeypatch.setattr("homescreen.sources.adsb.REQUEST_TIMEOUT_S", (0.5, 0.5))
+    check_cadence({"feeds": {"adsb": {"fetch_seconds": 3}}}, 3)   # 1.0s apart, ok
+    with pytest.raises(ValueError, match="limit"):
+        check_cadence({"feeds": {"adsb": {"fetch_seconds": 3}}}, 4)  # 0.75s apart
+
+
+def test_fetch_targets_skips_entries_with_no_id(tmp_path: Path):
+    # feed_cache_path does dev["id"]; an unguarded KeyError here is a startup
+    # traceback into a Restart=always loop.
+    cfg = {"devices": [{"render": "device", "feed": "adsb"},
+                       {"id": "radar", "render": "device", "feed": "adsb"}]}
+    assert [d["id"] for d, _ in fetch_targets(cfg, tmp_path)] == ["radar"]
 
 
 def test_local_config_overlays_secrets(tmp_path: Path):
@@ -1088,8 +1127,7 @@ def _record_failure(cache_path: Path, error: str) -> None:
     """write_failure does I/O and can raise -- a read-only SD card (the
     canonical Pi failure, CLAUDE.md §2) makes every write throw. fetch_radar's
     "never raises" has to survive that too, or each cycle exits run_forever and
-    Restart=always turns it into the restart loop Task 6 Step 4 exists to
-    prevent."""
+    Restart=always turns it into a restart loop that spams the journal."""
     try:
         write_failure(cache_path, error)
     except Exception as exc:  # noqa: BLE001
@@ -1105,17 +1143,44 @@ KM_PER_NM = 1.852
 # blink pathology radar_display.cpp was rewritten to remove.
 REQUEST_TIMEOUT_S = (3.05, 5)
 STALE_HORIZON_S = 12.0
+# adsb.fi public limit is 1 req/s. Enforced as spacing, not as an average.
+MIN_REQUEST_SPACING_S = 1.0
 
 
-def check_cadence(cfg: dict) -> None:
+def check_cadence(cfg: dict, n_targets: int = 1) -> None:
     """Fail loudly at startup rather than blinking mysteriously at runtime.
-    fetch_seconds is user-editable config with nothing else guarding it."""
+
+    Two independent limits, and BOTH scale with the number of devices:
+
+    * Staleness. run_forever fetches every target then sleeps once, so a
+      device's cache can go `N x full_timeout + interval` between writes. A
+      single-target budget silently green-lights a violating config the moment
+      a second radar is registered.
+    * Rate. adsb.fi's public limit is 1 req/s, and a limiter enforces
+      *spacing*, not an average -- N requests fired back to back inside one
+      second breach it however long the cycle is.
+    """
     interval = float(cfg.get("feeds", {}).get("adsb", {}).get("fetch_seconds", 3))
-    budget = sum(REQUEST_TIMEOUT_S) + interval
+    n = max(1, int(n_targets))
+
+    budget = n * sum(REQUEST_TIMEOUT_S) + interval
     if budget >= STALE_HORIZON_S:
         raise ValueError(
-            f"fetch_seconds={interval} leaves a worst-case dwell of {budget}s, "
-            f"at or past the firmware's {STALE_HORIZON_S}s horizon")
+            f"fetch_seconds={interval} across {n} device(s) leaves a worst-case "
+            f"dwell of {budget:.2f}s, at or past the firmware's "
+            f"{STALE_HORIZON_S}s horizon")
+
+    # NOTE: at the shipped REQUEST_TIMEOUT_S of (3.05, 5) the horizon check
+    # above already rejects every N > 1 -- a second radar is not supportable
+    # without shorter timeouts, and the 12 s horizon is fixed by firmware. That
+    # is a real constraint, not an oversight: better surfaced at startup than
+    # discovered as targets blinking once per cycle.
+    spacing = interval / n
+    if spacing < MIN_REQUEST_SPACING_S:
+        raise ValueError(
+            f"fetch_seconds={interval} across {n} device(s) spaces requests "
+            f"{spacing:.2f}s apart, inside adsb.fi's "
+            f"{MIN_REQUEST_SPACING_S}s limit")
 
 
 def _url(endpoint: str, lat: float, lon: float, radius_km: float) -> str:
@@ -1205,27 +1270,33 @@ def fetch_targets(cfg: dict, cache_dir: Path) -> list:
     """Every data-push device on the adsb feed, with its own cache file.
 
     Per-device rather than a hardcoded "radar": `home`/`radius_km` are
-    per-device, so each gets its own cache. Note N devices means N upstream
-    requests per cycle -- keep N x (1/fetch_seconds) under adsb.fi's 1 req/s.
+    per-device, so each gets its own cache.
+
+    N devices means N upstream requests per cycle. check_cadence enforces both
+    limits that implies -- staleness and request spacing -- and at the shipped
+    timeouts it rejects N > 1 outright. Registering a second radar therefore
+    requires lowering REQUEST_TIMEOUT_S first.
     """
     return [(d, feed_cache_path(cache_dir, d))
             for d in cfg.get("devices", [])
-            if isinstance(d, dict) and d.get("render") == "device"
-            and d.get("feed") == "adsb"]
+            if isinstance(d, dict) and d.get("id")
+            and d.get("render") == "device" and d.get("feed") == "adsb"]
 
 
 def run_forever(cfg: dict, targets: list) -> None:
     interval = float(cfg.get("feeds", {}).get("adsb", {}).get("fetch_seconds", 3))
     import requests
     session = requests.Session()
-    log.info("adsb fetch loop starting for %s, interval %.1fs",
-             [d["id"] for d, _ in targets], interval)
+    spacing = interval / max(1, len(targets))
+    log.info("adsb fetch loop starting for %s, interval %.1fs, spacing %.2fs",
+             [d["id"] for d, _ in targets], interval, spacing)
     while True:
         for dev, cache_path in targets:
             fetch_radar(cfg, dev, cache_path, session=session)
-        # Sleep AFTER the requests complete, so a slow upstream stretches the
-        # cycle instead of queueing a second in-flight request.
-        time.sleep(interval)
+            # Sleep AFTER each request, so a slow upstream stretches the cycle
+            # instead of queueing a second in-flight request, and so N devices
+            # are spaced rather than bursting inside one second.
+            time.sleep(spacing)
 
 
 def main() -> None:
@@ -1233,10 +1304,10 @@ def main() -> None:
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "config.yaml")
-    check_cadence(cfg)
     targets = fetch_targets(cfg, root / "cache")
     if not targets:
         raise SystemExit("config.yaml has no device with render: device and feed: adsb")
+    check_cadence(cfg, len(targets))
     run_forever(cfg, targets)
 
 
@@ -1247,7 +1318,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_adsb.py -v`
-Expected: PASS — **25 tests** (19 functions, one parametrized 6 ways)
+Expected: PASS — **28 tests** (22 functions, one parametrized 6 ways)
 
 - [ ] **Step 6: Commit**
 
@@ -1507,8 +1578,21 @@ def test_health_answers_for_a_pixel_push_device_too(tmp_path):
     cfg = {"devices": [{"id": "kitchen", "kind": "epaper_client",
                         "render": "server", "feed": "adsb"}]}
     client = create_app(cfg, tmp_path).test_client()
-    assert client.get("/api/display/kitchen/health").status_code == 200
+    body = client.get("/api/display/kitchen/health").get_json()
+    assert body["render"] == "server"
+    # Not `ok: false` -- it has no ADS-B feed at all, and claiming a dead feed
+    # is a misleading answer on a debugging endpoint.
+    assert body["feed"] is None
     assert client.get("/api/display/kitchen/data").status_code == 404
+
+
+def test_source_label_survives_a_non_string_config(tmp_path):
+    # .get() on an unhashable would raise TypeError and 500 every request.
+    cfg = {"feeds": {"adsb": {"source": ["api"]}},
+           "devices": [{"id": "radar", "render": "device", "feed": "adsb"}]}
+    r = create_app(cfg, tmp_path).test_client().get("/api/display/radar/data")
+    assert r.status_code == 200
+    assert r.get_json()["feed"]["source"] == "unknown"
 
 
 def test_unknown_device_is_404(ctx):
@@ -1643,6 +1727,10 @@ def _feed_state(env: dict | None, now: float) -> tuple[bool, float]:
 
 def _source_label(cfg: dict) -> str:
     mode = cfg.get("feeds", {}).get("adsb", {}).get("source", "api")
+    if not isinstance(mode, str):
+        # A list/dict here would make .get() raise TypeError: unhashable, and
+        # 500 every request. Every other lookup in this path is guarded.
+        return "unknown"
     return SOURCE_LABEL.get(mode, mode)
 
 
@@ -1747,17 +1835,25 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
         if dev is None:
             return jsonify({"error": "unknown device"}), 404
         now = clock()
-        env = read_cache(feed_cache_path(cache_dir, dev))
-        ok, dwell = _feed_state(env, now)
-        return jsonify({
+        body = {
             "device": device_id,
+            "render": dev.get("render"),
             "server_time": int(now),
-            "feed": {"ok": ok, "age_s": dwell,
-                     "error": (env or {}).get("error"),
-                     "fetched_at": (env or {}).get("fetched_at"),
-                     "aircraft": len(_servable(env, dwell))},
             "last_telemetry": telemetry.get(device_id),
-        })
+        }
+        if dev.get("render") == DATA_RENDER:
+            env = read_cache(feed_cache_path(cache_dir, dev))
+            ok, dwell = _feed_state(env, now)
+            body["feed"] = {"ok": ok, "age_s": dwell,
+                            "error": (env or {}).get("error"),
+                            "fetched_at": (env or {}).get("fetched_at"),
+                            "aircraft": len(_servable(env, dwell))}
+        else:
+            # A pixel-push device has no ADS-B feed. Reporting ok: false for a
+            # feed it never had is a misleading answer on the endpoint whose
+            # whole purpose is debugging. Its render state lands in Phase C.
+            body["feed"] = None
+        return jsonify(body)
 
     return app
 
@@ -1786,12 +1882,12 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_serve.py -v`
-Expected: PASS — **32 tests** (20 functions, two parametrized 7 ways each)
+Expected: PASS — **33 tests** (21 functions, two parametrized 7 ways each)
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `venv/bin/pytest -v`
-Expected: PASS — **89 tests** (15 + 17 + 25 + 32)
+Expected: PASS — **93 tests** (15 + 17 + 28 + 33)
 
 - [ ] **Step 6: Commit**
 
@@ -1848,8 +1944,10 @@ An HTTP 404 here means the `api/v3` version literal in `config.yaml`, not the co
 
 ```bash
 cd /Users/matias/Documents/repos/HomeScreen
-venv/bin/python -m homescreen.serve & SERVE_PID=$!
+lsof -ti:8080 >/dev/null 2>&1 && { echo "FAIL: port 8080 already in use"; exit 1; }
+venv/bin/python -m homescreen.serve > /tmp/serve.log 2>&1 & SERVE_PID=$!
 sleep 2
+kill -0 $SERVE_PID 2>/dev/null || { echo "FAIL: server died —"; cat /tmp/serve.log; exit 1; }
 venv/bin/python - <<'EOF'
 import json, time, urllib.request
 U = "http://127.0.0.1:8080/api/display/radar/data"
@@ -2002,12 +2100,12 @@ The Mac is Python 3.14 and the Pi is 3.13; the suite must pass on the machine th
 ssh pi@dashboard.local 'cd /home/pi/dashboard && venv/bin/pytest -q'
 ```
 
-Expected: `89 passed`
+Expected: `93 passed`
 
 - [ ] **Step 4: Keep the journal off the SD card**
 
 Measured on this Pi: the journal is **entirely in RAM today** — every file under
-`/run/log/journal`, `/var/log/journal` empty. SD journal writes: **zero**. Raspberry Pi OS
+`/run/log/journal`, `/var/log/journal` empty. SD journal writes: **zero**. The Raspberry-Pi-packaged systemd on this Debian trixie image
 ships `/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf` with
 `Storage=volatile`, so RAM is already the effective setting — this step does not establish
 it, it caps it.
@@ -2077,7 +2175,7 @@ ETAG=$(curl -sI http://dashboard.local:8080/api/display/radar/data \
        | awk -F'"' '/[Ee][Tt]ag/{print $2}')                            # Mac
 curl -s -o /dev/null -w "unchanged content -> %{http_code}\n" \
   -H "If-None-Match: \"$ETAG\"" http://dashboard.local:8080/api/display/radar/data
-sleep 14                                                                # past STALE_HORIZON_S
+sleep 14                                                                # Mac, past STALE_HORIZON_S
 curl -s -o /dev/null -w "stale feed        -> %{http_code}\n" \
   -H "If-None-Match: \"$ETAG\"" http://dashboard.local:8080/api/display/radar/data
 curl -s http://dashboard.local:8080/api/display/radar/data \
@@ -2085,11 +2183,16 @@ curl -s http://dashboard.local:8080/api/display/radar/data \
 ssh pi@dashboard.local 'sudo systemctl start homescreen-fetch'          # Pi
 ```
 
+If the guard above trips, it exits with `homescreen-fetch` still stopped — restart it
+before retrying. The guard checks `X-Feed-Ok: 1` only; if the three round trips ever take
+longer than the 12 s horizon the first check returns 200 for the right reason and reads as
+a failure, so run the block straight through rather than pausing between lines.
+
 Expected: `304` for unchanged content, then **`200`** once past the 12 s horizon — a stale
 feed must never be answered with a bodiless 304, or `feed.age_s` can never reach the device.
 Aircraft are still served with a growing `feed.age_s` (SPEC §11.3).
 
-- [ ] **Step 9: Verify survival across a reboot**
+- [ ] **Step 8: Verify survival across a reboot**
 
 `sudo reboot` returns immediately and systemd takes seconds to tear down, while ssh
 round-trip to this Pi is 0.2–0.9 s. A loop that polls `/health` straight away therefore
@@ -2127,14 +2230,15 @@ did not come back.
 
 ## Done when
 
-- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (89 tests)
+- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (93 tests)
 - [ ] `curl http://dashboard.local:8080/api/display/radar/data` returns aircraft with `feed.ok: true`
 - [ ] Served `age` and `feed.age_s` advance in real time while the fetch daemon is stopped
 - [ ] A matching `If-None-Match` yields `304` for unchanged content **across a refetch**,
       and `200` once the feed is past the 12 s staleness horizon
 - [ ] Stopping the fetch daemon leaves the endpoint serving stale data with a growing
       `feed.age_s`, never a 500; a garbage upstream response keeps the last good list
-- [ ] `journalctl --disk-usage` is capped
+- [ ] `/var/log/journal` is still empty and the merged journald config shows
+      `Storage=volatile` with `RuntimeMaxUse=32M`
 - [ ] `/health` reports feed state and the last telemetry the device sent
 - [ ] `systemctl is-active homescreen-fetch homescreen-serve` reports `active` after a reboot
 - [ ] `X-Feed-Age` / `X-Feed-Ok` are present on a 304 as well as a 200
@@ -2150,8 +2254,14 @@ firmware work until the server path is proven end-to-end.
 2. **Read `X-Feed-Age` / `X-Feed-Ok`, not just the body.** They are set on the 304 as
    well as the 200 precisely because a 304 has no body — without them a device that
    conditional-fetches cannot see the feed's liveness at all.
-3. **Staleness must be tested against `feed.age_s` (or `X-Feed-Age`), not the device's own fetch age.**
-   Via the Pi the device's fetch keeps succeeding while the upstream rots. Keep
-   `radar_display.cpp`'s two staleness causes tested *separately* — its comment records
-   that summing them made targets blink once per cycle — and substitute `feed.age_s` for
-   `fetch_age_raw`.
+3. **`feed.age_s` is a THIRD staleness cause, tested separately — it does not replace
+   `fetch_age_raw`.** An earlier draft of this note said "substitute", which is wrong and
+   would have removed the device's only detection of *its own* link failing: after
+   substitution both causes derive from Pi-side timestamps carried in the body, so a
+   device that loses the LAN sees both frozen at their last-received values and never
+   dims — only `kDataExpirySec` (60 s) would catch it, four times slower than today.
+   Keep `pos_age_s` and `fetch_age_raw` exactly as they are, and add `feed.age_s` as a
+   third `||` term. `radar_display.cpp`'s comment records why these are tested apart
+   rather than summed; that reasoning extends to the third.
+   Via the Pi the device's fetch keeps succeeding while the upstream rots, so the device
+   needs a signal for that — but it still needs `fetch_age_raw` for its own link.
