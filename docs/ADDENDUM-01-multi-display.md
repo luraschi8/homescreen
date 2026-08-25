@@ -99,7 +99,16 @@ Plain HTTP on the LAN. **No TLS** — it is the single largest source of memory 
 GET /api/display/{device_id}/frame     → packed 1bpp bytes    (pixel push)
 GET /api/display/{device_id}/data      → application/json     (data push)
 GET /api/display/{device_id}/health    → server-side status, for debugging
+GET /                                  → human-readable status page  (added post-ADDENDUM)
+GET /home                              → alias of /
+GET /api/status                        → machine-readable equivalent
 ```
+
+`/` and `/api/status` are server-level rather than per-device: they answer "what code is
+running, what is it serving, and is the feed alive" in one place, which the per-device
+endpoints cannot. Both render **config structure only** — never a config value that could
+be a secret, since this is unauthenticated on the LAN and SPEC §6 puts `quotes.api_key`
+and the secret `calendar.ics_url` in the config.
 
 ### Request
 
