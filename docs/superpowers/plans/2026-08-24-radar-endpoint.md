@@ -247,6 +247,16 @@ def test_read_corrupt_returns_none(tmp_path: Path):
     assert read_cache(p) is None
 
 
+def test_read_rejects_a_non_finite_written_as_a_plain_number(tmp_path: Path):
+    # parse_constant only fires for the literals Infinity/NaN. 1e400 is
+    # ordinary JSON that float() turns into inf -- the very form the mapper
+    # guards against upstream.
+    p = tmp_path / "bad.json"
+    p.write_text('{"fetched_at":"2026-01-01T00:00:00+00:00","ok":true,'
+                 '"data":{"aircraft":[{"lat":1e400}]}}')
+    assert read_cache(p) is None
+
+
 @pytest.mark.parametrize("bad", [
     {},                                              # nothing at all
     {"data": {}},                                    # missing fetched_at/ok
@@ -317,6 +327,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'homescreen.cache'`
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -333,6 +344,15 @@ def _reject_constant(name: str):
     raise ValueError(f"non-finite {name} is not strict JSON")
 
 
+def _finite_float(text: str) -> float:
+    """parse_constant only fires for the literals `Infinity`/`NaN`. `1e400` is
+    ordinary JSON that float() turns into inf, so it needs its own hook."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite number {text!r} is not strict JSON")
+    return value
+
+
 def read_cache(path: Path) -> dict | None:
     """Return the envelope, or None if it is absent, corrupt or malformed.
 
@@ -347,7 +367,8 @@ def read_cache(path: Path) -> dict | None:
             # Refusing here degrades to "no data" (SPEC §11.1); a strict JSON
             # provider on the Flask side would instead make jsonify raise,
             # which is the thing that must never happen in the serve path.
-            env = json.load(fh, parse_constant=_reject_constant)
+            env = json.load(fh, parse_constant=_reject_constant,
+                            parse_float=_finite_float)
     except (OSError, json.JSONDecodeError, ValueError):
         return None
     if not isinstance(env, dict):
@@ -406,7 +427,7 @@ def write_failure(path: Path, error: str) -> None:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_cache.py -v`
-Expected: PASS — **15 tests** (9 functions: 8 plain + one parametrized 7 ways)
+Expected: PASS — **16 tests**
 
 - [ ] **Step 5: Commit**
 
@@ -780,7 +801,7 @@ from homescreen.cache import read_cache, write_cache
 from homescreen.config import (device, feed_cache_path, feed_config,
                                load_config)
 from homescreen.sources.adsb import (check_cadence, check_config, fetch_radar,
-                                    fetch_targets, run_forever)
+                                    fetch_targets, run_forever, startup)
 
 CFG = {
     "feeds": {"adsb": {"endpoint": "https://example.invalid/api", "fetch_seconds": 3}},
@@ -1006,20 +1027,20 @@ def test_check_config_rejects_unusable_device_settings(dev):
         check_config(cfg, [(dev, Path("x"))])
 
 
-@pytest.mark.parametrize("dev,why", [
-    ({"radius_km": 0}, "fetches nothing, forever, while the unit stays green"),
-    ({"radius_km": -5}, "negative"),
-    ({"radius_km": float("inf")}, "produces a nonsense dist=inf request"),
-    ({"max_aircraft": 0}, "serves nothing"),
-    ({"home": {"lat": 95, "lon": -3.7}}, "not a latitude"),
-    ({"home": {"lat": 40.4, "lon": 400}}, "not a longitude"),
-    ({"home": {"lat": float("nan"), "lon": -3.7}}, "nan"),
+@pytest.mark.parametrize("dev", [
+    {"radius_km": 0},                        # fetches nothing, forever, unit stays green
+    {"radius_km": -5},
+    {"radius_km": float("inf")},             # produces a nonsense dist=inf request
+    {"max_aircraft": 0},                     # serves nothing
+    {"home": {"lat": 95, "lon": -3.7}},      # not a latitude
+    {"home": {"lat": 40.4, "lon": 400}},     # not a longitude
+    {"home": {"lat": float("nan"), "lon": -3.7}},
 ])
-def test_check_config_rejects_out_of_range_and_non_finite(dev, why):
+def test_check_config_rejects_out_of_range_and_non_finite(dev):
     cfg = {"feeds": {"adsb": {"endpoint": "https://x", "fetch_seconds": 3}}}
     base = {"id": "r", "home": {"lat": 40.4, "lon": -3.7}}
-    with pytest.raises(ValueError):
-        check_config(cfg, [({**base, **dev}, Path("x"))]), why
+    with pytest.raises(ValueError, match=r"radius_km|max_aircraft|home\."):
+        check_config(cfg, [({**base, **dev}, Path("x"))])
 
 
 @pytest.mark.parametrize("dev", [
@@ -1033,6 +1054,74 @@ def test_check_config_accepts_legitimate_values(dev):
     cfg = {"feeds": {"adsb": {"endpoint": "https://x", "fetch_seconds": 3}}}
     base = {"id": "r", "home": {"lat": 40.4, "lon": -3.7}}
     check_config(cfg, [({**base, **dev}, Path("x"))])
+
+
+GOOD_CONFIG = """
+devices:
+  - {id: radar, kind: gc9a01_client, render: device, feed: adsb,
+     home: {lat: 40.4168, lon: -3.7038}, radius_km: 60, max_aircraft: 20,
+     poll_seconds: 5}
+feeds:
+  adsb: {source: api, endpoint: "https://example.invalid/api", fetch_seconds: 3}
+"""
+
+
+def _root(tmp_path: Path, text: str) -> Path:
+    (tmp_path / "config.yaml").write_text(text)
+    return tmp_path
+
+
+def test_startup_returns_config_and_targets_for_a_good_config(tmp_path: Path):
+    cfg, targets = startup(_root(tmp_path, GOOD_CONFIG))
+    assert [d["id"] for d, _ in targets] == ["radar"]
+    assert cfg["feeds"]["adsb"]["fetch_seconds"] == 3
+
+
+@pytest.mark.parametrize("text,why", [
+    ("devices: [\n", "malformed YAML"),
+    ("", "empty file"),
+    ("- a\n- b\n", "top-level list, not a mapping"),
+    ("devices: []\nfeeds: {adsb: {endpoint: x}}\n", "no matching targets"),
+    ("devices:\n  - {id: r, render: device, feed: adsb, home: {lat: 1, lon: 2}}\nfeeds:\n",
+     "feeds present but null"),
+    ("devices:\n  - {id: r, render: device, feed: adsb, home: madrid}\nfeeds: {adsb: {endpoint: x}}\n",
+     "home is a string"),
+    ("devices:\n  - {id: r, render: device, feed: adsb, home: {lat: 1, lon: 2}, radius_km: 0}\nfeeds: {adsb: {endpoint: x}}\n",
+     "zero radius fetches nothing forever"),
+    ("devices:\n  - {id: r, render: device, feed: adsb, home: {lat: 1, lon: 2}, poll_seconds: }\nfeeds: {adsb: {endpoint: x}}\n",
+     "dangling poll_seconds"),
+])
+def test_startup_exits_78_on_every_config_fault(tmp_path: Path, text, why):
+    # This test exists because six mutations to main()'s guard once survived
+    # the entire suite -- including shrinking the try back to load_config only,
+    # which silently re-introduces a Restart=always traceback loop.
+    with pytest.raises(SystemExit) as exc:
+        startup(_root(tmp_path, text))
+    assert exc.value.code == 78, why
+
+
+def test_startup_does_not_swallow_a_systemexit_from_inside(tmp_path, monkeypatch):
+    # `except Exception` must not catch BaseException, or a deliberate exit
+    # would be relabelled EX_CONFIG.
+    def boom(*a, **k):
+        raise SystemExit(3)
+
+    monkeypatch.setattr("homescreen.sources.adsb.check_config", boom)
+    with pytest.raises(SystemExit) as exc:
+        startup(_root(tmp_path, GOOD_CONFIG))
+    assert exc.value.code == 3
+
+
+def test_check_config_passes_the_real_target_count_to_check_cadence():
+    # check_cadence is tested directly with n=2, but nothing checked that
+    # check_config forwards len(targets) rather than a hardcoded 1 -- so a
+    # second radar would sail through startup and then blink once per cycle.
+    cfg = {"feeds": {"adsb": {"endpoint": "https://x", "fetch_seconds": 3}}}
+    dev = {"id": "radar", "home": {"lat": 40.4, "lon": -3.7},
+           "radius_km": 60, "max_aircraft": 20, "poll_seconds": 5}
+    check_config(cfg, [(dev, Path("a"))])                      # N=1 is fine
+    with pytest.raises(ValueError, match="horizon"):
+        check_config(cfg, [(dev, Path("a")), ({**dev, "id": "radar2"}, Path("b"))])
 
 
 def test_check_config_accepts_the_shipped_shape():
@@ -1414,6 +1503,8 @@ def check_config(cfg: dict, targets: list) -> None:
                          f"got {endpoint!r}")
 
     for dev, _ in targets:
+        if not isinstance(dev.get("id"), str):
+            raise ValueError(f"device entry has no usable id: {dev!r}")
         home = dev.get("home")
         if not isinstance(home, dict):
             raise ValueError(f"device {dev['id']}: home must be a mapping, "
@@ -1426,6 +1517,9 @@ def check_config(cfg: dict, targets: list) -> None:
         _number(dev, "radius_km", dev.get("radius_km", 60), 0.0, 20000.0,
                 inclusive_low=False)
         _number(dev, "max_aircraft", dev.get("max_aircraft", 20), 1.0, 1000.0)
+        # X-Poll-Seconds is config's projection (CLAUDE.md), so a dangling
+        # `poll_seconds:` would serve the device the literal string "None".
+        _number(dev, "poll_seconds", dev.get("poll_seconds", 5), 1.0, 3600.0)
 
     check_cadence(cfg, len(targets))
 
@@ -1603,14 +1697,17 @@ def run_forever(cfg: dict, targets: list, *, session=None, sleep=time.sleep) -> 
             sleep(spacing)
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    root = Path(__file__).resolve().parents[2]
-    # ONE handler spanning load AND interpretation. Guarding only load_config
-    # leaves everything after it exiting 1 into a Restart=always loop, which is
-    # the exact pathology RestartPreventExitStatus=78 exists to stop. The loop
-    # itself stays OUTSIDE: a runtime fault must not be reported as EX_CONFIG.
+def startup(root: Path) -> tuple[dict, list]:
+    """Load and validate config. Raises SystemExit(78) on any config fault.
+
+    Extracted from main() so the guard is TESTABLE. While this lived inline,
+    six mutations survived the whole suite -- including shrinking the try back
+    to `load_config` only, which silently re-introduces the round-8 restart
+    loop. A guard nothing exercises is a comment.
+
+    ONE handler spans load AND interpretation. The fetch loop stays OUTSIDE it:
+    a runtime fault must not be reported as EX_CONFIG.
+    """
     try:
         cfg = load_config(root / "config.yaml")
         targets = fetch_targets(cfg, root / "cache")
@@ -1620,6 +1717,13 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 - yaml.YAMLError and AttributeError
         log.exception("bad config: %s", exc)   # keep the stack: a code fault
         raise SystemExit(78) from None         # here reads as a config fault
+    return cfg, targets
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    cfg, targets = startup(Path(__file__).resolve().parents[2])
     run_forever(cfg, targets)
 
 
@@ -1630,7 +1734,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_adsb.py -v`
-Expected: PASS — **88 tests** (`test_adsb.py` is heavily parametrized over malformed and out-of-range config shapes)
+Expected: PASS — **99 tests** (`test_adsb.py` is heavily parametrized over malformed, null and out-of-range config shapes)
 
 - [ ] **Step 6: Commit**
 
@@ -1672,6 +1776,7 @@ git commit -m "Add ADS-B fetch loop with radius filter and non-raising failure p
 ```python
 # tests/test_serve.py
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1679,7 +1784,7 @@ from pathlib import Path
 import pytest
 
 from homescreen.cache import write_cache, write_failure
-from homescreen.serve import create_app
+from homescreen.serve import create_app, startup as serve_startup
 
 CFG = {
     "feeds": {"adsb": {"source": "api"}},
@@ -1925,6 +2030,53 @@ def test_server_block_shapes_are_resolved_or_rejected_not_crashed(srv):
         pass          # caught by main()'s handler and reported as EX_CONFIG
 
 
+SERVE_CONFIG = """
+server: {host: 127.0.0.1, port: 8099}
+devices:
+  - {id: radar, kind: gc9a01_client, render: device, feed: adsb}
+feeds:
+  adsb: {source: api, endpoint: "https://example.invalid/api"}
+"""
+
+
+def test_serve_startup_resolves_host_and_port(tmp_path: Path):
+    (tmp_path / "config.yaml").write_text(SERVE_CONFIG)
+    app, host, port = serve_startup(tmp_path)
+    assert (host, port) == ("127.0.0.1", 8099)
+    assert app.test_client().get("/api/display/radar/health").status_code == 200
+
+
+@pytest.mark.parametrize("text", [
+    "devices: [\n",                                   # malformed YAML
+    "server: {port: eighty}\ndevices: []\n",          # unusable port
+])
+def test_serve_startup_exits_78_on_a_config_fault(tmp_path: Path, text):
+    (tmp_path / "config.yaml").write_text(text)
+    with pytest.raises(SystemExit) as exc:
+        serve_startup(tmp_path)
+    assert exc.value.code == 78
+
+
+@pytest.mark.parametrize("text", [
+    "server:\ndevices: []\n",                         # present-but-null
+    "server: '0.0.0.0:8080'\ndevices: []\n",          # wrong type, coerced
+])
+def test_serve_startup_falls_back_to_defaults(tmp_path: Path, text):
+    (tmp_path / "config.yaml").write_text(text)
+    _, host, port = serve_startup(tmp_path)
+    assert (host, port) == ("0.0.0.0", 8080)
+
+
+def test_poll_seconds_header_never_serves_the_string_none(tmp_path):
+    # A dangling `poll_seconds:` is a present-but-null key; `.get(k, 5)` does
+    # not fall back for it, and X-Poll-Seconds is config's projection.
+    cfg = {"feeds": {"adsb": {"source": "api"}},
+           "devices": [{"id": "radar", "render": "device", "feed": "adsb",
+                        "poll_seconds": None}]}
+    r = create_app(cfg, tmp_path).test_client().get("/api/display/radar/data")
+    assert r.headers["X-Poll-Seconds"] == "5"
+
+
 def test_source_label_survives_a_non_string_config(tmp_path):
     # .get() on an unhashable would raise TypeError and 500 every request.
     cfg = {"feeds": {"adsb": {"source": ["api"]}},
@@ -2023,7 +2175,8 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request
 
 from homescreen.cache import read_cache
-from homescreen.config import device, feed_cache_path, feed_config, server_config
+from homescreen.config import (device, feed_cache_path, feed_config,
+                               load_config, server_config)
 
 log = logging.getLogger(__name__)
 
@@ -2161,7 +2314,15 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
         else:
             resp = jsonify(body)
         resp.headers["ETag"] = etag
-        resp.headers["X-Poll-Seconds"] = str(dev.get("poll_seconds", 5))
+        # int(): a dangling `poll_seconds:` is a present-but-null key, and
+        # `.get(k, 5)` does not fall back for it -- the header would read
+        # "None". check_config rejects that at startup; this is belt-and-braces
+        # for a config edited under a running daemon.
+        try:
+            poll = int(dev.get("poll_seconds") or 5)
+        except (TypeError, ValueError):
+            poll = 5
+        resp.headers["X-Poll-Seconds"] = str(poll)
         # Set on BOTH branches: headers survive a 304, so a device that does get
         # one still learns the feed's liveness without a body.
         resp.headers["X-Feed-Age"] = f"{dwell:.1f}"
@@ -2197,27 +2358,32 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
     return app
 
 
+def startup(root: Path) -> tuple[Flask, str, int]:
+    """Load config and build the app. Raises SystemExit(78) on a config fault.
+
+    Extracted from main() so the guard is testable -- see the fetch daemon's
+    startup() for why. `server:` with its children commented out is a
+    present-but-null key, so `cfg.get("server", {})` returns None.
+    """
+    try:
+        cfg = load_config(root / "config.yaml")
+        srv = server_config(cfg)
+        host = str(srv.get("host", "0.0.0.0"))
+        port = int(srv.get("port", 8080))
+        return create_app(cfg, root / "cache"), host, port
+    except Exception as exc:  # noqa: BLE001
+        log.exception("bad config: %s", exc)
+        raise SystemExit(78) from None   # EX_CONFIG; see RestartPreventExitStatus
+
+
 def main() -> None:
-    from homescreen.config import load_config
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     # Werkzeug logs one access line per request: at poll_seconds=5 that is
     # ~17k journal lines/day per device onto a microSD whose wear CLAUDE.md §2
     # flags as unmitigated. Task 6 also caps journald.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
-    root = Path(__file__).resolve().parents[1]
-    # One handler spanning load AND interpretation -- see the fetch daemon.
-    # `server:` with its children commented out is a present-but-null key, so
-    # `cfg.get("server", {})` returns None and .get() on it exits 1.
-    try:
-        cfg = load_config(root / "config.yaml")
-        srv = server_config(cfg)
-        host = str(srv.get("host", "0.0.0.0"))
-        port = int(srv.get("port", 8080))
-        app = create_app(cfg, root / "cache")
-    except Exception as exc:  # noqa: BLE001
-        log.exception("bad config: %s", exc)
-        raise SystemExit(78) from None   # EX_CONFIG; see RestartPreventExitStatus
+    app, host, port = startup(Path(__file__).resolve().parents[1])
     # Werkzeug's dev server. Adequate for a handful of LAN devices; swap for
     # waitress in Phase C when N clients start pulling 48 KB frames.
     app.run(host=host, port=port)
@@ -2230,12 +2396,12 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_serve.py -v`
-Expected: PASS — **42 tests**
+Expected: PASS — **48 tests**
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `venv/bin/pytest -v`
-Expected: PASS — **162 tests** (15 + 17 + 88 + 42)
+Expected: PASS — **180 tests** (16 + 17 + 99 + 48)
 
 - [ ] **Step 6: Commit**
 
@@ -2269,7 +2435,7 @@ venv/bin/python - <<'EOF'
 from pathlib import Path
 from homescreen.config import load_config, device, feed_cache_path
 from homescreen.sources.adsb import (check_cadence, check_config, fetch_radar,
-                                    fetch_targets, run_forever)
+                                    fetch_targets, run_forever, startup)
 cfg = load_config(Path("config.yaml"))
 targets = fetch_targets(cfg, Path("cache"))
 assert targets, "config.yaml has no device with render: device and feed: adsb"
@@ -2468,7 +2634,7 @@ The Mac is Python 3.14 and the Pi is 3.13; the suite must pass on the machine th
 ssh pi@dashboard.local 'cd /home/pi/dashboard && venv/bin/pytest -q'
 ```
 
-Expected: `162 passed`
+Expected: `180 passed`
 
 - [ ] **Step 4: Keep the journal off the SD card**
 
@@ -2488,13 +2654,16 @@ vendor's `40-`. Use `50-` so ours wins if it ever needs to.
 
 ```bash
 ssh pi@dashboard.local 'sudo mkdir -p /etc/systemd/journald.conf.d && printf "[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\n" | sudo tee /etc/systemd/journald.conf.d/50-cap.conf && sudo systemctl restart systemd-journald'
-ssh pi@dashboard.local 'ls -A /var/log/journal; systemd-analyze cat-config systemd/journald.conf | grep -E "^(Storage|RuntimeMaxUse)="'
+ssh pi@dashboard.local 'ls -A /var/log/journal; systemd-analyze cat-config systemd/journald.conf | grep -E "^(Storage|RuntimeMaxUse)=" | sort -u'
 ```
 
 Expected: `/var/log/journal` still **empty** (that is the real check — `journalctl
---disk-usage` prints a size with no path and proves nothing), and exactly
-`Storage=volatile` / `RuntimeMaxUse=32M` from the grep. The anchored `^` matters: an
-unanchored pattern also matches the commented compile-time defaults above them.
+--disk-usage` prints a size with no path and proves nothing), and exactly two lines
+from the grep: `Storage=volatile` and `RuntimeMaxUse=32M`. Two details matter — the
+anchored `^` (an unanchored pattern also matches the commented compile-time defaults
+`#Storage=auto` / `#RuntimeMaxUse=`), and the `sort -u` (the vendor drop-in already
+contributes its own uncommented `Storage=volatile`, so without it the line appears twice
+and reads like a conflict).
 
 **The trade:** logs do not survive a reboot. SPEC §12 chose systemd partly so
 `journalctl -u` is useful at 1am, and that still works for a live fault — you lose only
@@ -2601,7 +2770,7 @@ did not come back.
 
 ## Done when
 
-- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (162 tests)
+- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (180 tests)
 - [ ] `curl http://dashboard.local:8080/api/display/radar/data` returns aircraft with `feed.ok: true`
 - [ ] Served `age` and `feed.age_s` advance in real time while the fetch daemon is stopped
 - [ ] A matching `If-None-Match` yields `304` for unchanged content **across a refetch**,

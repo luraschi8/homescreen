@@ -162,13 +162,37 @@ the comment there records that summing them made targets blink once per cycle. P
 that structure and add `feed.age_s` as a **third** separately-tested cause. Do not merge
 them, and do not substitute it for `fetch_age_raw`.
 
-**Two requirements this places on the firmware (Phase A4):**
+**Three requirements this places on the firmware (Phase A4):**
 
-- **On a `304` the device must not reset its fetch timestamp.** It computes
-  `age + secondsSinceUpdate()`; resetting that timer on an unchanged body freezes every
-  age and stalls dead reckoning. Reset only on a `200`.
-- **Test staleness against `feed.age_s`, not the device's own fetch age** — see cause 3
-  above.
+- **A `304` needs the device's single clock split in two — and 304 must stop being a
+  failure.** `adsb_client.cpp` has one `s_last_update_ms` (declared line 41, assigned only
+  in `publish()` line 84) feeding three consumers that want different things on a 304:
+
+  | Consumer | Used for | On a 304 |
+  |---|---|---|
+  | `secondsSinceUpdate()` | dead-reckoning base | **freeze** — the fix really is that old |
+  | `secondsSinceUpdateRaw()` | the 12 s dim test | **freeze** |
+  | `dataExpired()` | the 60 s blank-to-grid | **refresh** — we did just hear from the server |
+
+  "Don't reset the timestamp" reads as freeze-all-three, and that dims every target at
+  12 s and drops the panel to grid-only at 60 s **with perfectly current data**. An empty
+  sky returns a byte-identical body indefinitely, so that run of 304s is the normal case,
+  not an edge one. Split it into a **content clock** (frozen) and a **contact clock**
+  (refreshed), and move `dataExpired()`'s `!= 0` never-fetched sentinel onto the contact
+  clock rather than copying it verbatim. Give 304 its own branch: the current success path
+  continues into `deserializeJson` → the array guard → `publish()`, and a 304 has no body,
+  so it must skip both. Today `adsb_client.cpp:316` treats any `code != HTTP_CODE_OK` as
+  failure, including 304 — so this reads as "already handled" and is not.
+- **Read `X-Feed-Age` / `X-Feed-Ok`, not just the body.** They are set on the 304 as well
+  as the 200 precisely because a 304 carries no body; without them a device that sends
+  `If-None-Match` cannot see the feed's liveness at all.
+- **`feed.age_s` is a THIRD staleness cause, tested separately — it does not replace
+  `fetch_age_raw`.** `radar_display.cpp:532-533` is
+  `pos_age_s >= horizon || fetch_age_raw >= horizon`. Substituting deletes the second
+  term, which is the device's only detection of *its own* link failing: both causes would
+  then derive from Pi-side timestamps in the body, so a device that loses the LAN sees
+  both frozen and never dims, leaving only the 60 s expiry — five times slower. Add a
+  third `||` term; do not merge and do not substitute.
 
 `dst` (`dst_nm`) is currently the API's own distance, kept as the independent check that
 caught a missing `cos(latitude)` term, with `test_geo` asserting against it. If the Pi
