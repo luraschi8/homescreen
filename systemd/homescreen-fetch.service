@@ -1,0 +1,19 @@
+[Unit]
+Description=HomeScreen ADS-B fetch loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/dashboard
+ExecStart=/home/pi/dashboard/venv/bin/python -m homescreen.sources.adsb
+Restart=always
+RestartSec=10
+# See homescreen-serve.service: check_cadence rejecting a config -- including a
+# second radar, which it rejects by design at the shipped timeouts -- must stop
+# the unit, not loop on it every 10s forever.
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=multi-user.target

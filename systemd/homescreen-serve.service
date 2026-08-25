@@ -1,0 +1,19 @@
+[Unit]
+Description=HomeScreen display backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/dashboard
+ExecStart=/home/pi/dashboard/venv/bin/python -m homescreen.serve
+Restart=always
+RestartSec=5
+# A config fault is not transient. Without this, a bad config.yaml is a
+# traceback into the journal every 5s forever -- the SD churn this plan
+# rejected a timer to avoid. main() exits 78 (EX_CONFIG) on those paths.
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=multi-user.target
