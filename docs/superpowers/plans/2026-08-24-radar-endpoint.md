@@ -1112,6 +1112,14 @@ def test_startup_does_not_swallow_a_systemexit_from_inside(tmp_path, monkeypatch
     assert exc.value.code == 3
 
 
+def test_check_config_rejects_a_target_with_no_usable_id():
+    # Defence in depth: fetch_targets already filters these out, so without a
+    # direct test the guard is unreachable and its removal goes unnoticed.
+    cfg = {"feeds": {"adsb": {"endpoint": "https://x", "fetch_seconds": 3}}}
+    with pytest.raises(ValueError, match="no usable id"):
+        check_config(cfg, [({"home": {"lat": 1, "lon": 2}}, Path("x"))])
+
+
 def test_check_config_passes_the_real_target_count_to_check_cadence():
     # check_cadence is tested directly with n=2, but nothing checked that
     # check_config forwards len(targets) rather than a hardcoded 1 -- so a
@@ -1734,7 +1742,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_adsb.py -v`
-Expected: PASS — **99 tests** (`test_adsb.py` is heavily parametrized over malformed, null and out-of-range config shapes)
+Expected: PASS — **100 tests** (`test_adsb.py` is heavily parametrized over malformed, null and out-of-range config shapes)
 
 - [ ] **Step 6: Commit**
 
@@ -2037,6 +2045,21 @@ devices:
 feeds:
   adsb: {source: api, endpoint: "https://example.invalid/api"}
 """
+
+
+def test_serve_startup_does_not_swallow_a_systemexit_from_inside(tmp_path, monkeypatch):
+    # Symmetry with the fetch daemon's equivalent: `except Exception` must not
+    # become `except BaseException`, or a deliberate exit is relabelled
+    # EX_CONFIG. Without this, that mutation survives the whole suite.
+    (tmp_path / "config.yaml").write_text(SERVE_CONFIG)
+
+    def boom(*a, **k):
+        raise SystemExit(3)
+
+    monkeypatch.setattr("homescreen.serve.create_app", boom)
+    with pytest.raises(SystemExit) as exc:
+        serve_startup(tmp_path)
+    assert exc.value.code == 3
 
 
 def test_serve_startup_resolves_host_and_port(tmp_path: Path):
@@ -2396,12 +2419,12 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_serve.py -v`
-Expected: PASS — **48 tests**
+Expected: PASS — **49 tests**
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `venv/bin/pytest -v`
-Expected: PASS — **180 tests** (16 + 17 + 99 + 48)
+Expected: PASS — **182 tests** (16 + 17 + 100 + 49)
 
 - [ ] **Step 6: Commit**
 
@@ -2634,7 +2657,7 @@ The Mac is Python 3.14 and the Pi is 3.13; the suite must pass on the machine th
 ssh pi@dashboard.local 'cd /home/pi/dashboard && venv/bin/pytest -q'
 ```
 
-Expected: `180 passed`
+Expected: `182 passed`
 
 - [ ] **Step 4: Keep the journal off the SD card**
 
@@ -2770,7 +2793,7 @@ did not come back.
 
 ## Done when
 
-- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (180 tests)
+- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (182 tests)
 - [ ] `curl http://dashboard.local:8080/api/display/radar/data` returns aircraft with `feed.ok: true`
 - [ ] Served `age` and `feed.age_s` advance in real time while the fetch daemon is stopped
 - [ ] A matching `If-None-Match` yields `304` for unchanged content **across a refetch**,

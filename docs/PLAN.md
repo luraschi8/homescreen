@@ -230,7 +230,11 @@ unmodified**, and let the Pi's own projection be checked against it the same way
 | S5 | Device provisioning — how a new client learns its `device_id` and the Pi's address. WiFiManager `/param` is the obvious hook | deferred to Phase C |
 | S6 | What a client renders when the Pi is unreachable at cold boot (no last frame yet) | deferred to Phase C |
 
-### Corrections already applied to the documents
+### Corrections that override the documents
+
+These live here and in `CLAUDE.md`; `SPEC.md` and `ADDENDUM-01` are deliberately left
+frozen as written, per the precedence order in `CLAUDE.md`. Nothing below has been edited
+into those files, and nothing below should be.
 
 - **ADDENDUM §5** — polarity is `1 = black`, not `1 = white`. Frame body is `getbuffer()`
   output, never raw `.tobytes()`.
