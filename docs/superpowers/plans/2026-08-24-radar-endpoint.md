@@ -1006,6 +1006,35 @@ def test_check_config_rejects_unusable_device_settings(dev):
         check_config(cfg, [(dev, Path("x"))])
 
 
+@pytest.mark.parametrize("dev,why", [
+    ({"radius_km": 0}, "fetches nothing, forever, while the unit stays green"),
+    ({"radius_km": -5}, "negative"),
+    ({"radius_km": float("inf")}, "produces a nonsense dist=inf request"),
+    ({"max_aircraft": 0}, "serves nothing"),
+    ({"home": {"lat": 95, "lon": -3.7}}, "not a latitude"),
+    ({"home": {"lat": 40.4, "lon": 400}}, "not a longitude"),
+    ({"home": {"lat": float("nan"), "lon": -3.7}}, "nan"),
+])
+def test_check_config_rejects_out_of_range_and_non_finite(dev, why):
+    cfg = {"feeds": {"adsb": {"endpoint": "https://x", "fetch_seconds": 3}}}
+    base = {"id": "r", "home": {"lat": 40.4, "lon": -3.7}}
+    with pytest.raises(ValueError):
+        check_config(cfg, [({**base, **dev}, Path("x"))]), why
+
+
+@pytest.mark.parametrize("dev", [
+    {"radius_km": 60, "max_aircraft": 20},          # the shipped values
+    {"radius_km": 60.5, "max_aircraft": 1},         # float radius, minimum cap
+    {"home": {"lat": 0, "lon": 0}},                 # null island is a real place
+    {"home": {"lat": -90, "lon": 180}},             # the corners are valid
+    {"home": {"lat": 40.4, "lon": -3.7, "note": "extra keys are fine"}},
+])
+def test_check_config_accepts_legitimate_values(dev):
+    cfg = {"feeds": {"adsb": {"endpoint": "https://x", "fetch_seconds": 3}}}
+    base = {"id": "r", "home": {"lat": 40.4, "lon": -3.7}}
+    check_config(cfg, [({**base, **dev}, Path("x"))])
+
+
 def test_check_config_accepts_the_shipped_shape():
     cfg = {"feeds": {"adsb": {"endpoint": "https://x", "fetch_seconds": 3}}}
     dev = {"id": "radar", "home": {"lat": 40.4168, "lon": -3.7038},
@@ -1311,6 +1340,7 @@ cannot overlap requests and breach adsb.fi's 1 req/s limit.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -1346,6 +1376,30 @@ STALE_HORIZON_S = 12.0
 MIN_REQUEST_SPACING_S = 1.0
 
 
+def _number(dev: dict, label: str, value, lo: float, hi: float,
+            *, inclusive_low: bool = True) -> float:
+    """Range-check one numeric config field, or raise ValueError naming it.
+
+    Rejects non-finite as well: `radius_km: .inf` passes any bare `< lo` test
+    and then produces a nonsense `dist=inf` upstream request, and inf/nan is
+    already rejected everywhere else in this project.
+    """
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"device {dev['id']}: {label} must be a number, "
+                         f"got {value!r}") from None
+    if not math.isfinite(n):
+        raise ValueError(f"device {dev['id']}: {label} must be finite, "
+                         f"got {value!r}")
+    too_low = n < lo if inclusive_low else n <= lo
+    if too_low or n > hi:
+        bound = f"{lo} to {hi}" if inclusive_low else f"above {lo}, up to {hi}"
+        raise ValueError(f"device {dev['id']}: {label} must be {bound}, "
+                         f"got {value!r}")
+    return n
+
+
 def check_config(cfg: dict, targets: list) -> None:
     """Reject a config that would run forever failing silently.
 
@@ -1364,19 +1418,14 @@ def check_config(cfg: dict, targets: list) -> None:
         if not isinstance(home, dict):
             raise ValueError(f"device {dev['id']}: home must be a mapping, "
                              f"got {home!r}")
-        for key in ("lat", "lon"):
-            try:
-                float(home[key])
-            except (KeyError, TypeError, ValueError):
-                raise ValueError(f"device {dev['id']}: home.{key} must be a "
-                                 f"number, got {home.get(key)!r}") from None
-        for key, lo in (("radius_km", 0.0), ("max_aircraft", 1.0)):
-            try:
-                if float(dev.get(key, lo + 1)) < lo:
-                    raise ValueError
-            except (TypeError, ValueError):
-                raise ValueError(f"device {dev['id']}: {key} must be a number "
-                                 f"> {lo}, got {dev.get(key)!r}") from None
+        _number(dev, "home.lat", home.get("lat"), -90.0, 90.0)
+        _number(dev, "home.lon", home.get("lon"), -180.0, 180.0)
+        # radius_km 0 would fetch nothing forever while the unit stays green --
+        # the exact silent failure this function exists to prevent -- so the
+        # lower bound is exclusive. max_aircraft 1 is odd but usable.
+        _number(dev, "radius_km", dev.get("radius_km", 60), 0.0, 20000.0,
+                inclusive_low=False)
+        _number(dev, "max_aircraft", dev.get("max_aircraft", 20), 1.0, 1000.0)
 
     check_cadence(cfg, len(targets))
 
@@ -1581,7 +1630,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_adsb.py -v`
-Expected: PASS — **76 tests** (`test_adsb.py` is heavily parametrized over malformed-config shapes)
+Expected: PASS — **88 tests** (`test_adsb.py` is heavily parametrized over malformed and out-of-range config shapes)
 
 - [ ] **Step 6: Commit**
 
@@ -2186,7 +2235,7 @@ Expected: PASS — **42 tests**
 - [ ] **Step 5: Run the whole suite**
 
 Run: `venv/bin/pytest -v`
-Expected: PASS — **150 tests** (15 + 17 + 76 + 42)
+Expected: PASS — **162 tests** (15 + 17 + 88 + 42)
 
 - [ ] **Step 6: Commit**
 
@@ -2419,7 +2468,7 @@ The Mac is Python 3.14 and the Pi is 3.13; the suite must pass on the machine th
 ssh pi@dashboard.local 'cd /home/pi/dashboard && venv/bin/pytest -q'
 ```
 
-Expected: `150 passed`
+Expected: `162 passed`
 
 - [ ] **Step 4: Keep the journal off the SD card**
 
@@ -2552,7 +2601,7 @@ did not come back.
 
 ## Done when
 
-- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (150 tests)
+- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (162 tests)
 - [ ] `curl http://dashboard.local:8080/api/display/radar/data` returns aircraft with `feed.ok: true`
 - [ ] Served `age` and `feed.age_s` advance in real time while the fetch daemon is stopped
 - [ ] A matching `If-None-Match` yields `304` for unchanged content **across a refetch**,
