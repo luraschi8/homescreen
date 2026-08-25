@@ -4,7 +4,7 @@
 
 **Goal:** Serve pre-computed ADS-B aircraft data from the Pi at `/api/display/radar/data`, so the ESP32-C3 plane radar fetches from the LAN over plain HTTP instead of calling `adsb.fi` directly over TLS.
 
-**Architecture:** A looping daemon (`homescreen/sources/adsb.py`) polls adsb.fi on a cadence read from config and writes a cache envelope to `cache/feed/adsb.json` (keyed by *feed*, not device). A second always-on daemon (`homescreen/serve.py`) reads that cache and renders a compact JSON response, **recomputing each aircraft's position age at serve time** so the device's dead reckoning stays correct across the cache hop. Device polling and upstream fetching are fully decoupled: `serve.py` never makes a network call.
+**Architecture:** A looping daemon (`homescreen/sources/adsb.py`) polls adsb.fi on a cadence read from config and writes a cache envelope to `cache/feed/radar.json` (one per device). A second always-on daemon (`homescreen/serve.py`) reads that cache and renders a compact JSON response, **recomputing each aircraft's position age at serve time** so the device's dead reckoning stays correct across the cache hop. Device polling and upstream fetching are fully decoupled: `serve.py` never makes a network call.
 
 **Tech Stack:** Python 3.13 (Pi) / 3.14 (Mac), Flask, requests, PyYAML, pytest. No numpy.
 
@@ -25,6 +25,9 @@ Deploy path on the Pi is **`/home/pi/dashboard`** (CLAUDE.md §4, SPEC §12). Ne
 - **`serve.py` performs no network I/O.** Ever. (VALIDATION C7)
 - **`config.yaml` is the single source of truth for cadence.** `X-Poll-Seconds` and the fetch loop interval both read from it; no cadence literal may live in a systemd unit. (VALIDATION C6)
 - Plain HTTP, no TLS. (ADDENDUM §5)
+- ADDENDUM §5's `X-Full-Refresh` and VALIDATION C3's `X-Partial-Window` are **deliberately
+  absent**: both are pixel-push anti-ghosting concerns and a GC9A01 has no ghosting.
+  They land with `/frame` in Phase C (PLAN.md §5, S1).
 - venv created with `--system-site-packages`. Never `pip --break-system-packages`. (CLAUDE.md §2)
 - String field widths are fixed by the firmware struct: `cs` ≤ 8, `ty` ≤ 4, `alt` ≤ 11.
 - Upstream `https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{nm}` → `{"ac": [...]}`. Public limit **1 req/s**.
@@ -33,9 +36,11 @@ Deploy path on the Pi is **`/home/pi/dashboard`** (CLAUDE.md §4, SPEC §12). Ne
   number or an HTML page is *not* this API — it is a failure, and the last good list must
   survive. Treating it as "no traffic" wipes real aircraft off the panel, and moving the
   fetch to the Pi **removes the device's own guard** against it. See Task 3.
-- **Cache file is `cache/feed/{feed}.json`** → `adsb.json`. ADDENDUM §7 and PLAN.md §2 A2
-  both say `radar.json`; they are superseded, because keying by feed lets N devices share
-  one file. Task 6 Step 8 amends them.
+- **Cache file is `cache/feed/{device_id}.json`** → `radar.json`, exactly as SPEC,
+  ADDENDUM §7, PLAN.md §2 A2 and VALIDATION C7 all say. Keyed by **device**, not feed,
+  because `home`/`radius_km`/`max_aircraft` are per-device display parameters
+  (ADDENDUM §6 puts them on the device entry): two radars with different centres need
+  different caches, so a feed-keyed file could not serve both.
 - **Every Mac code block begins with `cd /Users/matias/Documents/repos/HomeScreen`.**
   Tasks are executed by separate subagents whose shell cwd resets between calls.
 
@@ -343,6 +348,11 @@ def write_cache(path: Path, data: dict, *, ok: bool = True,
 def write_failure(path: Path, error: str) -> None:
     """Record a failed fetch, keeping the last good data and its timestamp."""
     prev = read_cache(path)
+    if prev is not None and prev["ok"] is False and prev.get("error") == error:
+        # Identical failure envelope. Rewriting it changes nothing and costs an
+        # fsync every cycle -- ~28,800/day onto the microSD during an outage,
+        # which is the same wear this plan rejected a systemd timer to avoid.
+        return
     _write(path, {
         "fetched_at": prev["fetched_at"] if prev else _now_iso(),
         "ok": False,
@@ -720,10 +730,11 @@ from homescreen.sources.adsb import fetch_radar
 
 CFG = {
     "feeds": {"adsb": {"endpoint": "https://example.invalid/api", "fetch_seconds": 3}},
-    "devices": [{"id": "radar", "kind": "gc9a01_client", "feed": "adsb",
-                 "home": {"lat": 40.4168, "lon": -3.7038},
+    "devices": [{"id": "radar", "kind": "gc9a01_client", "render": "device",
+                 "feed": "adsb", "home": {"lat": 40.4168, "lon": -3.7038},
                  "radius_km": 60, "max_aircraft": 20, "show_ground": False}],
 }
+DEV = CFG["devices"][0]
 
 
 class FakeResponse:
@@ -758,7 +769,7 @@ def _ac(**kw):
 
 def test_writes_mapped_aircraft_to_cache(tmp_path: Path):
     s = FakeSession(FakeResponse({"ac": [_ac(flight="IBE1 ", dst=5.0)]}))
-    assert fetch_radar(CFG, tmp_path / "radar.json", session=s) is True
+    assert fetch_radar(CFG, DEV, tmp_path / "radar.json", session=s) is True
     env = read_cache(tmp_path / "radar.json")
     assert env["ok"] is True
     assert [a["cs"] for a in env["data"]["aircraft"]] == ["IBE1"]
@@ -766,7 +777,7 @@ def test_writes_mapped_aircraft_to_cache(tmp_path: Path):
 
 def test_url_converts_radius_km_to_nautical_miles(tmp_path: Path):
     s = FakeSession(FakeResponse({"ac": []}))
-    fetch_radar(CFG, tmp_path / "radar.json", session=s)
+    fetch_radar(CFG, DEV, tmp_path / "radar.json", session=s)
     # 60 km / 1.852 = 32.4 NM
     assert "/dist/32.4" in s.last_url
     assert "/lat/40.416800/lon/-3.703800" in s.last_url
@@ -774,7 +785,7 @@ def test_url_converts_radius_km_to_nautical_miles(tmp_path: Path):
 
 def test_drops_ground_traffic(tmp_path: Path):
     s = FakeSession(FakeResponse({"ac": [_ac(alt_baro="ground"), _ac(dst=1.0)]}))
-    fetch_radar(CFG, tmp_path / "radar.json", session=s)
+    fetch_radar(CFG, DEV, tmp_path / "radar.json", session=s)
     assert len(read_cache(tmp_path / "radar.json")["data"]["aircraft"]) == 1
 
 
@@ -785,7 +796,7 @@ def test_filters_out_aircraft_beyond_the_configured_radius(tmp_path: Path):
         _ac(dst=10.0, flight="IN"),
         _ac(dst=40.0, flight="OUT"),   # 74 km, outside the 60 km ring
     ]}))
-    fetch_radar(CFG, tmp_path / "radar.json", session=s)
+    fetch_radar(CFG, DEV, tmp_path / "radar.json", session=s)
     kept = [a["cs"] for a in read_cache(tmp_path / "radar.json")["data"]["aircraft"]]
     assert kept == ["IN"]
 
@@ -798,7 +809,7 @@ def test_caps_at_max_aircraft_keeping_nearest(tmp_path: Path):
         _ac(dst=1.0, flight="NEAR"),
         _ac(dst=10.0, flight="MID"),
     ]}))
-    fetch_radar(cfg, tmp_path / "radar.json", session=s)
+    fetch_radar(cfg, cfg["devices"][0], tmp_path / "radar.json", session=s)
     kept = [a["cs"] for a in read_cache(tmp_path / "radar.json")["data"]["aircraft"]]
     assert kept == ["NEAR", "MID"], "nearest first, then capped"
 
@@ -807,7 +818,7 @@ def test_network_failure_preserves_previous_data(tmp_path: Path):
     p = tmp_path / "radar.json"
     write_cache(p, {"aircraft": [{"cs": "OLD"}]})
     s = FakeSession(exc=OSError("no route to host"))
-    assert fetch_radar(CFG, p, session=s) is False
+    assert fetch_radar(CFG, DEV, p, session=s) is False
     env = read_cache(p)
     assert env["ok"] is False
     assert "no route to host" in env["error"]
@@ -824,7 +835,7 @@ def test_non_array_ac_is_a_failure_and_keeps_the_last_good_list(tmp_path: Path, 
     p = tmp_path / "radar.json"
     write_cache(p, {"aircraft": [{"cs": "REAL", "dst": 1.0}]})
     s = FakeSession(FakeResponse(payload))
-    assert fetch_radar(CFG, p, session=s) is False
+    assert fetch_radar(CFG, DEV, p, session=s) is False
     env = read_cache(p)
     assert env["ok"] is False
     assert env["data"]["aircraft"][0]["cs"] == "REAL", "real traffic must survive"
@@ -833,14 +844,14 @@ def test_non_array_ac_is_a_failure_and_keeps_the_last_good_list(tmp_path: Path, 
 def test_literal_empty_array_is_an_empty_sky_and_succeeds(tmp_path: Path):
     p = tmp_path / "radar.json"
     s = FakeSession(FakeResponse({"ac": []}))
-    assert fetch_radar(CFG, p, session=s) is True
+    assert fetch_radar(CFG, DEV, p, session=s) is True
     assert read_cache(p)["data"]["aircraft"] == []
 
 
 def test_non_dict_entries_are_skipped_not_fatal(tmp_path: Path):
     s = FakeSession(FakeResponse({"ac": [None, 7, _ac(dst=2.0, flight="OK")]}))
     p = tmp_path / "radar.json"
-    assert fetch_radar(CFG, p, session=s) is True
+    assert fetch_radar(CFG, DEV, p, session=s) is True
     assert [a["cs"] for a in read_cache(p)["data"]["aircraft"]] == ["OK"]
 
 
@@ -848,7 +859,7 @@ def test_keeps_records_with_no_distance(tmp_path: Path):
     # The firmware keeps these (dst_nm = -1) and projects from lat/lon.
     s = FakeSession(FakeResponse({"ac": [_ac(flight="NODST")]}))
     p = tmp_path / "radar.json"
-    fetch_radar(CFG, p, session=s)
+    fetch_radar(CFG, DEV, p, session=s)
     assert [a["cs"] for a in read_cache(p)["data"]["aircraft"]] == ["NODST"]
 
 
@@ -857,10 +868,25 @@ def test_show_ground_config_is_honoured(tmp_path: Path):
     cfg["devices"][0]["show_ground"] = True
     s = FakeSession(FakeResponse({"ac": [_ac(alt_baro="ground", dst=1.0, flight="TUG")]}))
     p = tmp_path / "radar.json"
-    fetch_radar(cfg, p, session=s)
+    fetch_radar(cfg, cfg["devices"][0], p, session=s)
     kept = read_cache(p)["data"]["aircraft"]
     assert [a["cs"] for a in kept] == ["TUG"]
     assert kept[0]["alt"] == "GND"
+
+
+def test_repeated_identical_failures_do_not_rewrite_the_cache(tmp_path: Path):
+    # An fsync per cycle during an outage is ~28,800 SD writes/day -- the same
+    # wear this plan rejected a systemd timer to avoid.
+    p = tmp_path / "radar.json"
+    write_cache(p, {"aircraft": [{"cs": "OLD", "dst": 1.0}]})
+    s = FakeSession(exc=OSError("no route to host"))
+    fetch_radar(CFG, DEV, p, session=s)
+    first = p.stat().st_mtime_ns
+    fetch_radar(CFG, DEV, p, session=s)
+    assert p.stat().st_mtime_ns == first, "identical failure must not rewrite"
+    # A DIFFERENT error must still be recorded.
+    fetch_radar(CFG, DEV, p, session=FakeSession(exc=OSError("dns failure")))
+    assert "dns failure" in read_cache(p)["error"]
 
 
 def test_local_config_overlays_secrets(tmp_path: Path):
@@ -881,7 +907,7 @@ def test_non_finite_payload_is_a_failure_not_a_crash(tmp_path: Path):
     write_cache(p, {"aircraft": [{"cs": "REAL", "dst": 1.0}]})
     payload = _json.loads('{"ac":[{"lat":40.5,"lon":-3.6,"alt_baro":1e400,"dst":1.0}]}')
     s = FakeSession(FakeResponse(payload))
-    assert fetch_radar(CFG, p, session=s) is True, "a finite-able record still maps"
+    assert fetch_radar(CFG, DEV, p, session=s) is True, "a finite-able record still maps"
     # And nothing non-finite can be persisted even if a future field skips _num.
     env = read_cache(p)
     assert "Infinity" not in json.dumps(env)
@@ -889,7 +915,7 @@ def test_non_finite_payload_is_a_failure_not_a_crash(tmp_path: Path):
 
 def test_http_error_is_a_failure_not_a_crash(tmp_path: Path):
     s = FakeSession(FakeResponse({}, status=503))
-    assert fetch_radar(CFG, tmp_path / "radar.json", session=s) is False
+    assert fetch_radar(CFG, DEV, tmp_path / "radar.json", session=s) is False
 
 
 def test_load_config_rejects_empty_file(tmp_path: Path):
@@ -903,10 +929,11 @@ def test_device_lookup_and_feed_path(tmp_path: Path):
     dev = device(CFG, "radar")
     assert dev["id"] == "radar"
     assert device(CFG, "nope") is None
-    assert feed_cache_path(tmp_path, dev) == tmp_path / "feed" / "adsb.json"
-    # Non-tautological: a different feed must give a different file, or the
-    # "routes on config" claim is untested.
-    assert feed_cache_path(tmp_path, {"feed": "weather"}) == tmp_path / "feed" / "weather.json"
+    assert feed_cache_path(tmp_path, dev) == tmp_path / "feed" / "radar.json"
+    # Per DEVICE, not a literal and not per feed: two radars with different
+    # centres must not collide on one file.
+    assert (feed_cache_path(tmp_path, {"id": "radar2", "feed": "adsb"})
+            == tmp_path / "feed" / "radar2.json")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -948,6 +975,9 @@ def load_config(path: Path) -> dict:
         cfg = yaml.safe_load(fh)
     if not isinstance(cfg, dict):
         raise ValueError(f"{path} is empty or is not a mapping")
+    # NOTE: lists are replaced wholesale, not merged by key. A `devices:` list
+    # in the local file therefore REPLACES the registry rather than adding to
+    # it. Fine for secrets (scalars under `feeds`); do not put devices there.
     local = path.with_name("config.local.yaml")
     if local.exists():
         with open(local, encoding="utf-8") as fh:
@@ -965,9 +995,10 @@ def device(cfg: dict, device_id: str) -> dict | None:
 
 
 def feed_cache_path(cache_dir: Path, dev: dict) -> Path:
-    """Cache file for this device's feed. Routing on config, not a literal,
-    so a second data-push device does not silently get the radar's traffic."""
-    return cache_dir / "feed" / f"{dev.get('feed', 'adsb')}.json"
+    """Cache file for this device. Keyed by device id, not by a literal and not
+    by feed: `home`, `radius_km` and `max_aircraft` are per-device, so two
+    radars with different centres must not share one file."""
+    return cache_dir / "feed" / f"{dev['id']}.json"
 ```
 
 - [ ] **Step 4: Write `homescreen/sources/adsb.py`**
@@ -1010,13 +1041,16 @@ def _url(endpoint: str, lat: float, lon: float, radius_km: float) -> str:
             f"/lon/{lon:.6f}/dist/{dist_nm:.1f}")
 
 
-def fetch_radar(cfg: dict, cache_path: Path, *, session=None) -> bool:
-    """Fetch, map and cache. Returns True on success. Never raises."""
+def fetch_radar(cfg: dict, dev: dict, cache_path: Path, *, session=None) -> bool:
+    """Fetch, map and cache for ONE device. Returns True. Never raises.
+
+    `dev` is passed in rather than looked up by the literal "radar": the cache
+    is per-device, so the parameters must be too.
+    """
     if session is None:
         import requests
         session = requests.Session()
 
-    dev = device(cfg, "radar") or {}
     home = dev.get("home", {})
     radius_km = float(dev.get("radius_km", 60))
     endpoint = cfg.get("feeds", {}).get("adsb", {}).get("endpoint", "")
@@ -1082,13 +1116,13 @@ def _map_all(raw_list: list, radius_nm: float, show_ground: bool) -> list:
     return aircraft
 
 
-def run_forever(cfg: dict, cache_path: Path) -> None:
+def run_forever(cfg: dict, dev: dict, cache_path: Path) -> None:
     interval = float(cfg.get("feeds", {}).get("adsb", {}).get("fetch_seconds", 3))
     import requests
     session = requests.Session()
-    log.info("adsb fetch loop starting, interval %.1fs", interval)
+    log.info("adsb fetch loop starting for %s, interval %.1fs", dev["id"], interval)
     while True:
-        fetch_radar(cfg, cache_path, session=session)
+        fetch_radar(cfg, dev, cache_path, session=session)
         # Sleep AFTER the request completes, so a slow upstream stretches the
         # cycle instead of queueing a second in-flight request.
         time.sleep(interval)
@@ -1099,8 +1133,10 @@ def main() -> None:
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "config.yaml")
-    dev = device(cfg, "radar") or {}
-    run_forever(cfg, feed_cache_path(root / "cache", dev))
+    dev = device(cfg, "radar")
+    if dev is None:
+        raise SystemExit("config.yaml has no device with id 'radar'")
+    run_forever(cfg, dev, feed_cache_path(root / "cache", dev))
 
 
 if __name__ == "__main__":
@@ -1110,7 +1146,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_adsb.py -v`
-Expected: PASS — **21 tests** (15 functions, one parametrized 6 ways)
+Expected: PASS — **22 tests** (16 functions, one parametrized 6 ways)
 
 - [ ] **Step 6: Commit**
 
@@ -1162,8 +1198,8 @@ from homescreen.cache import write_cache, write_failure
 from homescreen.serve import create_app
 
 CFG = {
-    "devices": [{"id": "radar", "kind": "gc9a01_client", "feed": "adsb",
-                 "poll_seconds": 7,
+    "devices": [{"id": "radar", "kind": "gc9a01_client", "render": "device",
+                 "feed": "adsb", "poll_seconds": 7,
                  "home": {"lat": 40.4168, "lon": -3.7038},
                  "radius_km": 60, "max_aircraft": 20}],
 }
@@ -1189,7 +1225,7 @@ def ctx(tmp_path, monkeypatch):
         "homescreen.cache._now_iso",
         lambda: datetime.fromtimestamp(clock.t, timezone.utc).isoformat())
     app = create_app(CFG, tmp_path, clock=clock)
-    return app.test_client(), tmp_path / "feed" / "adsb.json", clock
+    return app.test_client(), tmp_path / "feed" / "radar.json", clock
 
 
 def _seed(path, age=2.0):
@@ -1360,6 +1396,28 @@ def test_unknown_device_is_404(ctx):
     assert client.get("/api/display/nope/data").status_code == 404
 
 
+def test_routing_is_on_render_not_kind(tmp_path):
+    # ADDENDUM §6: "Each entry declares its render mode; serve.py routes on it."
+    # Both cases deliberately make `render` and `kind` DISAGREE -- with agreeing
+    # values, routing on `kind` would pass this test too and prove nothing.
+    server_rendered = {"devices": [{"id": "odd", "kind": "gc9a01_client",
+                                    "render": "server", "feed": "adsb"}]}
+    c = create_app(server_rendered, tmp_path).test_client()
+    assert c.get("/api/display/odd/data").status_code == 404, (
+        "render: server must not be served from the data endpoint, "
+        "even for a gc9a01_client")
+
+    novel_kind = {"devices": [{"id": "newthing", "kind": "some_future_client",
+                               "render": "device", "feed": "adsb",
+                               "poll_seconds": 9}]}
+    c = create_app(novel_kind, tmp_path).test_client()
+    r = c.get("/api/display/newthing/data")
+    assert r.status_code == 200, (
+        "a new data-push class must work by declaring render: device, "
+        "without editing a Python set")
+    assert r.headers["X-Poll-Seconds"] == "9"
+
+
 def test_health_reports_feed_state_and_last_telemetry(ctx):
     client, path, clock = ctx
     _seed(path)
@@ -1424,7 +1482,10 @@ from homescreen.config import device, feed_cache_path
 
 log = logging.getLogger(__name__)
 
-DATA_KINDS = {"gc9a01_client"}
+# ADDENDUM §6: "Each entry declares its render mode; serve.py routes on it."
+# Routing on `render` rather than `kind` keeps that field live config -- a new
+# data-push device class then declares itself instead of needing a Python edit.
+DATA_RENDER = "device"
 
 # kExtrapolationHorizonSec in the firmware (adsb_client.h). Past this the device
 # treats a fix as unusable, so past this we must stop serving 304s.
@@ -1488,7 +1549,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time) -> Flask:
 
     def _lookup(device_id: str):
         dev = device(cfg, device_id)
-        if dev is None or dev.get("kind") not in DATA_KINDS:
+        if dev is None or dev.get("render") != DATA_RENDER:
             return None
         return dev
 
@@ -1591,12 +1652,12 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_serve.py -v`
-Expected: PASS — **29 tests** (17 functions, two parametrized 7 ways each)
+Expected: PASS — **30 tests** (18 functions, two parametrized 7 ways each)
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `venv/bin/pytest -v`
-Expected: PASS — **81 tests** (14 + 17 + 21 + 29)
+Expected: PASS — **83 tests** (14 + 17 + 22 + 30)
 
 - [ ] **Step 6: Commit**
 
@@ -1633,7 +1694,7 @@ from homescreen.sources.adsb import fetch_radar
 cfg = load_config(Path("config.yaml"))
 dev = device(cfg, "radar")
 path = feed_cache_path(Path("cache"), dev)
-print("fetch ok:", fetch_radar(cfg, path))
+print("fetch ok:", fetch_radar(cfg, dev, path))
 import json
 e = json.load(open(path))
 # .get(), not [...]: on a first-ever failure `data` is {} and this diagnostic
@@ -1789,7 +1850,7 @@ The Mac is Python 3.14 and the Pi is 3.13; the suite must pass on the machine th
 ssh pi@dashboard.local 'cd /home/pi/dashboard && venv/bin/pytest -q'
 ```
 
-Expected: `81 passed`
+Expected: `83 passed`
 
 - [ ] **Step 4: Keep the journal off the SD card**
 
@@ -1848,6 +1909,11 @@ genuinely changes every few seconds and a 200 is the correct answer.
 
 ```bash
 ssh pi@dashboard.local 'sudo systemctl stop homescreen-fetch'          # Pi
+# Assert the feed was healthy at the moment we captured the ETag: `fresh` also
+# requires ok, so if the daemon's LAST cycle happened to fail, the first check
+# below would return 200 for the wrong reason and look like a failure.
+curl -sI http://dashboard.local:8080/api/display/radar/data | grep -qi 'x-feed-ok: 1' \
+  || { echo "SKIP: feed was already unhealthy; restart the fetcher and retry"; }
 ETAG=$(curl -sI http://dashboard.local:8080/api/display/radar/data \
        | awk -F'"' '/[Ee][Tt]ag/{print $2}')                            # Mac
 curl -s -o /dev/null -w "unchanged content -> %{http_code}\n" \
@@ -1864,34 +1930,22 @@ Expected: `304` for unchanged content, then **`200`** once past the 12 s horizon
 feed must never be answered with a bodiless 304, or `feed.age_s` can never reach the device.
 Aircraft are still served with a growing `feed.age_s` (SPEC §11.3).
 
-- [ ] **Step 8: Amend the three documents this plan supersedes**
+- [ ] **Step 8: Copy the local secrets overlay, if one exists**
+
+`config.local.yaml` is gitignored, so the clone in Step 1 cannot carry it. adsb.fi needs
+no key, so this is a no-op today — but the moment a fetcher with credentials lands
+(SPEC §7.4 Twelve Data, §7.2 the secret ICS URL) the overlay must reach the Pi or the Pi
+runs on public config alone.
 
 ```bash
 cd /Users/matias/Documents/repos/HomeScreen
+if [ -f config.local.yaml ]; then
+  scp config.local.yaml pi@dashboard.local:/home/pi/dashboard/config.local.yaml
+  echo "overlay copied"
+else
+  echo "no config.local.yaml — nothing to copy (expected for Phase A)"
+fi
 ```
-
-Change `cache/feed/radar.json` to `cache/feed/adsb.json` in all three, and note that the
-cache is keyed by **feed**, not device, so several devices can share one file:
-
-- `docs/VALIDATION-01.md` (finding C7) — **the one that matters most.** CLAUDE.md ranks it
-  above the addendum and names it the tiebreaker, so leaving it saying `radar.json` would
-  leave the *winning* document contradicting the code.
-- `docs/ADDENDUM-01-multi-display.md` §7
-- `docs/PLAN.md` §2 A2
-
-Commit the three by name — **not `git commit -am`**. This plan file is tracked and the
-executing agent flips its `- [ ]` boxes to `- [x]` as it goes, so `-a` would sweep several
-dozen checkbox changes into a commit about a filename.
-
-```bash
-cd /Users/matias/Documents/repos/HomeScreen
-git commit docs/VALIDATION-01.md docs/ADDENDUM-01-multi-display.md docs/PLAN.md \
-  -m "Key the feed cache by feed rather than device"
-git push
-```
-
-Push matters: the Pi's clone came from `origin/main` at Step 1, so an unpushed amendment
-never reaches it.
 
 - [ ] **Step 9: Verify survival across a reboot**
 
@@ -1931,7 +1985,7 @@ did not come back.
 
 ## Done when
 
-- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (81 tests)
+- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (83 tests)
 - [ ] `curl http://dashboard.local:8080/api/display/radar/data` returns aircraft with `feed.ok: true`
 - [ ] Served `age` and `feed.age_s` advance in real time while the fetch daemon is stopped
 - [ ] A matching `If-None-Match` yields `304` for unchanged content **across a refetch**,
