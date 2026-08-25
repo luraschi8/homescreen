@@ -105,6 +105,9 @@ cat > pyproject.toml <<'EOF'
 # pytest's prepend import mode does not add the rootdir to sys.path on its own.
 pythonpath = ["."]
 testpaths = ["tests"]
+# The whole suite runs in well under a second; anything that takes 30s has hung.
+# See requirements.txt for why this matters to run_forever specifically.
+timeout = 30
 EOF
 ```
 
@@ -117,6 +120,10 @@ flask>=3.0
 requests>=2.31
 pyyaml>=6.0
 pytest>=8.0
+# run_forever is a `while True` loop. A regression that removes its exit guard
+# hangs the suite instead of failing it, which reads as a stuck CI rather than
+# a bug. A global timeout turns that into a normal red test.
+pytest-timeout>=2.3
 EOF
 python3 -m venv --system-site-packages venv
 venv/bin/pip install --quiet --upgrade pip
@@ -366,7 +373,10 @@ def _write(path: Path, env: dict) -> None:
             fh.flush()
             os.fsync(fh.fileno())
     except Exception:
-        tmp.unlink(missing_ok=True)   # a refused write must leave nothing behind
+        try:
+            tmp.unlink(missing_ok=True)   # a refused write leaves nothing behind
+        except OSError:
+            pass                          # never mask the exception that got us here
         raise
     os.replace(tmp, path)
 
@@ -763,7 +773,8 @@ import pytest
 
 from homescreen.cache import read_cache, write_cache
 from homescreen.config import device, feed_cache_path, load_config
-from homescreen.sources.adsb import check_cadence, fetch_radar, fetch_targets
+from homescreen.sources.adsb import (check_cadence, fetch_radar, fetch_targets,
+                                    run_forever)
 
 CFG = {
     "feeds": {"adsb": {"endpoint": "https://example.invalid/api", "fetch_seconds": 3}},
@@ -977,6 +988,56 @@ def test_check_cadence_rejects_bursting_past_the_rate_limit(monkeypatch):
         check_cadence({"feeds": {"adsb": {"fetch_seconds": 3}}}, 4)  # 0.75s apart
 
 
+def test_run_forever_spaces_requests_across_the_cycle(tmp_path: Path):
+    # check_cadence's budget is only correct BECAUSE of this loop's shape.
+    # Without a test here, changing the sleep to `interval` (bursting N
+    # requests, breaching adsb.fi's 1 req/s) passes the whole suite.
+    # Bound the loop on the SESSION, not on sleep: bounding it on sleep means a
+    # mutation that deletes the sleep spins forever instead of failing.
+    # BaseException so fetch_radar's `except Exception` cannot swallow it.
+    class Stop(BaseException):
+        pass
+
+    slept = []
+
+    class CountingSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, timeout=None):
+            self.calls += 1
+            if self.calls > 4:
+                raise Stop
+            return FakeResponse({"ac": []})
+
+    cfg = {"feeds": {"adsb": {"endpoint": "https://example.invalid/api",
+                              "fetch_seconds": 3}},
+           "devices": []}
+    devs = [{"id": "a", "home": {}, "radius_km": 60, "max_aircraft": 20},
+            {"id": "b", "home": {}, "radius_km": 60, "max_aircraft": 20}]
+    targets = [(d, tmp_path / f"{d['id']}.json") for d in devs]
+    sess = CountingSession()
+    with pytest.raises(Stop):
+        run_forever(cfg, targets, session=sess, sleep=slept.append)
+    # interval 3 / 2 targets = 1.5s after each of the first four requests.
+    assert slept == [1.5, 1.5, 1.5, 1.5], "interval/N after EACH request"
+    assert sess.calls == 5, "requests are spaced, not burst then slept once"
+
+
+@pytest.mark.timeout(5)
+def test_run_forever_refuses_an_empty_target_list():
+    # Otherwise the for-body never runs and the while spins at 100% CPU with no
+    # requests and no sleeps. The explicit timeout marker is what makes removing
+    # the guard show up as a failure rather than a hung suite.
+    with pytest.raises(ValueError, match="at least one target"):
+        run_forever({"feeds": {"adsb": {"fetch_seconds": 3}}}, [])
+
+
+def test_check_cadence_reports_a_non_numeric_interval_as_valueerror():
+    with pytest.raises(ValueError, match="must be a number"):
+        check_cadence({"feeds": {"adsb": {"fetch_seconds": None}}})
+
+
 def test_fetch_targets_skips_entries_with_no_id(tmp_path: Path):
     # feed_cache_path does dev["id"]; an unguarded KeyError here is a startup
     # traceback into a Restart=always loop.
@@ -1136,9 +1197,8 @@ def _record_failure(cache_path: Path, error: str) -> None:
 
 KM_PER_NM = 1.852
 # (connect, read). INVARIANT: connect + read + fetch_seconds < STALE_HORIZON_S
-# (12.0, the firmware's kExtrapolationHorizonSec). run_forever sleeps AFTER the
-# request, so the worst case for a slow-but-SUCCESSFUL cycle is the full
-# timeout plus the interval. Exceed 12 s and feed.age_s crosses the device's
+# (12.0, the firmware's kExtrapolationHorizonSec). run_forever sleeps between
+# requests, so one cycle costs roughly N x request + interval. Exceed 12 s and feed.age_s crosses the device's
 # hard horizon on a healthy feed, dimming every target once per cycle -- the
 # blink pathology radar_display.cpp was rewritten to remove.
 REQUEST_TIMEOUT_S = (3.05, 5)
@@ -1152,15 +1212,21 @@ def check_cadence(cfg: dict, n_targets: int = 1) -> None:
 
     Two independent limits, and BOTH scale with the number of devices:
 
-    * Staleness. run_forever fetches every target then sleeps once, so a
+    * Staleness. run_forever fetches each target and sleeps between them, so a
       device's cache can go `N x full_timeout + interval` between writes. A
       single-target budget silently green-lights a violating config the moment
-      a second radar is registered.
+      a second radar is registered. Note `read` is `requests`' inter-byte gap,
+      not a total-response deadline, so a slow-drip response can still succeed
+      past this budget -- the check is a startup heuristic, not a bound.
     * Rate. adsb.fi's public limit is 1 req/s, and a limiter enforces
       *spacing*, not an average -- N requests fired back to back inside one
       second breach it however long the cycle is.
     """
-    interval = float(cfg.get("feeds", {}).get("adsb", {}).get("fetch_seconds", 3))
+    raw = cfg.get("feeds", {}).get("adsb", {}).get("fetch_seconds", 3)
+    try:
+        interval = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"fetch_seconds must be a number, got {raw!r}") from None
     n = max(1, int(n_targets))
 
     budget = n * sum(REQUEST_TIMEOUT_S) + interval
@@ -1283,10 +1349,18 @@ def fetch_targets(cfg: dict, cache_dir: Path) -> list:
             and d.get("render") == "device" and d.get("feed") == "adsb"]
 
 
-def run_forever(cfg: dict, targets: list) -> None:
+def run_forever(cfg: dict, targets: list, *, session=None, sleep=time.sleep) -> None:
+    """`session` and `sleep` are injectable so the loop itself is testable --
+    check_cadence's budget is only correct because of what this loop does, and
+    a comment is not a guarantee."""
+    if not targets:
+        # Without this the `for` body never runs and the `while` spins at 100%
+        # CPU. main() guards it too, but the loop must not depend on that.
+        raise ValueError("run_forever needs at least one target")
     interval = float(cfg.get("feeds", {}).get("adsb", {}).get("fetch_seconds", 3))
-    import requests
-    session = requests.Session()
+    if session is None:
+        import requests
+        session = requests.Session()
     spacing = interval / max(1, len(targets))
     log.info("adsb fetch loop starting for %s, interval %.1fs, spacing %.2fs",
              [d["id"] for d, _ in targets], interval, spacing)
@@ -1296,7 +1370,7 @@ def run_forever(cfg: dict, targets: list) -> None:
             # Sleep AFTER each request, so a slow upstream stretches the cycle
             # instead of queueing a second in-flight request, and so N devices
             # are spaced rather than bursting inside one second.
-            time.sleep(spacing)
+            sleep(spacing)
 
 
 def main() -> None:
@@ -1306,8 +1380,13 @@ def main() -> None:
     cfg = load_config(root / "config.yaml")
     targets = fetch_targets(cfg, root / "cache")
     if not targets:
-        raise SystemExit("config.yaml has no device with render: device and feed: adsb")
-    check_cadence(cfg, len(targets))
+        log.error("config.yaml has no device with render: device and feed: adsb")
+        raise SystemExit(78)          # EX_CONFIG; see RestartPreventExitStatus
+    try:
+        check_cadence(cfg, len(targets))
+    except ValueError as exc:
+        log.error("bad cadence config: %s", exc)
+        raise SystemExit(78) from None
     run_forever(cfg, targets)
 
 
@@ -1318,7 +1397,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `venv/bin/pytest tests/test_adsb.py -v`
-Expected: PASS — **28 tests** (22 functions, one parametrized 6 ways)
+Expected: PASS — **31 tests** (25 functions, one parametrized 6 ways)
 
 - [ ] **Step 6: Commit**
 
@@ -1867,7 +1946,11 @@ def main() -> None:
     # flags as unmitigated. Task 6 also caps journald.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     root = Path(__file__).resolve().parents[1]
-    cfg = load_config(root / "config.yaml")
+    try:
+        cfg = load_config(root / "config.yaml")
+    except (OSError, ValueError) as exc:
+        log.error("cannot load config.yaml: %s", exc)
+        raise SystemExit(78) from None   # EX_CONFIG; see RestartPreventExitStatus
     srv = cfg.get("server", {})
     # Werkzeug's dev server. Adequate for a handful of LAN devices; swap for
     # waitress in Phase C when N clients start pulling 48 KB frames.
@@ -1887,7 +1970,7 @@ Expected: PASS — **33 tests** (21 functions, two parametrized 7 ways each)
 - [ ] **Step 5: Run the whole suite**
 
 Run: `venv/bin/pytest -v`
-Expected: PASS — **93 tests** (15 + 17 + 28 + 33)
+Expected: PASS — **96 tests** (15 + 17 + 31 + 33)
 
 - [ ] **Step 6: Commit**
 
@@ -1920,7 +2003,8 @@ cd /Users/matias/Documents/repos/HomeScreen
 venv/bin/python - <<'EOF'
 from pathlib import Path
 from homescreen.config import load_config, device, feed_cache_path
-from homescreen.sources.adsb import check_cadence, fetch_radar, fetch_targets
+from homescreen.sources.adsb import (check_cadence, fetch_radar, fetch_targets,
+                                    run_forever)
 cfg = load_config(Path("config.yaml"))
 dev = device(cfg, "radar")
 path = feed_cache_path(Path("cache"), dev)
@@ -1989,6 +2073,10 @@ WorkingDirectory=/home/pi/dashboard
 ExecStart=/home/pi/dashboard/venv/bin/python -m homescreen.serve
 Restart=always
 RestartSec=5
+# A config fault is not transient. Without this, a bad config.yaml is a
+# traceback into the journal every 5s forever -- the SD churn this plan
+# rejected a timer to avoid. main() exits 78 (EX_CONFIG) on those paths.
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=multi-user.target
@@ -2016,6 +2104,10 @@ WorkingDirectory=/home/pi/dashboard
 ExecStart=/home/pi/dashboard/venv/bin/python -m homescreen.sources.adsb
 Restart=always
 RestartSec=10
+# See homescreen-serve.service: check_cadence rejecting a config -- including a
+# second radar, which it rejects by design at the shipped timeouts -- must stop
+# the unit, not loop on it every 10s forever.
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=multi-user.target
@@ -2054,6 +2146,10 @@ ssh pi@dashboard.local 'sudo -n true && echo NOPASSWD_OK'
 
 Expected: `NOPASSWD_OK`. If you would rather not grant this, run every `sudo` step below
 manually with `ssh -t` instead.
+
+> **Operator note:** Steps 1 and 2 are the two longest commands in the plan —
+> `apt-get install` and `pip install` over ssh on a Pi 4 can each exceed a 120 s default
+> command timeout. Raise it for those two steps rather than assuming a hang.
 
 - [ ] **Step 1: Install packages and clone (idempotent)**
 
@@ -2100,7 +2196,7 @@ The Mac is Python 3.14 and the Pi is 3.13; the suite must pass on the machine th
 ssh pi@dashboard.local 'cd /home/pi/dashboard && venv/bin/pytest -q'
 ```
 
-Expected: `93 passed`
+Expected: `96 passed`
 
 - [ ] **Step 4: Keep the journal off the SD card**
 
@@ -2173,8 +2269,9 @@ curl -sI http://dashboard.local:8080/api/display/radar/data | grep -qi 'x-feed-o
   || { echo "SKIP: feed was already unhealthy; restart the fetcher and retry"; exit 1; }
 ETAG=$(curl -sI http://dashboard.local:8080/api/display/radar/data \
        | awk -F'"' '/[Ee][Tt]ag/{print $2}')                            # Mac
-curl -s -o /dev/null -w "unchanged content -> %{http_code}\n" \
-  -H "If-None-Match: \"$ETAG\"" http://dashboard.local:8080/api/display/radar/data
+curl -s -o /dev/null -D- -w "unchanged content -> %{http_code}\n" \
+  -H "If-None-Match: \"$ETAG\"" http://dashboard.local:8080/api/display/radar/data \
+  | grep -iE "http/|x-feed-age|x-feed-ok"
 sleep 14                                                                # Mac, past STALE_HORIZON_S
 curl -s -o /dev/null -w "stale feed        -> %{http_code}\n" \
   -H "If-None-Match: \"$ETAG\"" http://dashboard.local:8080/api/display/radar/data
@@ -2230,7 +2327,7 @@ did not come back.
 
 ## Done when
 
-- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (93 tests)
+- [ ] `venv/bin/pytest` is green on the Mac **and** on the Pi (96 tests)
 - [ ] `curl http://dashboard.local:8080/api/display/radar/data` returns aircraft with `feed.ok: true`
 - [ ] Served `age` and `feed.age_s` advance in real time while the fetch daemon is stopped
 - [ ] A matching `If-None-Match` yields `304` for unchanged content **across a refetch**,
@@ -2248,9 +2345,31 @@ firmware work until the server path is proven end-to-end.
 
 ### Three things the firmware plan must carry
 
-1. **On a 304 the device must not reset its fetch timestamp.** The device computes
-   `age + secondsSinceUpdate()`. If a 304 resets that timer while the body is unchanged,
-   ages freeze and dead reckoning stalls. Reset it only on a `200`.
+1. **A 304 needs the device to split its one clock in two — and 304 must become a
+   success path.** This is more than "don't reset the timestamp", and getting it wrong
+   blanks the panel with perfectly current data.
+
+   `adsb_client.cpp` has a single `s_last_update_ms` (declared line 41, assigned only in
+   `publish()` line 84) feeding three consumers with different needs:
+
+   | Consumer | Used for | On a 304 it should |
+   |---|---|---|
+   | `secondsSinceUpdate()` | dead-reckoning base | **freeze** — the fix is genuinely that old |
+   | `secondsSinceUpdateRaw()` | the 12 s dim test | **freeze** — same reason |
+   | `dataExpired()` | the 60 s blank-to-grid | **refresh** — we *did* just hear from the server |
+
+   Freeze all three (the naive reading of "don't reset") and a run of 304s dims every
+   target at 12 s and drops the panel to grid-only at 60 s, while the server is still
+   reporting `X-Feed-Ok: 1`. That run is not hypothetical: an empty sky produces a
+   byte-identical body indefinitely, which is exactly what
+   `test_etag_survives_a_refetch_of_identical_data` pins as the production property.
+
+   So: **split it into a content clock (frozen on 304) and a contact clock (refreshed on
+   304)**, and route 304 to the success path. Today `adsb_client.cpp:316` treats any
+   `code != HTTP_CODE_OK` as failure — including 304 — so a firmware author who reads
+   item 1 as "already true" ships the trap. The device sends no `If-None-Match` yet, so
+   none of this is a live bug; it becomes one the moment conditional requests are added.
+
 2. **Read `X-Feed-Age` / `X-Feed-Ok`, not just the body.** They are set on the 304 as
    well as the 200 precisely because a 304 has no body — without them a device that
    conditional-fetches cannot see the feed's liveness at all.
@@ -2259,7 +2378,7 @@ firmware work until the server path is proven end-to-end.
    would have removed the device's only detection of *its own* link failing: after
    substitution both causes derive from Pi-side timestamps carried in the body, so a
    device that loses the LAN sees both frozen at their last-received values and never
-   dims — only `kDataExpirySec` (60 s) would catch it, four times slower than today.
+   dims — only `kDataExpirySec` (60 s) would catch it, five times slower than today.
    Keep `pos_age_s` and `fetch_age_raw` exactly as they are, and add `feed.age_s` as a
    third `||` term. `radar_display.cpp`'s comment records why these are tested apart
    rather than summed; that reasoning extends to the third.
