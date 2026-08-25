@@ -51,9 +51,9 @@ data-push path — no polarity, no framebuffer, no partial refresh.
 
 | # | Step | Notes |
 |---|---|---|
-| A1 | Pi bring-up (server subset) — git, venv, `config.yaml` | Not SPI or Chromium yet |
-| A2 | `sources/adsb.py` — fetch, filter to radius, compute bearing/distance/velocity, write `cache/feed/radar.json` | Own cadence, decoupled from device polling (VALIDATION C7) |
-| A3 | `serve.py` + `/api/display/radar/data` | ETag, `X-Poll-Seconds`, telemetry query params |
+| A1 | Pi bring-up (server subset) — git, venv, `config.yaml` | **DONE** 2026-08-25 |
+| A2 | `sources/adsb.py` — fetch, filter to radius, compute bearing/distance/velocity, write `cache/feed/radar.json` | **DONE** — own cadence, decoupled from device polling (VALIDATION C7) |
+| A3 | `serve.py` + `/api/display/radar/data` (and `/health`) | **DONE** — live at `http://dashboard.local:8080`; ETag, `X-Poll-Seconds`, `X-Feed-Age`/`X-Feed-Ok`, telemetry |
 | A4 | Radar firmware fork — swap `adsb.fi` for the Pi | See §3; drops TLS entirely |
 | A5 | Soak — confirm heap recovery and stall detection | Measure against `OPS.md` baselines |
 
