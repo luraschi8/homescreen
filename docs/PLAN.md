@@ -162,6 +162,10 @@ the comment there records that summing them made targets blink once per cycle. P
 that structure and add `feed.age_s` as a **third** separately-tested cause. Do not merge
 them, and do not substitute it for `fetch_age_raw`.
 
+> These three requirements are carried into
+> [the round-screen firmware plan](superpowers/plans/2026-08-26-round-screen-firmware.md),
+> Task 3, where the two-clock split is implemented and mutation-checked.
+
 **Three requirements this places on the firmware.** These were written for A4 and
 survive its cancellation unchanged: they are properties of the Pi's HTTP contract, not of
 any particular firmware. They now belong to spec Phase 3.
