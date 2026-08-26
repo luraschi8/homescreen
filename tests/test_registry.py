@@ -289,3 +289,44 @@ def test_the_seed_marker_is_not_a_phantom_device(tmp_path: Path):
     # Stored as a record it would pass _valid_record and render in the fleet.
     registry.seed_from_config(CFG_WITH_DEVICE, tmp_path, now=1000.0)
     assert list(registry.load(tmp_path)) == ["cfg:radar"]
+
+
+def test_a_poll_that_omits_fw_does_not_record_the_string_none(tmp_path: Path):
+    # touch() guards this and nothing exercised it: without the guard every
+    # device call that omits the parameter would write fw="None".
+    registry.touch(tmp_path, HW, fw="0.2.0", now=1000.0)
+    rec = registry.touch(tmp_path, HW, now=1000.0)
+    assert rec["fw"] == "0.2.0", "an absent fw must not overwrite a known one"
+    assert registry.touch(tmp_path, "bb", now=1000.0)["fw"] is None
+
+
+def test_bounds_are_literal_not_self_referential(tmp_path: Path):
+    # The other bound tests loop over the constant, so they move with it --
+    # MAX_DEVICES x10 survived mutation for exactly that reason. Pin the values.
+    assert registry.MAX_DEVICES == 64
+    assert registry.MAX_TELEMETRY_KEYS == 16
+    assert registry.MAX_VALUE_LEN == 128
+    assert registry.MAX_CAP_LIST == 32
+    assert registry.OFFLINE_AFTER_POLLS == 3
+    assert registry.DEFAULT_POLL_SECONDS == 5
+    assert registry.CAP_INT_RANGE == (1, 4096)
+
+
+def test_a_telemetry_key_longer_than_32_chars_is_dropped(tmp_path: Path):
+    registry.touch(tmp_path, HW, now=1000.0,
+                   telemetry={"k" * 40: "v", "ok": "1"})
+    keys = registry.load(tmp_path)[HW]["telemetry"]
+    assert "ok" in keys
+    assert all(len(k) <= 32 for k in keys)
+
+
+def test_a_hardware_id_is_stored_stripped(tmp_path: Path):
+    registry.touch(tmp_path, "  aabbcc  ", now=1000.0)
+    assert list(registry.load(tmp_path)) == ["aabbcc"]
+
+
+def test_a_name_of_exactly_the_maximum_length_is_allowed(tmp_path: Path):
+    registry.touch(tmp_path, HW, now=1000.0)
+    registry.assign(tmp_path, HW, name="n" * registry.NAME_MAX)
+    with pytest.raises(ValueError):
+        registry.assign(tmp_path, HW, name="n" * (registry.NAME_MAX + 1))

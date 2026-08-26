@@ -79,7 +79,6 @@ class _Assignable(collections.abc.Sequence):
 ASSIGNABLE_SCENES = _Assignable()
 
 NAME_MAX = 64
-HW_MAX = 128
 HW_RE = re.compile(r"^[A-Za-z0-9_:.-]{1,128}$")
 OFFLINE_AFTER_POLLS = 3
 DEFAULT_POLL_SECONDS = 5

@@ -97,9 +97,49 @@ def test_a_nonexistent_binary_raises_rendererror_not_oserror(tmp_path):
 
 
 def test_a_binary_that_fails_raises_rendererror(tmp_path):
+    # /usr/bin/false, not /bin/false: the latter does not exist on macOS, so
+    # this test used to hit FileNotFoundError and merely duplicate the one
+    # below -- leaving the branch it is named for uncovered on the dev machine.
+    assert Path("/usr/bin/false").exists(), "expected a POSIX false(1)"
     with pytest.raises(render.RenderError):
         render.html_to_png(_page(), 800, 480, tmp_path / "o.png",
-                           binary="/bin/false")
+                           binary="/usr/bin/false")
+
+
+def test_a_binary_that_succeeds_but_writes_nothing_raises_rendererror(tmp_path):
+    # The guard this covers is the last thing standing between a failed render
+    # and a 500: without it png_to_packed raises FileNotFoundError, which is
+    # not a RenderError, so device_frame's handler misses it.
+    with pytest.raises(render.RenderError, match="produced no image"):
+        render.html_to_png(_page(), 800, 480, tmp_path / "o.png",
+                           binary="/usr/bin/true")
+
+
+@pytest.mark.parametrize("flag,why", [
+    ("--hide-scrollbars", "a scrollbar steals ~15px and shifts the layout"),
+    ("--default-background-color=FFFFFFFF",
+     "a transparent backdrop thresholds to solid black"),
+    ("--force-device-scale-factor=1", "Retina doubling breaks the geometry"),
+    ("--headless", "there is no display on the Pi"),
+])
+def test_the_chromium_flags_that_carry_claude_md_invariants_are_present(flag, why):
+    assert flag in render.CHROMIUM_FLAGS, why
+
+
+def test_the_flags_actually_reach_the_subprocess(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        raise OSError("stop here")
+
+    monkeypatch.setattr(render.subprocess, "run", fake_run)
+    with pytest.raises(render.RenderError):
+        render.html_to_png(_page(), 800, 480, tmp_path / "o.png",
+                           binary="/usr/bin/true")
+    for flag in render.CHROMIUM_FLAGS:
+        assert flag in seen["cmd"]
+    assert "--window-size=800,480" in seen["cmd"]
 
 
 def test_a_render_timeout_raises_rendererror(tmp_path, monkeypatch):

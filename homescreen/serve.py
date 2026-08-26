@@ -171,12 +171,25 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         version = resolve_version(cache_dir.parent)
 
     def _lookup(device_id: str, *, require_data_render: bool = True):
-        cfg_live = _live()
-        """`/data` is data-push only; `/health` is defined for every device
-        (ADDENDUM §5: "server-side status, for debugging")."""
-        dev = device(cfg_live, device_id)
+        """Resolve a friendly name to a device.
+
+        `/data` is data-push only; `/health` answers for every device
+        (ADDENDUM §5: "server-side status, for debugging").
+
+        Config is tried FIRST so the live /api/display/radar/data route cannot
+        regress while config and registry devices coexist. A registry device is
+        reachable by the name a human gave it -- without this the fleet view
+        lists devices you cannot curl (ADDENDUM §4.5).
+        """
+        dev = device(_live(), device_id)
         if dev is None:
-            return None
+            hw = registry.resolve_name(cache_dir, device_id)
+            if hw is None:
+                return None
+            rec = registry.load(cache_dir).get(hw) or {}
+            dev = {"id": device_id, "hw": hw, "feed": "adsb",
+                   "render": DATA_RENDER,
+                   "poll_seconds": rec.get("poll_seconds")}
         if require_data_render and dev.get("render") != DATA_RENDER:
             return None
         return dev
@@ -480,11 +493,23 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return err
         name, scene = _scene_for(hw, rec)
         assigned = name not in ("unassigned", "error")
+        # ADDENDUM §5.5: a device never receives a component it did not
+        # declare, so it needs no error path for one. The substitution is
+        # reported rather than silent.
+        declared = (registry.clean_caps(rec.get("caps") or {})
+                    .get("components"))
+        kept, dropped = list(scene.components), []
+        if declared:
+            kept = [c for c in scene.components if c.get("c") in declared]
+            dropped = [c.get("c") for c in scene.components
+                       if c.get("c") not in declared]
         body = {"hw": hw, "name": rec.get("name"), "scene": name,
                 "assigned": assigned, "layout": scene.layout,
-                "components": list(scene.components)}
+                "components": kept}
+        if dropped:
+            body["unsupported"] = sorted(set(dropped))
         if not assigned:
-            body["message"] = "not assigned - set a scene in the fleet view"
+            body["message"] = "sin asignar · elige una escena en el panel"
         return _poll_header(jsonify(body), rec)
 
     @app.get("/api/device/<hw>/frame")

@@ -55,7 +55,7 @@ def render_home(st: dict) -> str:
         return e(str(v)) if v is not None else "&mdash;"
 
     cards = []
-    for d in st["devices"]:
+    for d in st.get("devices") or []:
         f = d["feed"]
         if f is None:
             state = '<span class="tag">no feed &mdash; pixel push, Phase C</span>'
@@ -110,7 +110,7 @@ def render_home(st: dict) -> str:
     fleet_html = ("<h2>Fleet</h2>" + ("".join(fleet_rows)
                   or '<div class="card">no devices have called in yet</div>'))
 
-    feed = st["feed"]
+    feed = st.get("feed") or {}
     return f"""<!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>HomeScreen &mdash; {esc(st["version"])}</title>

@@ -255,3 +255,11 @@ def test_a_damaged_registry_still_lets_a_device_register(ctx):
     registry.registry_path(cache).write_text("{not json")
     assert client.get(f"/api/device/{HW}/scene").status_code == 200
     assert list(registry.load(cache)) == [HW]
+
+
+def test_get_one_device_reports_online_state(ctx):
+    client, cache, clock = ctx
+    registry.touch(cache, HW, now=clock.t)
+    assert client.get(f"/api/devices/{HW}").get_json()["online"] is True
+    clock.t += 3600
+    assert client.get(f"/api/devices/{HW}").get_json()["online"] is False

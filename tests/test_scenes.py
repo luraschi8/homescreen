@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from homescreen import scenes
+from homescreen.scenes import clock as _clock_mod
 from homescreen.cache import write_cache
 
 CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
@@ -42,16 +43,68 @@ def test_assignable_scenes_are_derived_from_the_scene_table(tmp_path):
         assert builtin not in registry.ASSIGNABLE_SCENES
 
 
+# The panel has two inks. Anything a browser would resolve to a third is a
+# defect that only shows up as mud on real hardware, so the grammar here is a
+# whitelist: the earlier `#[0-9a-f]{3,6}` scan happily passed `color:grey`,
+# `rgb(128,128,128)` and `font-size:9.5pt`.
+INK = {"#000", "#fff", "#000000", "#ffffff", "black", "white",
+       "transparent", "inherit", "currentcolor", "none"}
+COLOUR_PROPS = ("color", "background", "background-color", "border-color",
+                "border", "border-top", "border-bottom", "border-left",
+                "border-right", "outline", "fill", "stroke", "box-shadow",
+                "text-shadow")
+_DECL = re.compile(r"([a-z-]+)\s*:\s*([^;\"'}]+)")
+
+
 @pytest.mark.parametrize("name", ["clock", "status", "planes"])
-def test_pixel_push_html_obeys_the_one_bit_design_system(tmp_path, name):
+def test_pixel_push_html_uses_only_the_two_inks(tmp_path, name):
     html = scenes.build(name, ctx(tmp_path)).html
-    colours = set(re.findall(r"#[0-9a-fA-F]{3,6}", html))
-    assert colours <= {"#000", "#fff", "#000000", "#ffffff"}, \
-        f"{name} uses a colour that is not black or white: {colours}"
-    sizes = [int(m) for m in re.findall(r"font-size:(\d+)px", html)]
-    assert sizes and min(sizes) >= 10, f"{name} has type below the 10px floor"
+    assert not re.search(r"\b(rgba?|hsla?|color-mix|oklch|lab)\s*\(", html), \
+        f"{name} computes a colour the panel cannot show"
+    for prop, value in _DECL.findall(html):
+        if prop not in COLOUR_PROPS:
+            continue
+        for token in re.split(r"\s+", value.strip()):
+            if re.fullmatch(r"[\d.]+(px|%)?|solid|dashed|dotted|repeat|no-repeat|"
+                            r"center|left|right|top|bottom|inset", token):
+                continue  # widths, styles and positions, not inks
+            assert token.lower() in INK, \
+                f"{name} sets {prop}:{value.strip()} -- {token} is not an ink"
+
+
+@pytest.mark.parametrize("name", ["clock", "status", "planes"])
+def test_pixel_push_type_is_whole_pixels_at_or_above_the_floor(tmp_path, name):
+    # A 10px floor stated in px says nothing about `font-size:0.6rem`, and a
+    # fractional px lands on a half-lit pixel that thresholding turns to grey.
+    html = scenes.build(name, ctx(tmp_path)).html
+    sizes = re.findall(r"font-size\s*:\s*([^;\"'}]+)", html)
+    assert sizes, f"{name} sets no type size at all"
+    for raw in sizes:
+        value = raw.strip()
+        m = re.fullmatch(r"(\d+)px", value)
+        assert m, f"{name} sizes type as {value!r}; only whole px is honest here"
+        assert int(m.group(1)) >= 10, f"{name} has type below the 10px floor"
+
+
+@pytest.mark.parametrize("name", ["clock", "status", "planes"])
+def test_pixel_push_hierarchy_comes_from_size_and_weight(tmp_path, name):
+    # CLAUDE.md: hierarchy by size+weight, because there is no grey to lean on.
+    html = scenes.build(name, ctx(tmp_path)).html
+    weights = {int(w) for w in re.findall(r"font-weight\s*:\s*(\d+)", html)}
+    sizes = {int(p) for p in re.findall(r"font-size\s*:\s*(\d+)px", html)}
+    assert len(sizes) >= 2 or len(weights) >= 2, \
+        f"{name} is one flat block of type: sizes={sizes} weights={weights}"
+    assert all(w in (400, 500, 600, 700, 800, 900) for w in weights), \
+        f"{name} uses a weight the bundled face cannot render: {weights}"
+
+
+@pytest.mark.parametrize("name", ["clock", "status", "planes"])
+def test_pixel_push_html_is_self_contained(tmp_path, name):
+    html = scenes.build(name, ctx(tmp_path)).html
     assert "-webkit-font-smoothing:none" in html
     assert "http://" not in html and "https://" not in html, "no CDN fonts, ever"
+    assert "@import" not in html and "url(" not in html, \
+        f"{name} would make the renderer wait on a fetch that cannot resolve"
 
 
 @pytest.mark.parametrize("name", ["clock", "status", "planes"])
@@ -137,7 +190,7 @@ def test_planes_says_so_when_the_feed_is_down(tmp_path):
 
 def test_an_unknown_scene_falls_back_and_says_so(tmp_path):
     scene = scenes.safe_build("no-such-scene", ctx(tmp_path))
-    assert "unknown scene" in scene.html
+    assert "escena desconocida" in scene.html
     assert "no-such-scene" in scene.html
 
 
@@ -164,3 +217,60 @@ def test_safe_build_survives_the_scene_table_itself_being_broken(tmp_path, monke
     scene = scenes.safe_build("clock", ctx(tmp_path))
     assert scene.html, "a screen must still get something to show"
     assert "ValueError" in scene.html
+
+
+# The panel sits on a desk in Spain next to a radar whose firmware already says
+# "aeronaves". Mixing an English sentence into Spanish chrome looked like a bug
+# on the glass, so the rule is: glass is Spanish, operator surfaces are English.
+ENGLISH_ON_GLASS = ("no scene", "not assigned", "unknown scene", "failed",
+                    "error:", "no signal", "aircraft", "clear sky")
+
+
+@pytest.mark.parametrize("name", ["clock", "status", "planes"])
+def test_no_scene_puts_english_prose_on_the_glass(tmp_path, name):
+    html = scenes.build(name, ctx(tmp_path)).html.lower()
+    for phrase in ENGLISH_ON_GLASS:
+        assert phrase not in html, f"{name} shows English on the panel: {phrase!r}"
+
+
+@pytest.mark.parametrize("bad", ["nosuchscene", "clock"])
+def test_the_failure_fallback_explains_itself_in_spanish(tmp_path, monkeypatch, bad):
+    # Both fallback paths -- unknown name and a scene that raises -- reach the
+    # same status panel, and both used to answer in English.
+    if bad == "clock":
+        monkeypatch.setattr(_clock_mod, "build",
+                            lambda c: (_ for _ in ()).throw(RuntimeError("x")))
+    html = scenes.safe_build(bad, ctx(tmp_path)).html
+    assert "escena desconocida" in html or "fallo en" in html
+    for phrase in ENGLISH_ON_GLASS:
+        assert phrase not in html.lower()
+
+
+def test_an_empty_sky_collapses_rather_than_showing_an_empty_frame(tmp_path):
+    # A table with zero rows renders as a title and a rule over 400px of white,
+    # which reads as a broken screen rather than a quiet one.
+    html = scenes.build("planes", ctx(tmp_path)).html
+    assert "cielo despejado" in html
+    assert "<tr><td" in html, "the table must never be structurally empty"
+
+
+def test_a_device_with_no_name_still_labels_itself(tmp_path):
+    c = ctx(tmp_path, device={"hw": "aabb00112233"})
+    html = scenes.build("status", c).html
+    assert "sin asignar" in html, "an unnamed device must still say what it is"
+    assert "aabb00112233" in html, "the hw id is what you type to assign it"
+
+
+def test_a_scene_cannot_ship_a_layout_no_device_can_draw(tmp_path):
+    # Spec §5.4 names `grid`; nothing implements it. Without this the word
+    # could reach a device as a silent no-op that renders as a blank panel.
+    assert scenes.LAYOUTS == ("fill",)
+    with pytest.raises(ValueError, match="grid"):
+        scenes.Scene(layout="grid")
+    with pytest.raises(ValueError):
+        scenes.Scene(layout="")
+
+
+@pytest.mark.parametrize("name", ["clock", "status", "planes"])
+def test_every_built_scene_declares_a_carried_layout(tmp_path, name):
+    assert scenes.build(name, ctx(tmp_path)).layout in scenes.LAYOUTS

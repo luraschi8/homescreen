@@ -16,13 +16,19 @@ def client(tmp_path):
     return create_app(CFG, tmp_path, version="t").test_client()
 
 
-@pytest.fixture(autouse=True)
-def _needs_chromium():
+@pytest.fixture
+def needs_chromium():
+    """Opt-in, NOT autouse.
+
+    As an autouse fixture this skipped 14 tests on any machine without a
+    browser -- including five that never render anything. A route's error
+    handling must be verifiable on the box that runs it.
+    """
     if render.find_chromium() is None:
         pytest.skip("no chromium/chrome on this machine")
 
 
-def test_an_unassigned_device_gets_a_real_frame_not_an_error(client):
+def test_an_unassigned_device_gets_a_real_frame_not_an_error(client, needs_chromium):
     # Spec §6.1: a newly flashed board must be able to tell you its id, not
     # sit blank or 404.
     r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
@@ -31,20 +37,20 @@ def test_an_unassigned_device_gets_a_real_frame_not_an_error(client):
     assert len(r.get_data()) == 800 * 480 // 8
 
 
-def test_the_frame_is_exactly_the_declared_geometry(client, tmp_path):
+def test_the_frame_is_exactly_the_declared_geometry(client, needs_chromium, tmp_path):
     for w, h in ((800, 480), (240, 240), (400, 300)):
         r = client.get(f"/api/device/{HW}/frame?w={w}&h={h}&depth=1")
         assert len(r.get_data()) == w * h // 8, f"{w}x{h}"
 
 
-def test_an_assigned_scene_is_the_one_rendered(client, tmp_path):
+def test_an_assigned_scene_is_the_one_rendered(client, needs_chromium, tmp_path):
     client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
     client.patch(f"/api/devices/{HW}", json={"name": "desk", "scene": "clock"})
     r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
     assert r.headers["X-Scene"] == "clock"
 
 
-def test_an_unchanged_frame_is_a_304(client):
+def test_an_unchanged_frame_is_a_304(client, needs_chromium):
     first = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
     etag = first.headers["ETag"]
     again = client.get(f"/api/device/{HW}/frame{EPAPER_Q}",
@@ -54,7 +60,7 @@ def test_an_unchanged_frame_is_a_304(client):
     assert again.headers["X-Poll-Seconds"], "cadence still reaches the device"
 
 
-def test_a_changed_scene_changes_the_etag(client):
+def test_a_changed_scene_changes_the_etag(client, needs_chromium):
     first = client.get(f"/api/device/{HW}/frame{EPAPER_Q}").headers["ETag"]
     client.patch(f"/api/devices/{HW}", json={"name": "desk", "scene": "clock"})
     assert client.get(f"/api/device/{HW}/frame{EPAPER_Q}").headers["ETag"] != first
@@ -75,7 +81,7 @@ def test_an_unrenderable_geometry_is_refused_before_any_work(client, w, h, why):
 
 
 @pytest.mark.parametrize("w", [0, -8, "abc", 99999999999])
-def test_an_out_of_range_dimension_falls_back_rather_than_failing(client, w):
+def test_an_out_of_range_dimension_falls_back_rather_than_failing(client, needs_chromium, w):
     # clean_caps drops nonsense before the geometry check ever sees it, so the
     # device gets the default panel size rather than an error it cannot act on.
     r = client.get(f"/api/device/{HW}/frame?w={w}&h=480&depth=1")
@@ -83,7 +89,7 @@ def test_an_out_of_range_dimension_falls_back_rather_than_failing(client, w):
     assert len(r.get_data()) == 800 * 480 // 8
 
 
-def test_the_frame_is_rendered_at_the_geometry_of_this_request(client):
+def test_the_frame_is_rendered_at_the_geometry_of_this_request(client, needs_chromium):
     # Not the stored one: registration is unauthenticated, so trusting stored
     # caps lets any LAN host re-geometry someone else's panel, after which it
     # gets a wrong-length body at HTTP 200 and streams it straight at hardware.
@@ -103,12 +109,12 @@ def test_a_render_failure_is_503_not_a_short_frame(client, monkeypatch):
     assert "render failed" in r.get_json()["error"]
 
 
-def test_the_frame_length_header_matches_the_body(client):
+def test_the_frame_length_header_matches_the_body(client, needs_chromium):
     r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
     assert int(r.headers["X-Frame-Bytes"]) == len(r.get_data())
 
 
-def test_the_frame_decodes_back_to_a_readable_image(client, tmp_path):
+def test_the_frame_decodes_back_to_a_readable_image(client, needs_chromium, tmp_path):
     # 1 = black on the wire. If this comes out inverted the server is wrong,
     # and a real panel would show a photographic negative.
     from PIL import Image
@@ -150,3 +156,66 @@ def test_a_registry_write_failure_is_503_not_500(client, monkeypatch):
     monkeypatch.setattr("homescreen.registry.touch", boom)
     assert client.get(f"/api/device/{HW}/scene").status_code == 503
     assert client.get(f"/api/device/{HW}/frame{EPAPER_Q}").status_code == 503
+
+
+def test_the_frame_is_served_as_binary_not_json(client, needs_chromium):
+    # A device streams the body straight at a panel; a JSON content type would
+    # mean somebody had wrapped it.
+    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    assert r.mimetype == "application/octet-stream"
+
+
+def test_a_device_declaring_no_geometry_gets_the_default_panel(client, needs_chromium):
+    # Every other frame test passes w/h explicitly, so the fallback was
+    # invisible: changing it to 8x480 passed the whole suite.
+    r = client.get(f"/api/device/{HW}/frame?fw=0.1")
+    assert len(r.get_data()) == 800 * 480 // 8
+
+
+def test_a_device_is_told_a_default_cadence_before_it_is_assigned(client):
+    r = client.get(f"/api/device/{HW}/scene")
+    assert r.headers["X-Poll-Seconds"] == "5"
+
+
+def test_components_the_device_did_not_declare_are_dropped_and_reported(client):
+    # ADDENDUM §5.5: the device never receives something it cannot draw, and
+    # the substitution is reported rather than silent.
+    client.get("/api/device/RR/scene?w=240&h=240&components=text")
+    client.patch("/api/devices/RR", json={"name": "r", "scene": "planes"})
+    body = client.get("/api/device/RR/scene?w=240&h=240&components=text").get_json()
+    assert body["components"] == []
+    assert body["unsupported"] == ["radar"]
+
+
+def test_a_device_that_declares_the_component_still_gets_it(client):
+    client.get("/api/device/RR2/scene?w=240&h=240&components=radar,text")
+    client.patch("/api/devices/RR2", json={"name": "r2", "scene": "planes"})
+    body = client.get("/api/device/RR2/scene?w=240&h=240&components=radar").get_json()
+    assert [c["c"] for c in body["components"]] == ["radar"]
+    assert "unsupported" not in body
+
+
+def test_telemetry_does_not_swallow_capability_or_firmware_keys(client, tmp_path):
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&fw=1.2&rssi=-64")
+    rec = registry.load(tmp_path)[HW]
+    assert rec["telemetry"] == {"rssi": "-64"}
+    assert rec["fw"] == "1.2"
+
+
+def test_a_named_registry_device_is_reachable_by_its_friendly_name(client):
+    # ADDENDUM §4.5. Without the alias the fleet view lists devices you cannot
+    # curl -- resolve_name existed and was wired to no route.
+    client.get("/api/device/aa99bb88cc77/scene?w=240&h=240")
+    client.patch("/api/devices/aa99bb88cc77", json={"name": "kitchen",
+                                                    "scene": "planes"})
+    assert client.get("/api/display/kitchen/health").status_code == 200
+    assert client.get("/api/display/nosuchname/health").status_code == 404
+
+
+def test_a_config_device_still_wins_its_own_name(tmp_path):
+    # The live deployment serves /api/display/radar/data from config.yaml.
+    cfg = {**CFG, "devices": [{"id": "radar", "kind": "gc9a01_client",
+                               "render": "device", "feed": "adsb",
+                               "poll_seconds": 5}]}
+    c = create_app(cfg, tmp_path, version="t").test_client()
+    assert c.get("/api/display/radar/data").status_code == 200

@@ -167,14 +167,31 @@ warrant a data format, it can be added over this without changing the device con
 
 ### 5.2 Component vocabulary, v1
 
-Chosen so that **the radar is not a special case** — it decomposes into two general
-components. That is the test of whether the vocabulary is at the right level.
+> **Correction, 2026-08-26 (post-implementation).** The claim below — that the radar
+> decomposes into `rings` + `markers` — was written from the ADDENDUM, not from the
+> firmware, and it is **false**. `radar_display.cpp` draws eleven distinct elements from
+> one coupled state: two angles per target (bearing for position, track for the glyph
+> rotation), label placement driven by measured text metrics, and a collision ladder that
+> nudges labels against *already-placed* ones. `rings` and `markers` as separate
+> components cannot express that, because the second needs the first's resolved geometry.
+> `planes.py` therefore emits **one coarse `radar` component** carrying the target list,
+> and the device owns the drawing. The vocabulary below stands for everything else; the
+> radar row is the honest exception, and the table records it as such.
+>
+> A second correction in the same paragraph: §5.3 says the device dead-reckons "so the
+> radar continues to sweep". **There is no sweep.** `grep -iE "sweep|rotat|animat"`
+> against `radar_display.cpp` returns nothing for the display itself. Interpolation keeps
+> *targets* moving smoothly between polls; nothing rotates.
+
+Chosen so that most screens are ordinary compositions of a small vocabulary. The radar is
+the one component that is genuinely irreducible — see the correction above.
 
 | Component | Fields | Covers |
 |---|---|---|
 | `text` | `slot`, `text`, `size`, `tone` | labels, prices, clock digits, deltas |
-| `rings` | `radii`, `labels` | radar ranges, gauge tracks |
-| `markers` | `items[{brg,dist,rot,ve,vn,age,label}]` | aircraft, and anything that moves |
+| `radar` | `items[{brg,dist,rot,ve,vn,age,label}]`, `radius_km` | the radar, whole — **implemented** |
+| ~~`rings`~~ | ~~`radii`, `labels`~~ | withdrawn; see the correction above |
+| ~~`markers`~~ | ~~`items[...]`~~ | withdrawn; folded into `radar` |
 | `hand` | `angle`, `rate`, `length` | clock hands, compass needle |
 | `spark` | `points`, `min`, `max` | price history, trends |
 | `icon` | `name` | weather glyphs |
@@ -199,13 +216,13 @@ the projection code that already exists.
 dead-reckons between polls, so the radar continues to sweep rather than jump — the
 reason ADDENDUM §2 kept this device on data push in the first place.
 
-The radar scene is then:
+The radar scene is then (as `planes.py` actually emits it):
 
 ```json
 {"layout":"fill","components":[
-  {"c":"rings","radii":[10,20,30],"labels":true},
-  {"c":"markers","items":[...]},
-  {"c":"text","slot":"rim_bottom","text":"20 ac"}
+  {"c":"radar","radius_km":30,"items":[{"brg":143.0,"dist":7.4,"rot":143,
+                                        "ve":0.13,"vn":-0.17,"age":3.1,
+                                        "label":"IBE3221"}]}
 ]}
 ```
 
@@ -216,7 +233,13 @@ server-side change only.
 
 - **`fill`** — one component region plus a fixed slot set the device knows how to place:
   `center`, `primary`, `secondary`, `delta`, `rim_top`, `rim_bottom`.
-- **`grid`** — rows/cols with cell placements.
+- **`grid`** — rows/cols with cell placements. **DEFERRED 2026-08-26, not implemented.**
+  Every scene emits `layout: "fill"` and `check_layout` accepts only that. Two reasons to
+  wait: no device declares `grid`, and the one device that could use it (the e-paper) is
+  laid out server-side in CSS, where a wire-level grid vocabulary would be a second,
+  weaker layout engine sitting in front of a good one. `grid` becomes real work when a
+  *second* self-drawing device wants multi-region layout. Until then the server would be
+  shipping a mode nothing consumes and no test could honestly exercise.
 
 The device declares which modes it supports. The round screen claims only `fill`, which
 is honest: at 240×240 there is no room for more.
@@ -247,7 +270,11 @@ Extends SPEC §11 rather than replacing it.
    built-in `error` scene naming the failure, and records it in the fleet view. A broken
    scene must never blank a screen with no explanation.
 3. **A device holds its last good scene** on fetch failure, exactly as it holds its last
-   good aircraft list today.
+   good aircraft list today. **Firmware-side; belongs to Phase 3 and is not testable on
+   the Pi.** The server-side half of the obligation *is* implemented and tested: the scene
+   endpoint is idempotent, never emits a partial component list (§6.2 substitutes a whole
+   fallback scene rather than truncating a good one), and 304s an unchanged scene so a
+   holding device is never handed a body it must reconcile.
 4. **The registry is written from the network**, so a corrupt `devices.json` degrades to
    an empty registry rather than stopping the daemon — the rule already applied to
    `overrides.json`.

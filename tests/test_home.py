@@ -68,8 +68,11 @@ def test_home_shows_live_feed_state(ctx):
     _seed(path, n=3)
     clock.t += 4.0
     body = client.get("/home").get_data(as_text=True)
-    assert "3" in body, "aircraft count"
-    assert "4.0" in body or "4 s" in body, "feed age"
+    # `assert "3" in body` was the old check and was vacuous: "3" appears in
+    # the #e3e3e3 palette and in the version string, so it held at zero
+    # aircraft. Assert the rendered field.
+    assert "<dt>aircraft</dt><dd>3</dd>" in body
+    assert "<dt>feed age</dt><dd>4.0s</dd>" in body
 
 
 def test_home_works_before_any_fetch_has_happened(ctx):
@@ -87,13 +90,13 @@ def test_home_never_500s_on_a_corrupt_cache(ctx):
     assert client.get("/home").status_code == 200
 
 
-def test_home_does_not_leak_secrets(ctx):
+def test_home_does_not_leak_secrets(ctx, tmp_path):
     # config.local.yaml holds API keys (SPEC 7.4). The status page is
     # unauthenticated on the LAN, so it must render config STRUCTURE only.
     cfg = json.loads(json.dumps(CFG))
     cfg["feeds"]["adsb"]["api_key"] = "s3cret-key-value"
     cfg["quotes"] = {"api_key": "another-s3cret"}
-    client = create_app(cfg, Path("/tmp"), version="v").test_client()
+    client = create_app(cfg, tmp_path, version="v").test_client()
     body = client.get("/home").get_data(as_text=True)
     assert "s3cret" not in body
     assert "another-s3cret" not in body
@@ -116,10 +119,10 @@ def test_status_json_mirrors_the_page(ctx):
     assert body["devices"][1]["endpoints"]["data"] is None
 
 
-def test_status_json_does_not_leak_secrets():
+def test_status_json_does_not_leak_secrets(tmp_path):
     cfg = json.loads(json.dumps(CFG))
     cfg["feeds"]["adsb"]["api_key"] = "s3cret-key-value"
-    client = create_app(cfg, Path("/tmp"), version="v").test_client()
+    client = create_app(cfg, tmp_path, version="v").test_client()
     assert "s3cret" not in json.dumps(client.get("/api/status").get_json())
 
 

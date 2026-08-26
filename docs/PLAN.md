@@ -54,7 +54,7 @@ data-push path — no polarity, no framebuffer, no partial refresh.
 | A1 | Pi bring-up (server subset) — git, venv, `config.yaml` | **DONE** 2026-08-25 |
 | A2 | `sources/adsb.py` — fetch, filter to radius, compute bearing/distance/velocity, write `cache/feed/radar.json` | **DONE** — own cadence, decoupled from device polling (VALIDATION C7) |
 | A3 | `serve.py` + `/api/display/radar/data` (and `/health`) | **DONE** — live at `http://dashboard.local:8080`; ETag, `X-Poll-Seconds`, `X-Feed-Age`/`X-Feed-Ok`, telemetry |
-| A4 | Radar firmware fork — swap `adsb.fi` for the Pi | See §3; drops TLS entirely |
+| A4 | ~~Radar firmware fork — swap `adsb.fi` for the Pi~~ | **SUPERSEDED 2026-08-26** by Phase 3 of the [server-driven displays spec](superpowers/specs/2026-08-26-server-driven-displays-design.md). A fork that only swapped the URL would be reflashed again the moment the firmware became scene-driven. The §3 requirements below are **not** superseded — they are input to Phase 3. |
 | A5 | Soak — confirm heap recovery and stall detection | Measure against `OPS.md` baselines |
 
 **Phase A delivers real value independent of the dashboard:** it removes mbedTLS from the
@@ -162,7 +162,9 @@ the comment there records that summing them made targets blink once per cycle. P
 that structure and add `feed.age_s` as a **third** separately-tested cause. Do not merge
 them, and do not substitute it for `fetch_age_raw`.
 
-**Three requirements this places on the firmware (Phase A4):**
+**Three requirements this places on the firmware.** These were written for A4 and
+survive its cancellation unchanged: they are properties of the Pi's HTTP contract, not of
+any particular firmware. They now belong to spec Phase 3.
 
 - **A `304` needs the device's single clock split in two — and 304 must stop being a
   failure.** `adsb_client.cpp` has one `s_last_update_ms` (declared line 41, assigned only

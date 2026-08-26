@@ -34,6 +34,22 @@ class SceneContext:
     device: dict
 
 
+#: Layout modes the wire protocol actually carries. `grid` is deferred (spec
+#: §5.4): the only device that could use it lays out in CSS on the Pi, so a
+#: wire-level grid would be a second, weaker layout engine in front of a good
+#: one. Listing it here without a consumer would let a scene ship a mode no
+#: device can draw and no test can honestly exercise.
+LAYOUTS = ("fill",)
+
+
+def check_layout(layout: str) -> str:
+    """The one place a layout name is admitted. Raises ValueError otherwise."""
+    if layout not in LAYOUTS:
+        raise ValueError(
+            f"unsupported layout {layout!r}; this server carries {LAYOUTS}")
+    return layout
+
+
 @dataclasses.dataclass(frozen=True)
 class Scene:
     """What a scene produces.
@@ -45,6 +61,9 @@ class Scene:
     layout: str = "fill"
     components: tuple = ()
     html: str | None = None
+
+    def __post_init__(self):
+        check_layout(self.layout)
 
 
 def _registry() -> dict:
@@ -65,16 +84,18 @@ def safe_build(name: str, ctx: SceneContext) -> Scene:
     """Build, falling back to the `status` scene on any failure.
 
     Spec §6.2: a scene that raises must not reach the device, and must not
-    blank a screen with no explanation. The fallback says what broke.
+    blank a screen with no explanation. The fallback says what broke, in
+    Spanish -- everything that lands on glass is Spanish, everything the
+    operator reads (JSON, /home, logs) is English. See CLAUDE.md.
     """
     try:
         return build(name, ctx)
     except KeyError:
         log.warning("unknown scene %r", name)
-        return _fallback(ctx, f"unknown scene: {name}")
+        return _fallback(ctx, f"escena desconocida: {name}")
     except Exception as exc:  # noqa: BLE001
         log.exception("scene %r failed", name)
-        return _fallback(ctx, f"{name} failed: {type(exc).__name__}")
+        return _fallback(ctx, f"fallo en {name}: {type(exc).__name__}")
 
 
 def _fallback(ctx: SceneContext, message: str) -> Scene:

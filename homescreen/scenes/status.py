@@ -36,7 +36,7 @@ def build(ctx: SceneContext, *, message: str | None = None) -> Scene:
     name = ctx.device.get("name")
     name = e(str(name)) if name else None
     stamp = datetime.fromtimestamp(ctx.now).strftime("%H:%M")
-    text = e(str(message)) if message else "no scene assigned"
+    text = e(str(message)) if message else "sin escena asignada"
     body = (f'<div class="wrap">'
             f'<div class="lab">{"sin asignar" if not name else name}</div>'
             f'<div class="hw">{hw}</div>'

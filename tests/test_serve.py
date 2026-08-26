@@ -388,3 +388,45 @@ def test_serve_module_imports_no_http_client():
                          text=True, check=True, cwd=root,
                          env={**os.environ, "PYTHONPATH": str(root)}).stdout.strip()
     assert out == "", f"serve path must perform no network I/O; pulled in: {out}"
+
+
+def test_a_cache_file_carrying_infinity_is_rejected_whole(ctx):
+    # Two guards stand between a bad feed and a device. This is the outer one:
+    # cache.read refuses the envelope, so the device is told the feed is down
+    # rather than handed a partial sky it cannot distinguish from a quiet one.
+    import json as _json
+    client, path, clock = ctx
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({
+        "fetched_at": "2026-01-01T00:00:00+00:00", "ok": True,
+        "data": {"aircraft": [{"cs": "BAD", "age": float("inf")}]}},
+        allow_nan=True))
+    body = client.get("/api/display/radar/data").get_json()
+    assert body["aircraft"] == []
+    assert body["feed"]["ok"] is False
+
+
+def test_a_non_finite_age_that_reaches_serve_is_dropped_per_aircraft(ctx):
+    # And this is the inner one, unreachable through the file because of the
+    # guard above -- so exercise it directly. Deleting the isfinite branch in
+    # _servable otherwise changes no test.
+    from homescreen.serve import _servable
+    env = {"data": {"aircraft": [{"cs": "BAD", "age": float("nan")},
+                                 {"cs": "INF", "age": float("inf")},
+                                 {"cs": "TXT", "age": "soon"},
+                                 {"cs": "OK", "age": 1.0}]}}
+    out = _servable(env, dwell=2.0)
+    assert [a["cs"] for a in out] == ["OK"], "an age we cannot trust is dropped"
+    assert out[0]["age"] == 3.0, "dwell is added at serve time, not fetch time"
+
+
+def test_a_negative_feed_age_is_never_reported(ctx):
+    client, path, clock = ctx
+    _seed(path)
+    clock.t -= 3600
+    assert client.get("/api/display/radar/data").get_json()["feed"]["age_s"] >= 0
+
+
+def test_the_staleness_horizon_is_the_firmware_constant(ctx):
+    from homescreen.serve import STALE_HORIZON_S
+    assert STALE_HORIZON_S == 12.0, "kExtrapolationHorizonSec in adsb_client.h"
