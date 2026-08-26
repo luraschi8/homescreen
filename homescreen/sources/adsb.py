@@ -16,8 +16,9 @@ import time
 from pathlib import Path
 
 from homescreen.cache import write_cache, write_failure
-from homescreen.config import (device, feed_cache_path, feed_config,
-                               load_config)
+from homescreen import overrides
+from homescreen.config import (check_device, device, feed_cache_path,
+                               feed_config, load_config)
 from homescreen.sources.adsb_map import map_aircraft
 
 log = logging.getLogger(__name__)
@@ -47,28 +48,6 @@ STALE_HORIZON_S = 12.0
 MIN_REQUEST_SPACING_S = 1.0
 
 
-def _number(dev: dict, label: str, value, lo: float, hi: float,
-            *, inclusive_low: bool = True) -> float:
-    """Range-check one numeric config field, or raise ValueError naming it.
-
-    Rejects non-finite as well: `radius_km: .inf` passes any bare `< lo` test
-    and then produces a nonsense `dist=inf` upstream request, and inf/nan is
-    already rejected everywhere else in this project.
-    """
-    try:
-        n = float(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"device {dev['id']}: {label} must be a number, "
-                         f"got {value!r}") from None
-    if not math.isfinite(n):
-        raise ValueError(f"device {dev['id']}: {label} must be finite, "
-                         f"got {value!r}")
-    too_low = n < lo if inclusive_low else n <= lo
-    if too_low or n > hi:
-        bound = f"{lo} to {hi}" if inclusive_low else f"above {lo}, up to {hi}"
-        raise ValueError(f"device {dev['id']}: {label} must be {bound}, "
-                         f"got {value!r}")
-    return n
 
 
 def check_config(cfg: dict, targets: list) -> None:
@@ -85,23 +64,7 @@ def check_config(cfg: dict, targets: list) -> None:
                          f"got {endpoint!r}")
 
     for dev, _ in targets:
-        if not isinstance(dev.get("id"), str):
-            raise ValueError(f"device entry has no usable id: {dev!r}")
-        home = dev.get("home")
-        if not isinstance(home, dict):
-            raise ValueError(f"device {dev['id']}: home must be a mapping, "
-                             f"got {home!r}")
-        _number(dev, "home.lat", home.get("lat"), -90.0, 90.0)
-        _number(dev, "home.lon", home.get("lon"), -180.0, 180.0)
-        # radius_km 0 would fetch nothing forever while the unit stays green --
-        # the exact silent failure this function exists to prevent -- so the
-        # lower bound is exclusive. max_aircraft 1 is odd but usable.
-        _number(dev, "radius_km", dev.get("radius_km", 60), 0.0, 20000.0,
-                inclusive_low=False)
-        _number(dev, "max_aircraft", dev.get("max_aircraft", 20), 1.0, 1000.0)
-        # X-Poll-Seconds is config's projection (CLAUDE.md), so a dangling
-        # `poll_seconds:` would serve the device the literal string "None".
-        _number(dev, "poll_seconds", dev.get("poll_seconds", 5), 1.0, 3600.0)
+        check_device(dev)
 
     check_cadence(cfg, len(targets))
 
@@ -255,7 +218,8 @@ def fetch_targets(cfg: dict, cache_dir: Path) -> list:
             and d.get("render") == "device" and d.get("feed") == "adsb"]
 
 
-def run_forever(cfg: dict, targets: list, *, session=None, sleep=time.sleep) -> None:
+def run_forever(cfg: dict, targets: list, *, session=None, sleep=time.sleep,
+                cache_dir: Path | None = None) -> None:
     """`session` and `sleep` are injectable so the loop itself is testable --
     check_cadence's budget is only correct because of what this loop does, and
     a comment is not a guarantee."""
@@ -271,8 +235,14 @@ def run_forever(cfg: dict, targets: list, *, session=None, sleep=time.sleep) -> 
     log.info("adsb fetch loop starting for %s, interval %.1fs, spacing %.2fs",
              [d["id"] for d, _ in targets], interval, spacing)
     while True:
+        # Re-read the runtime overlay each cycle: serve.py writes it in a
+        # different process, so this is the only way a PATCH reaches the
+        # fetcher. Cheap -- one small file read per cycle -- and it never
+        # raises, so a bad overlay cannot stop the loop.
+        live = overrides.apply(cfg, cache_dir) if cache_dir else cfg
         for dev, cache_path in targets:
-            fetch_radar(cfg, dev, cache_path, session=session)
+            dev = device(live, dev["id"]) or dev
+            fetch_radar(live, dev, cache_path, session=session)
             # Sleep AFTER each request, so a slow upstream stretches the cycle
             # instead of queueing a second in-flight request, and so N devices
             # are spaced rather than bursting inside one second.
@@ -305,8 +275,9 @@ def startup(root: Path) -> tuple[dict, list]:
 def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    cfg, targets = startup(Path(__file__).resolve().parents[2])
-    run_forever(cfg, targets)
+    root = Path(__file__).resolve().parents[2]
+    cfg, targets = startup(root)
+    run_forever(cfg, targets, cache_dir=root / "cache")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ devices:
     feed: adsb
     home: { lat: 40.4168, lon: -3.7038 }
     radius_km: 60
-    max_aircraft: 20
+    max_aircraft: 40
     show_ground: false
     poll_seconds: 5
 

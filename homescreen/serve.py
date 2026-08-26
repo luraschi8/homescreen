@@ -15,9 +15,10 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request
 
+from homescreen import overrides
 from homescreen.cache import read_cache
-from homescreen.config import (device, feed_cache_path, feed_config,
-                               load_config, server_config)
+from homescreen.config import (check_device, device, feed_cache_path,
+                               feed_config, load_config, server_config)
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +107,14 @@ def _device_summary(cfg: dict, dev: dict, cache_dir: Path, now: float,
         },
         "last_telemetry": telemetry.get(dev_id),
     }
+
+
+def _dotted(node: dict, dotted: str):
+    for part in dotted.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node
 
 
 def _duration(seconds: float) -> str:
@@ -256,14 +265,20 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         version = resolve_version(cache_dir.parent)
 
     def _lookup(device_id: str, *, require_data_render: bool = True):
+        cfg_live = _live()
         """`/data` is data-push only; `/health` is defined for every device
         (ADDENDUM §5: "server-side status, for debugging")."""
-        dev = device(cfg, device_id)
+        dev = device(cfg_live, device_id)
         if dev is None:
             return None
         if require_data_render and dev.get("render") != DATA_RENDER:
             return None
         return dev
+
+    def _live() -> dict:
+        """cfg with the runtime overlay applied. Re-read per request so a PATCH
+        takes effect immediately without restarting the daemon."""
+        return overrides.apply(cfg, cache_dir)
 
     @app.get("/api/display/<device_id>/data")
     def data(device_id: str):
@@ -357,6 +372,62 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     @app.get("/home")
     def home():
         return Response(_render_home(_status()), mimetype="text/html")
+
+    @app.get("/api/config")
+    def get_config():
+        live = _live()
+        data = overrides.load(cache_dir)
+        return jsonify({
+            "settable": list(overrides.SETTABLE_KEYS),
+            "devices": [
+                {"id": d["id"],
+                 "effective": {k: _dotted(d, k) for k in overrides.SETTABLE_KEYS},
+                 "overridden": data.get(d["id"], {})}
+                for d in (live.get("devices") or [])
+                if isinstance(d, dict) and d.get("id")],
+        })
+
+    @app.patch("/api/config/devices/<device_id>")
+    def patch_config(device_id: str):
+        live = _live()
+        if device(live, device_id) is None:
+            return jsonify({"error": "unknown device"}), 404
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or not body:
+            return jsonify({"error": "body must be a non-empty JSON object"}), 400
+
+        bad = [k for k in body if k not in overrides.SETTABLE_KEYS]
+        if bad:
+            return jsonify({"error": f"not settable: {sorted(bad)}",
+                            "settable": list(overrides.SETTABLE_KEYS)}), 400
+
+        # Validate the RESULT before persisting. This file is written from the
+        # network and re-read by the fetch daemon, so an unvalidated write is a
+        # remote way to wedge the service. Nothing lands on disk unless the
+        # config it produces would survive startup.
+        data = overrides.load(cache_dir)
+        candidate = {**data, device_id: {**data.get(device_id, {}), **body}}
+        probe = overrides.apply(cfg, cache_dir, _data=candidate)
+        try:
+            check_device(device(probe, device_id))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        overrides.save(cache_dir, candidate)
+        log.info("config patched: %s %s", device_id, body)
+        return jsonify({"id": device_id,
+                        "overridden": candidate[device_id],
+                        "effective": {k: _dotted(device(probe, device_id), k)
+                                      for k in overrides.SETTABLE_KEYS},
+                        "note": "the fetch daemon picks this up next cycle"})
+
+    @app.delete("/api/config/devices/<device_id>")
+    def reset_config(device_id: str):
+        data = overrides.load(cache_dir)
+        data.pop(device_id, None)
+        overrides.save(cache_dir, data)
+        return jsonify({"id": device_id, "overridden": {},
+                        "note": "reverted to config.yaml"})
 
     @app.get("/api/status")
     def status():
