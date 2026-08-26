@@ -160,3 +160,89 @@ def test_resolve_version_treats_an_empty_sha_as_unknown(tmp_path, monkeypatch):
 
     monkeypatch.setattr("homescreen.serve.subprocess.run", lambda *a, **k: R())
     assert resolve_version(tmp_path) == "unknown"
+
+
+from homescreen import registry as _registry
+
+
+def _reg_app(tmp_path, clock=None, cfg=None):
+    return create_app(cfg if cfg is not None else {"feeds": {"adsb": {}}, "devices": []},
+                      tmp_path, clock=clock or Clock(), version="abc1234")
+
+
+def test_home_lists_registered_devices_with_state(tmp_path):
+    clock = Clock()
+    client = _reg_app(tmp_path, clock).test_client()
+    _registry.touch(tmp_path, "a4cf12ab3c44", fw="0.2.0",
+                    caps={"w": 240, "h": 240}, now=clock.t)
+    _registry.assign(tmp_path, "a4cf12ab3c44", name="radar", scene="planes")
+    _registry.touch(tmp_path, "deadbeef0000", fw="0.1.0", now=clock.t)
+    body = client.get("/home").get_data(as_text=True)
+    assert "radar" in body and "planes" in body
+    assert "a4cf12ab3c44" in body, "hw id shown so a new board is identifiable"
+    assert "unassigned" in body and "unnamed" in body
+    assert "0.2.0" in body and "0.1.0" in body
+    assert "240x240" in body
+
+
+def test_home_marks_a_silent_device_offline(tmp_path):
+    clock = Clock()
+    client = _reg_app(tmp_path, clock).test_client()
+    _registry.touch(tmp_path, "a4cf12ab3c44", now=clock.t)
+    assert "offline" not in client.get("/home").get_data(as_text=True).lower()
+    clock.t += 3600
+    assert "offline" in client.get("/home").get_data(as_text=True).lower()
+
+
+def test_home_header_counts_the_fleet_not_the_config(tmp_path):
+    clock = Clock()
+    client = _reg_app(tmp_path, clock).test_client()
+    _registry.touch(tmp_path, "a4cf12ab3c44", now=clock.t)
+    _registry.touch(tmp_path, "deadbeef0000", now=clock.t)
+    body = client.get("/home").get_data(as_text=True)
+    assert "2 device(s) registered" in body
+    assert "2 online" in body
+
+
+def test_home_renders_with_an_empty_fleet(tmp_path):
+    client = _reg_app(tmp_path).test_client()
+    body = client.get("/home").get_data(as_text=True)
+    assert client.get("/home").status_code == 200
+    assert "no devices have called in yet" in body
+
+
+def test_status_json_carries_the_fleet(tmp_path):
+    client = _reg_app(tmp_path).test_client()
+    _registry.touch(tmp_path, "a4cf12ab3c44", fw="0.2.0", now=1_700_000_000.0)
+    fleet = client.get("/api/status").get_json()["fleet"]
+    assert fleet[0]["hw"] == "a4cf12ab3c44"
+    assert fleet[0]["scene"] == "unassigned"
+
+
+def test_the_fleet_view_does_not_leak_telemetry_into_html(tmp_path):
+    # telemetry is device-supplied; it must be escaped, not injected.
+    client = _reg_app(tmp_path).test_client()
+    _registry.touch(tmp_path, "a4cf12ab3c44", now=1_700_000_000.0,
+                    telemetry={"x": "<script>alert(1)</script>"})
+    body = client.get("/home").get_data(as_text=True)
+    assert "<script>alert(1)</script>" not in body
+    assert "&lt;script&gt;" in body
+
+
+def test_a_name_containing_a_slash_is_refused_outright(tmp_path):
+    # The alias resolves names in a URL path, so a slash would misroute.
+    client = _reg_app(tmp_path).test_client()
+    _registry.touch(tmp_path, "a4cf12ab3c44", now=1_700_000_000.0)
+    r = client.patch("/api/devices/a4cf12ab3c44", json={"name": "<b>x</b>"})
+    assert r.status_code == 400
+
+
+def test_a_device_named_with_html_is_escaped(tmp_path):
+    # Slash-free, so it passes name validation and reaches the renderer -- the
+    # escaping is what must stop it, not the name check.
+    client = _reg_app(tmp_path).test_client()
+    _registry.touch(tmp_path, "a4cf12ab3c44", now=1_700_000_000.0)
+    _registry.assign(tmp_path, "a4cf12ab3c44", name="<b>bold")
+    body = client.get("/home").get_data(as_text=True)
+    assert "<b>bold" not in body
+    assert "&lt;b&gt;bold" in body
