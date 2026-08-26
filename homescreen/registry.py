@@ -119,12 +119,25 @@ _contact: dict[tuple, float] = {}
 _contact_lock = threading.Lock()
 
 
-def _note_contact(cache_dir: Path, hw_id: str, when: float) -> None:
+def _note_contact(cache_dir: Path, hw_id: str, when: float, keep=None) -> None:
+    """`keep` is the set of hw ids currently on disk.
+
+    Evicting by AGE was self-defeating: every unauthenticated GET writes an
+    entry, so a flood of rotating ids pushed out a real device's just-written
+    contact and liveness fell back to the disk stamp -- which the 30s wear
+    guard holds against a 15s window. Measured: a radar polling exactly on
+    cadence read offline on 50% of checks WHILE the flood ran. The registry is
+    already bounded at MAX_DEVICES, so bound this by the same set: an id that
+    is not in the registry has nothing to be live about.
+    """
+    path = str(registry_path(cache_dir))
     with _contact_lock:
-        _contact[(str(registry_path(cache_dir)), hw_id)] = when
-        if len(_contact) > MAX_DEVICES * 4:
-            for key in sorted(_contact, key=_contact.get)[:MAX_DEVICES * 2]:
-                _contact.pop(key, None)
+        _contact[(path, hw_id)] = when
+        if len(_contact) > MAX_DEVICES * 2:
+            live = set(keep or ())
+            for key in list(_contact):
+                if key[0] == path and key[1] not in live and key[1] != hw_id:
+                    _contact.pop(key, None)
 
 
 def _contact_time(cache_dir: Path, hw_id: str):
@@ -285,8 +298,27 @@ def _quarantine(cache_dir: Path) -> None:
             os.link(path, dest)
         except FileExistsError:
             continue
-        except OSError as exc:
-            log.error("registry corrupt and could not be moved aside: %s", exc)
+        except OSError:
+            # No hard links here (vfat, exfat, some NFS). Returning was worse
+            # than the problem: the caller's next _save_unlocked overwrote the
+            # corrupt file, destroying both the data and the evidence that is
+            # the entire point of quarantining. Reserve the name exclusively,
+            # then rename onto our own reservation.
+            try:
+                os.close(os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                log.error("registry corrupt and could not be moved aside: %s",
+                          exc)
+                return
+            try:
+                os.replace(path, dest)
+            except OSError as exc:
+                log.error("registry corrupt and could not be moved aside: %s",
+                          exc)
+                return
+            log.error("registry was corrupt; moved to %s", dest.name)
             return
         path.unlink(missing_ok=True)
         log.error("registry was corrupt; moved to %s", dest.name)
@@ -468,7 +500,7 @@ def _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now) -> dict:
                "caps": {}, "telemetry": {}}
         log.info("new device registered: %s", hw_id)
 
-    _note_contact(cache_dir, hw_id, _epoch(stamp) or 0.0)
+    _note_contact(cache_dir, hw_id, _epoch(stamp) or 0.0, keep=data)
     # Telemetry is deliberately NOT in here. `uptime` and `errors` ride on
     # every poll, so including them made `changed` true every time and the
     # guard below never fired: measured at 5x write amplification, 17,280

@@ -42,6 +42,34 @@ def load_config(path: Path) -> dict:
     return cfg
 
 
+def _whole(dev: dict, label: str, value, lo: float, hi: float) -> int:
+    """Range-check a field the consumer will use as an INT, not just a number.
+
+    `_number` validates with float() and `adsb.py` slices with int(), so
+    `max_aircraft: "20.5"` passed validation, passed the startup check, and
+    then raised inside every fetch forever: "mapping failed: invalid literal
+    for int()". One unauthenticated PATCH wedged the feed permanently and the
+    operator's own /health reported a Python parse error. Validate the way the
+    consumer consumes, or validation is theatre.
+    """
+    n = _number(dev, label, value, lo, hi)
+    if n != int(n):
+        raise ValueError(f"device {dev['id']}: {label} must be a whole number, "
+                         f"got {value!r}")
+    return int(n)
+
+
+def _flag(dev: dict, label: str, value) -> bool:
+    """A boolean field. Unvalidated, `show_ground` accepted 8 MB of text."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in (
+            "true", "false", "yes", "no", "1", "0"):
+        return value.strip().lower() in ("true", "yes", "1")
+    raise ValueError(f"device {dev['id']}: {label} must be true or false, "
+                     f"got {value!r}")
+
+
 def _number(dev: dict, label: str, value, lo: float, hi: float,
             *, inclusive_low: bool = True) -> float:
     """Range-check one numeric config field, or raise ValueError naming it.
@@ -85,8 +113,12 @@ def check_device(dev: dict) -> None:
     # lower bound is exclusive. max_aircraft 1 is odd but usable.
     _number(dev, "radius_km", dev.get("radius_km", 60), 0.0, 20000.0,
             inclusive_low=False)
-    _number(dev, "max_aircraft", dev.get("max_aircraft", 20), 1.0, 1000.0)
+    _whole(dev, "max_aircraft", dev.get("max_aircraft", 20), 1.0, 1000.0)
     _number(dev, "poll_seconds", dev.get("poll_seconds", 5), 1.0, 3600.0)
+    # Every settable key must be checked here: overrides.SETTABLE_KEYS listed
+    # six and this function validated five, so the unchecked one was a free
+    # write channel into a file on two hot paths.
+    _flag(dev, "show_ground", dev.get("show_ground", False))
 
 
 def mapping(value) -> dict:

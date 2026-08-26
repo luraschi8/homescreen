@@ -15,9 +15,14 @@ CFG = {
 }
 
 
+def _CFG():
+    import copy
+    return copy.deepcopy(CFG)
+
+
 @pytest.fixture
 def client(tmp_path):
-    return create_app(CFG, tmp_path, version="t").test_client()
+    return create_app(_CFG(), tmp_path, version="t").test_client()
 
 
 def test_get_config_reports_settable_keys_and_current_values(client):
@@ -168,3 +173,55 @@ def test_a_non_string_override_key_is_dropped(tmp_path):
     overrides.overrides_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
     overrides.overrides_path(tmp_path).write_text('{"5": {"max_aircraft": 3}}')
     assert list(overrides.load(tmp_path)) == ["5"], "JSON keys are always strings"
+
+
+# --- validate the way the consumer consumes -----------------------------------
+
+@pytest.mark.parametrize("value", ["20.5", 20.5, "abc", None, [20]])
+def test_a_fractional_aircraft_cap_is_refused_before_it_reaches_the_fetcher(
+        tmp_path, value):
+    # check_device validated with float(); adsb.py slices with int(). So
+    # `max_aircraft: "20.5"` passed validation, passed the startup check, and
+    # then raised inside EVERY fetch forever -- one unauthenticated PATCH wedged
+    # the feed permanently and /health reported a Python parse error.
+    client = create_app(_CFG(), tmp_path, version="t").test_client()
+    r = client.patch("/api/config/devices/radar", json={"max_aircraft": value})
+    assert r.status_code == 400, r.get_data()
+    assert not overrides.overrides_path(tmp_path).exists(), \
+        "a rejected override must not reach the card"
+
+
+def test_a_whole_aircraft_cap_is_still_accepted(tmp_path):
+    client = create_app(_CFG(), tmp_path, version="t").test_client()
+    assert client.patch("/api/config/devices/radar",
+                        json={"max_aircraft": 30}).status_code == 200
+    assert client.patch("/api/config/devices/radar",
+                        json={"max_aircraft": "30"}).status_code == 200
+
+
+@pytest.mark.parametrize("value", ["A" * 500, 5, [], {"x": 1}, "maybe"])
+def test_show_ground_is_validated_like_every_other_settable_key(tmp_path, value):
+    # SETTABLE_KEYS listed six keys and check_device validated five. The
+    # unchecked one was a free write channel into a file that `_live()` parses
+    # on every request and the fetch daemon re-reads every cycle.
+    client = create_app(_CFG(), tmp_path, version="t").test_client()
+    assert client.patch("/api/config/devices/radar",
+                        json={"show_ground": value}).status_code == 400
+
+
+@pytest.mark.parametrize("value", [True, False, "true", "no", "1"])
+def test_a_real_boolean_is_still_accepted(tmp_path, value):
+    client = create_app(_CFG(), tmp_path, version="t").test_client()
+    assert client.patch("/api/config/devices/radar",
+                        json={"show_ground": value}).status_code == 200
+
+
+def test_an_oversized_body_is_refused_without_being_parsed(tmp_path):
+    # 8 MB of text was accepted, fsynced to the wear-limited microSD, and then
+    # re-parsed on every request: 0.11ms became 10.2ms.
+    client = create_app(_CFG(), tmp_path, version="t").test_client()
+    r = client.patch("/api/config/devices/radar",
+                     data=json.dumps({"show_ground": "A" * 8_000_000}),
+                     content_type="application/json")
+    assert r.status_code == 413
+    assert not overrides.overrides_path(tmp_path).exists()

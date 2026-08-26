@@ -433,3 +433,36 @@ def test_liveness_uses_the_cadence_the_device_was_told(tmp_path: Path):
 def test_a_device_with_no_declared_depth_keeps_the_default(tmp_path: Path):
     rec = registry.touch(tmp_path, HW, caps={"w": 800, "h": 480}, now=1000.0)
     assert registry.poll_seconds(rec) == registry.DEFAULT_POLL_SECONDS
+
+
+def test_a_corrupt_registry_is_preserved_even_without_hard_links(tmp_path,
+                                                                 monkeypatch):
+    # vfat, exfat and some NFS mounts have no os.link. The OSError branch used
+    # to return, and the caller's next save then overwrote the corrupt file --
+    # losing the data AND the evidence, which is the whole point of the
+    # quarantine.
+    registry.touch(tmp_path, HW, now=1000.0)
+    registry.assign(tmp_path, HW, name="desk", scene="clock")
+    registry.registry_path(tmp_path).write_text('{ truncated')
+
+    def no_links(*a, **k):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(registry.os, "link", no_links)
+    registry.touch(tmp_path, "other", now=1100.0)
+
+    saved = sorted(tmp_path.glob("devices.corrupt-*"))
+    assert len(saved) == 1, "the corrupt file must be kept, links or not"
+    assert saved[0].read_text() == '{ truncated'
+    assert "other" in registry.load(tmp_path), "and the service carries on"
+
+
+def test_two_quarantines_in_the_same_second_keep_both(tmp_path):
+    # The destination was built from a 1-second timestamp and renamed onto,
+    # and rename overwrites silently -- so the second quarantine destroyed the
+    # first one's evidence.
+    for i, junk in enumerate(("{ first", "{ second")):
+        registry.registry_path(tmp_path).write_text(junk)
+        registry.touch(tmp_path, f"d{i}", now=1000.0)
+    saved = sorted(p.read_text() for p in tmp_path.glob("devices.corrupt-*"))
+    assert saved == ["{ first", "{ second"]

@@ -394,3 +394,31 @@ def test_a_recovered_scene_clears_the_note(ctx, monkeypatch):
     entry, = [d for d in client.get("/api/devices").get_json()["devices"]
               if d["hw"] == "rd2"]
     assert "unsupported" not in entry
+
+
+def test_every_route_tells_a_device_the_same_cadence(ctx):
+    # A self-registered 1-bit panel was told 30 by /scene, /frame and
+    # /api/devices, and 5 by /api/display/<name>/data -- while the fleet view
+    # judged it offline against 3 x 30. Which one the firmware obeys decides
+    # whether the panel refreshes every 5s or every 30s.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    client.patch(f"/api/devices/{HW}", json={"name": "salon", "scene": "clock"})
+
+    scene = client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    data = client.get("/api/display/salon/data")
+    fleet, = [d for d in client.get("/api/devices").get_json()["devices"]
+              if d["hw"] == HW]
+    assert scene.headers["X-Poll-Seconds"] == "30"
+    assert data.headers["X-Poll-Seconds"] == "30", "this route computed its own"
+    assert fleet["poll_seconds"] == 30
+
+
+def test_an_operator_cadence_reaches_every_route_too(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    client.patch(f"/api/devices/{HW}",
+                 json={"name": "salon2", "scene": "clock", "poll_seconds": 90})
+    assert client.get("/api/display/salon2/data").headers["X-Poll-Seconds"] == "90"
+    assert client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1"
+                      ).headers["X-Poll-Seconds"] == "90"

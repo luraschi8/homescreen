@@ -164,6 +164,13 @@ def _servable(env: dict | None, dwell: float) -> list:
 def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                version: str | None = None) -> Flask:
     app = Flask(__name__)
+    # A PATCH body has no business being large, and without this Flask has no
+    # limit at all: an 8 MB `show_ground` was accepted, fsynced to the
+    # wear-limited microSD, and then re-read and parsed on EVERY request by
+    # `_live()` and on every cycle by the fetch daemon -- 0.11ms/request became
+    # 10.2ms. Bounded here so the parse never happens rather than being made
+    # cheap.
+    app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
     telemetry: dict[str, dict] = {}
     started_at = clock()
     try:
@@ -196,7 +203,14 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             rec = registry.load(cache_dir).get(hw) or {}
             dev = {"id": device_id, "hw": hw, "feed": "adsb",
                    "render": DATA_RENDER,
-                   "poll_seconds": rec.get("poll_seconds")}
+                   # The DERIVED cadence, not the raw field. The raw field is
+                   # None until an operator picks one, and `or 5` on a None
+                   # told a 1-bit panel 5 while /scene, /frame and the fleet
+                   # view all said 30. One device, two answers, and the
+                   # firmware decides which -- that is how an e-paper ends up
+                   # refreshing every 5 seconds.
+                   "poll_seconds": registry.poll_seconds(rec),
+                   "caps": rec.get("caps") or {}}
         if require_data_render and dev.get("render") != DATA_RENDER:
             return None
         return dev
@@ -268,15 +282,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         else:
             resp = jsonify(body)
         resp.headers["ETag"] = etag
-        # int(): a dangling `poll_seconds:` is a present-but-null key, and
-        # `.get(k, 5)` does not fall back for it -- the header would read
-        # "None". check_config rejects that at startup; this is belt-and-braces
-        # for a config edited under a running daemon.
-        try:
-            poll = int(dev.get("poll_seconds") or 5)
-        except (TypeError, ValueError):
-            poll = 5
-        resp.headers["X-Poll-Seconds"] = str(poll)
+        # One cadence, one function. This route computed its own, so a
+        # self-registered device -- whose stored poll_seconds is None until an
+        # operator chooses one -- was told 30 by /scene, /frame and
+        # /api/devices, and 5 here, while the fleet view judged it against 90.
+        resp.headers["X-Poll-Seconds"] = str(registry.poll_seconds(dev))
         # Set on BOTH branches: headers survive a 304, so a device that does get
         # one still learns the feed's liveness without a body.
         resp.headers["X-Feed-Age"] = f"{dwell:.1f}"
