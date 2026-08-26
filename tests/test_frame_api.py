@@ -38,8 +38,11 @@ def test_an_unassigned_device_gets_a_real_frame_not_an_error(client, needs_chrom
 
 
 def test_the_frame_is_exactly_the_declared_geometry(client, needs_chromium, tmp_path):
-    for w, h in ((800, 480), (240, 240), (400, 300)):
-        r = client.get(f"/api/device/{HW}/frame?w={w}&h={h}&depth=1")
+    # One hw per geometry: a single device asking for three different panels
+    # inside one second is not a device, and the cold-render throttle says so.
+    for i, (w, h) in enumerate(((800, 480), (240, 240), (400, 300))):
+        client.get(f"/api/device/geo{i}/scene?w={w}&h={h}&depth=1")
+        r = client.get(f"/api/device/geo{i}/frame?w={w}&h={h}")
         assert len(r.get_data()) == w * h // 8, f"{w}x{h}"
 
 
@@ -89,14 +92,38 @@ def test_an_out_of_range_dimension_falls_back_rather_than_failing(client, needs_
     assert len(r.get_data()) == 800 * 480 // 8
 
 
-def test_the_frame_is_rendered_at_the_geometry_of_this_request(client, needs_chromium):
-    # Not the stored one: registration is unauthenticated, so trusting stored
-    # caps lets any LAN host re-geometry someone else's panel, after which it
-    # gets a wrong-length body at HTTP 200 and streams it straight at hardware.
-    client.get(f"/api/device/{HW}/frame?w=800&h=480&depth=1")
-    client.get(f"/api/device/{HW}/scene?w=1024&h=256")      # the poisoning call
-    r = client.get(f"/api/device/{HW}/frame?w=800&h=480&depth=1")
-    assert len(r.get_data()) == 800 * 480 // 8, "the panel gets what it asked for"
+def test_an_operator_scene_change_is_not_throttled(client, needs_chromium):
+    # The cold-render throttle protects the render queue from strangers, not
+    # from the operator. A scene change must reach the glass on the next poll,
+    # not half a poll interval later -- which on an e-paper is 15 seconds.
+    client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "clock"})
+    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    assert r.status_code == 200 and r.headers["X-Scene"] == "clock"
+
+
+def test_a_stranger_cannot_spend_the_render_queue(client, needs_chromium):
+    # ~2.9s of Chromium per cold frame against 2 slots: 20 unauthenticated
+    # connections took the panel off the air for as long as they kept it up.
+    # A caller asking faster than the device polls is now answered instantly.
+    client.get(f"/api/device/flood/scene?w=800&h=480&depth=1")
+    first = client.get("/api/device/flood/frame?w=800&h=480")
+    assert first.status_code == 200
+    render.clear_cache()                       # force the expensive path
+    r = client.get("/api/device/flood/frame?w=800&h=480")
+    assert r.status_code == 429
+    assert r.headers["Retry-After"] == "5"
+
+
+def test_a_cached_frame_is_never_throttled(client, needs_chromium):
+    # The throttle must gate cost, not correctness: a device polling for a
+    # frame we already hold gets it, however often it asks. Configured, so the
+    # unconfigured-device budget is out of the picture and this tests one rule.
+    client.get("/api/device/warm/scene?w=800&h=480&depth=1")
+    client.patch("/api/devices/warm", json={"name": "warm", "scene": "clock"})
+    assert client.get("/api/device/warm/frame?w=800&h=480").status_code == 200
+    for _ in range(5):
+        assert client.get("/api/device/warm/frame?w=800&h=480").status_code == 200
 
 
 def test_a_render_failure_is_503_not_a_short_frame(client, monkeypatch):

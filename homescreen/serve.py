@@ -15,6 +15,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request
 
 from homescreen import overrides, registry, scenes, web
+from homescreen import render
 from homescreen.render import (RenderBusy, RenderError, check_geometry as
                                render_check_geometry, render_frame)
 from homescreen.cache import read_cache
@@ -362,6 +363,38 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                         "note": "reverted to config.yaml"})
 
     _DEVICE_READONLY = ("fw", "caps", "telemetry", "first_seen", "last_seen")
+    #: A cold frame costs ~2.9s of Chromium on the Pi against 2 render slots.
+    #: A device polling on cadence needs at most one per interval; anything
+    #: faster is either a bug or a stranger, and both are answered instantly
+    #: instead of being allowed to occupy a slot.
+    _last_cold: dict[str, float] = {}
+
+    #: A per-hw throttle alone is defeated by minting hardware ids: 40 invented
+    #: ids buy 40 cold renders. So an UNCONFIGURED device -- one no operator has
+    #: ever assigned a scene to -- also draws on a single global budget. That is
+    #: exactly the attacker's shape, and it costs a real newly-flashed panel at
+    #: most a few seconds of waiting on its very first boot. A configured device
+    #: is never gated by this: the fleet is bounded at MAX_DEVICES and every one
+    #: of them is entitled to the frames it polls for.
+    UNCONFIGURED_COLD_INTERVAL_S = 1.0
+    _last_unconfigured = [0.0]
+
+    def _cold_render_allowed(hw: str, rec: dict) -> bool:
+        interval = registry.poll_seconds(rec) * 0.5
+        now = time.monotonic()
+        last = _last_cold.get(hw)
+        if last is not None and now - last < interval:
+            return False
+        if rec.get("scene") in (None, "", "unassigned"):
+            if now - _last_unconfigured[0] < UNCONFIGURED_COLD_INTERVAL_S:
+                return False
+            _last_unconfigured[0] = now
+        _last_cold[hw] = now
+        if len(_last_cold) > registry.MAX_DEVICES * 2:
+            for key in sorted(_last_cold, key=_last_cold.get)[:registry.MAX_DEVICES]:
+                _last_cold.pop(key, None)
+        return True
+
     _SETTABLE = ("name", "scene", "poll_seconds")
     _CAP_INTS = ("w", "h", "depth")
     _CAP_LISTS = ("layouts", "components")
@@ -414,6 +447,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             # live. The device path already 503s here; the admin path must too.
             log.error("registry write failed for %s: %s", hw, exc)
             return jsonify({"error": "registry unavailable"}), 503
+        # An operator just changed what this panel shows. That deliberately
+        # costs one render: without this, switching a scene in the fleet view
+        # leaves an e-paper on the old one for up to half a poll interval.
+        _last_cold.pop(hw, None)
         return jsonify(_fleet_entry(hw, rec, clock()))
 
     @app.delete("/api/devices/<hw>")
@@ -429,22 +466,38 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     def _caps_from_query(args) -> dict:
         """Capabilities ride on every call rather than a separate handshake, so
         a server restart cannot lose them and there is no registration state
-        machine to get wrong. registry.clean_caps range-checks them."""
+        machine to get wrong. registry.clean_caps range-checks them.
+
+        A LIST capability is only read when the same request also declares
+        geometry. Without that rule `?components=nothing` is a complete,
+        one-GET declaration in its own right: it merges over the stored caps
+        and blanks the radar until the device next speaks. Requiring `w` and
+        `h` alongside it means a fragment cannot redefine a device -- an
+        attacker must impersonate the whole handshake, and the device's own
+        next poll overwrites it.
+        """
         caps = {}
         for key in _CAP_INTS:
             if key in args:
                 caps[key] = args[key]
-            
+        if "w" not in caps or "h" not in caps:
+            return caps
         for key in _CAP_LISTS:
             raw = args.get(key)
             if isinstance(raw, str) and raw.strip():
                 caps[key] = [p for p in (x.strip() for x in raw.split(",")) if p]
         return caps
 
-    def _register(hw: str):
-        """Shared by every device-facing route. Returns (record, error_response)."""
+    def _register(hw: str, *, declare: bool = True):
+        """Shared by every device-facing route. Returns (record, error_response).
+
+        `declare=False` records that we heard from the device without letting
+        the request redefine what the device IS. Only the scene handshake
+        declares capabilities; see `device_frame` for why the frame route must
+        not.
+        """
         args = request.args.to_dict()
-        caps = _caps_from_query(args)
+        caps = _caps_from_query(args) if declare else {}
         telemetry = {k: v for k, v in args.items()
                      if k not in _CAP_INTS + _CAP_LISTS + ("fw",)}
         try:
@@ -460,12 +513,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return None, (jsonify({"error": "registry unavailable"}), 503)
         return rec, None
 
+    def _poll_seconds(rec: dict) -> int:
+        return registry.poll_seconds(rec)
+
     def _poll_header(resp, rec):
-        try:
-            poll = int(float(rec.get("poll_seconds") or registry.DEFAULT_POLL_SECONDS))
-        except (TypeError, ValueError):
-            poll = registry.DEFAULT_POLL_SECONDS
-        resp.headers["X-Poll-Seconds"] = str(poll)
+        resp.headers["X-Poll-Seconds"] = str(_poll_seconds(rec))
         return resp
 
     def _scene_for(hw: str, rec: dict):
@@ -512,6 +564,36 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             body["message"] = "sin asignar · elige una escena en el panel"
         return _poll_header(jsonify(body), rec)
 
+    def _agreed_geometry(rec: dict, args: dict):
+        """(w, h, error_response). The one number a device cannot check.
+
+        A device streams the body straight at the panel, so a wrong-length body
+        at HTTP 200 is a corrupt screen rather than an error it can detect.
+        The rule is therefore: the request SAYS what it expects, the server
+        AGREES or refuses. Disagreement is a 409, never a silent substitution.
+
+        This replaces "merge the query over the stored record", which read as a
+        defence and was not one: `_register` had already merged the query INTO
+        the record, so both sides of the merge were the attacker's. One
+        unauthenticated GET re-geometried someone else's panel and the next
+        poll got 7,200 bytes at HTTP 200 for 800x480 glass.
+        """
+        stored = registry.clean_caps(rec.get("caps") or {})
+        asked = registry.clean_caps({k: v for k, v in args.items()
+                                     if k in ("w", "h")})
+        sw, sh = stored.get("w"), stored.get("h")
+        aw, ah = asked.get("w"), asked.get("h")
+        if aw is None and ah is None:
+            return int(sw or 800), int(sh or 480), None
+        w, h = int(aw or sw or 800), int(ah or sh or 480)
+        if sw is not None and sh is not None and (w, h) != (int(sw), int(sh)):
+            return 0, 0, (jsonify({
+                "error": "geometry disagrees with this device's handshake",
+                "requested": {"w": w, "h": h},
+                "registered": {"w": int(sw), "h": int(sh)},
+                "hint": "re-declare capabilities on /scene, then retry"}), 409)
+        return w, h, None
+
     @app.get("/api/device/<hw>/frame")
     def device_frame(hw: str):
         """Packed 1bpp, MSB first, 1 = black. No header, no compression.
@@ -520,19 +602,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         exactly w*h/8 bytes is a corrupt screen rather than an error it can
         detect. We would rather 503 than serve a short frame.
         """
-        rec, err = _register(hw)
+        rec, err = _register(hw, declare=False)
         if err:
             return err
-        # Render at the geometry declared in THIS request, falling back to
-        # the stored record. Trusting stored caps lets any LAN host re-geometry
-        # someone else's panel with one unauthenticated GET, after which the
-        # panel gets a wrong-length body at HTTP 200 -- which it streams
-        # straight at hardware and cannot detect.
-        # BOTH sides sanitised: a hand-edited devices.json can put a string in
-        # `w`, and int() on it 500s a route that must never raise.
-        caps = {**registry.clean_caps(rec.get("caps") or {}),
-                **registry.clean_caps(_caps_from_query(request.args.to_dict()))}
-        w, h = int(caps.get("w") or 800), int(caps.get("h") or 480)
+        w, h, err = _agreed_geometry(rec, request.args.to_dict())
+        if err:
+            return err
         try:
             # Reject before building or rendering: a device declares its own
             # geometry, so this bounds what a device can make the Pi do.
@@ -542,6 +617,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         name, scene = _scene_for(hw, rec)
         if not scene.html:
             return jsonify({"error": f"scene {name!r} has no pixel rendering"}), 409
+        if not render.is_cached(scene.html, w, h) \
+                and not _cold_render_allowed(hw, rec):
+            resp = jsonify({"error": "frame requested faster than this device "
+                                     "polls; the render queue is not a toy"})
+            resp.headers["Retry-After"] = "5"
+            return resp, 429
         try:
             packed = render_frame(scene.html, w, h)
         except RenderBusy as exc:

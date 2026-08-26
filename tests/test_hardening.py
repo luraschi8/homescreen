@@ -21,7 +21,9 @@ CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
 
 @pytest.fixture
 def client(tmp_path):
-    return create_app(CFG, tmp_path, version="t").test_client()
+    c = create_app(CFG, tmp_path, version="t").test_client()
+    c.cache_dir = tmp_path          # so a test can read what the route wrote
+    return c
 
 
 def _needs_chromium():
@@ -98,15 +100,55 @@ def test_deleting_an_override_that_does_not_exist_writes_nothing(tmp_path):
 
 # --- the frame must match the panel that asked for it -----------------------
 
-def test_stored_capabilities_cannot_poison_another_devices_geometry(client):
-    # Registration is unauthenticated. Rendering from the STORED record let any
-    # LAN host re-geometry someone else's panel with one GET, after which the
-    # panel got a wrong-length body at HTTP 200 and streamed it at hardware.
+def test_a_poisoned_handshake_is_refused_not_rendered_wrong(client):
+    # Registration is unauthenticated, so any LAN host can claim to be any
+    # device. What it must NEVER get is a wrong-length body at HTTP 200: the
+    # panel streams that straight at hardware and cannot detect it. The server
+    # refuses instead, and says exactly what it holds.
     _needs_chromium()
-    client.get("/api/device/panel/frame?w=800&h=480&depth=1")
-    client.get("/api/device/panel/scene?w=1024&h=256")        # the attack
-    r = client.get("/api/device/panel/frame?w=800&h=480&depth=1")
-    assert len(r.get_data()) == 800 * 480 // 8
+    client.get("/api/device/panel/scene?w=800&h=480&depth=1")
+    assert len(client.get("/api/device/panel/frame?w=800&h=480").get_data()) \
+        == 800 * 480 // 8
+
+    client.get("/api/device/panel/scene?w=1024&h=256")            # the attack
+
+    r = client.get("/api/device/panel/frame?w=800&h=480")
+    assert r.status_code == 409, "a disagreement must never render"
+    assert r.get_json()["registered"] == {"w": 1024, "h": 256}
+    assert r.get_json()["requested"] == {"w": 800, "h": 480}
+
+
+def test_the_panel_heals_itself_on_its_next_handshake(client):
+    # The device speaks every cycle; the attacker spoke once. So the damage
+    # window is one poll interval, and it closes without an operator.
+    _needs_chromium()
+    client.get("/api/device/panel2/scene?w=800&h=480&depth=1")
+    client.get("/api/device/panel2/scene?w=1024&h=256")           # the attack
+    assert client.get("/api/device/panel2/frame?w=800&h=480").status_code == 409
+
+    client.get("/api/device/panel2/scene?w=800&h=480&depth=1")    # next cycle
+    assert len(client.get("/api/device/panel2/frame?w=800&h=480").get_data()) \
+        == 800 * 480 // 8
+
+
+def test_a_fragment_cannot_redefine_what_a_device_is(client):
+    # `?components=nothing` with no geometry used to be a complete declaration:
+    # it merged over the stored caps and blanked the radar until the device
+    # next spoke. A capability list is now only read as part of a handshake.
+    client.get("/api/device/radar1/scene?w=240&h=240&depth=16&components=radar")
+    client.get("/api/device/radar1/scene?components=nothing")     # the attack
+    assert registry.load(client.cache_dir)["radar1"]["caps"]["components"] \
+        == ["radar"]
+
+
+def test_the_frame_route_cannot_declare_anything_at_all(client):
+    # Defence in depth: even a full, well-formed handshake on /frame must not
+    # be persisted. The frame route reads the record; it never writes to it.
+    _needs_chromium()
+    client.get("/api/device/panel3/scene?w=800&h=480&depth=1&components=text")
+    client.get("/api/device/panel3/frame?w=800&h=480&components=nothing&depth=16")
+    caps = registry.load(client.cache_dir)["panel3"]["caps"]
+    assert caps["components"] == ["text"] and caps["depth"] == 1
 
 
 @pytest.mark.parametrize("caps", [
@@ -225,3 +267,53 @@ def test_assignable_scenes_behaves_like_a_real_sequence():
     assert A[0] == sorted(scenes.names())[0]
     assert list(A) == list(scenes.names())
     assert tuple(registry.BUILTIN_SCENES) + tuple(A) != tuple(registry.BUILTIN_SCENES)
+
+
+# --- the render queue is not a public resource --------------------------------
+
+def _stub_browser(monkeypatch):
+    from PIL import Image
+
+    def stub(html, w, h, out_png, binary=None):
+        Image.new("1", (w, h), 1).save(out_png)
+
+    monkeypatch.setattr("homescreen.render.html_to_png", stub)
+
+
+def test_minting_hardware_ids_does_not_buy_render_slots(client, monkeypatch):
+    # A per-device throttle alone is defeated by inventing devices: 40 made-up
+    # ids bought 40 cold renders at ~2.9s of Chromium each, against 2 slots.
+    _stub_browser(monkeypatch)
+    render.clear_cache()
+    before = render.cache_stats()["misses"]
+    codes = []
+    for i in range(120):
+        codes.append(client.get(
+            f"/api/device/bot{i % 40}/frame?w=800&h=480").status_code)
+    forks = render.cache_stats()["misses"] - before
+    assert forks <= 3, f"{forks} cold renders bought by 120 hostile GETs"
+    assert codes.count(429) > 100
+
+
+def test_a_configured_panel_is_served_while_the_flood_runs(client, monkeypatch):
+    # The gate must protect the fleet, not join the attack. A device an
+    # operator has actually assigned is never subject to the global budget.
+    _stub_browser(monkeypatch)
+    render.clear_cache()
+    client.get("/api/device/desk/scene?w=800&h=480&depth=1")
+    client.patch("/api/devices/desk", json={"name": "desk", "scene": "clock"})
+    for i in range(60):
+        client.get(f"/api/device/bot{i}/frame?w=800&h=480")
+    r = client.get("/api/device/desk/frame?w=800&h=480")
+    assert r.status_code == 200
+    assert len(r.get_data()) == 800 * 480 // 8
+
+
+def test_a_newly_flashed_panel_still_gets_its_first_frame(client, monkeypatch):
+    # The cost of the global budget is borne by real hardware exactly once, on
+    # first boot, and must be seconds -- not a lockout.
+    _stub_browser(monkeypatch)
+    render.clear_cache()
+    r = client.get("/api/device/brandnew/frame?w=800&h=480")
+    assert r.status_code == 200, "an unconfigured device is not an attacker"
+    assert len(r.get_data()) == 800 * 480 // 8

@@ -82,6 +82,14 @@ NAME_MAX = 64
 HW_RE = re.compile(r"^[A-Za-z0-9_:.-]{1,128}$")
 OFFLINE_AFTER_POLLS = 3
 DEFAULT_POLL_SECONDS = 5
+#: ADDENDUM: "An always-connected device can poll every 30s, receive 304 for a
+#: few bytes most of the time, and partial-refresh on the minute." 5s is the
+#: RADAR's cadence -- a 16-bit LCD that dead-reckons between polls and wants
+#: fresh vectors. Applying it to a 1-bit panel asks for a refresh every 5s on
+#: glass whose own full refresh takes ~3s, and holds ~58% of a render slot
+#: (there are 2) forever, per panel. Depth is the honest discriminator: 1-bit
+#: IS what makes it an e-paper.
+EPAPER_POLL_SECONDS = 30
 
 # Bounds on what one unauthenticated GET may persist. Without these, a single
 # request writes tens of KB and an unbounded number of devices fills the microSD
@@ -134,6 +142,33 @@ def _valid_record(rec) -> bool:
         return False
     poll = rec.get("poll_seconds", DEFAULT_POLL_SECONDS)
     return isinstance(poll, (int, float)) and not isinstance(poll, bool)
+
+
+def default_poll_seconds(caps) -> int:
+    """The cadence a device gets when nobody has set one for it."""
+    try:
+        depth = int((caps or {}).get("depth"))
+    except (TypeError, ValueError):
+        return DEFAULT_POLL_SECONDS
+    return EPAPER_POLL_SECONDS if depth == 1 else DEFAULT_POLL_SECONDS
+
+
+def poll_seconds(rec: dict) -> int:
+    """What to put in `X-Poll-Seconds`. An operator's setting always wins.
+
+    Rounds rather than truncates: a stored 1.9 became a header of 1, so the
+    fleet view and the device disagreed and the device always polled faster
+    than it was told to.
+    """
+    raw = (rec or {}).get("poll_seconds")
+    if raw is not None:
+        try:
+            n = int(round(float(raw)))
+        except (TypeError, ValueError):
+            n = 0
+        if n >= 1:
+            return n
+    return default_poll_seconds((rec or {}).get("caps"))
 
 
 def load_raw(cache_dir: Path) -> dict:

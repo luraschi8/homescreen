@@ -154,6 +154,18 @@ def check_geometry(width: int, height: int) -> None:
                           f"{MAX_FRAME_BYTES:,} limit")
 
 
+def is_cached(html: str, width: int, height: int) -> bool:
+    """Whether `render_frame` would answer without forking a browser.
+
+    Exposed so a caller can throttle only the EXPENSIVE path. Rate-limiting
+    every request would punish a device polling correctly; rate-limiting only
+    cold renders punishes exactly the traffic that costs ~3s of CPU.
+    """
+    key = (hashlib.sha256(html.encode()).hexdigest(), width, height)
+    with _cache_lock:
+        return key in _cache
+
+
 def cache_stats() -> dict:
     return {"hits": cache_hits, "misses": cache_misses, "size": len(_cache)}
 
