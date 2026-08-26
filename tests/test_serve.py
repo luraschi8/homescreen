@@ -525,3 +525,54 @@ def test_the_in_memory_telemetry_map_is_bounded(ctx):
     assert len(tel) <= registry_mod.MAX_TELEMETRY_KEYS + 1   # +1 for "at"
     assert all(len(str(v)) <= registry_mod.MAX_VALUE_LEN
                for k, v in tel.items() if k != "at")
+
+
+# --- what the scene ETag considers "the same scene" --------------------------
+
+def test_scene_identity_quantises_both_clocks_and_nothing_else():
+    # Tested directly, not only through the route: item `age` and `feed_age_s`
+    # both derive from the same dwell today, so they always move together and a
+    # route-level test cannot tell which branch did the work. A scene with
+    # independently-moving ages would silently lose the item branch.
+    from homescreen.serve import _scene_identity, AGE_BUCKET_S
+    body = {"scene": "planes", "assigned": True, "components": [
+        {"c": "radar", "feed_ok": True, "feed_age_s": 1.9, "radius_km": 60.0,
+         "items": [{"cs": "IBE1", "lat": 40.5, "age": 1.9},
+                   {"cs": "RYR2", "lat": 41.0, "age": 5.5}]}]}
+    ident = _scene_identity(body)
+    comp = ident["components"][0]
+    assert comp["feed_age_s"] == int(1.9 // AGE_BUCKET_S)
+    assert [i["age"] for i in comp["items"]] == [int(1.9 // AGE_BUCKET_S),
+                                                 int(5.5 // AGE_BUCKET_S)]
+    assert comp["feed_ok"] is True and comp["radius_km"] == 60.0
+    assert [i["cs"] for i in comp["items"]] == ["IBE1", "RYR2"]
+    assert [i["lat"] for i in comp["items"]] == [40.5, 41.0]
+    assert ident["scene"] == "planes" and ident["assigned"] is True
+
+
+def test_scene_identity_collapses_only_within_a_bucket():
+    from homescreen.serve import _scene_identity
+    def ident(age):
+        return _scene_identity({"components": [
+            {"c": "radar", "items": [{"cs": "X", "age": age}]}]})
+    assert ident(0.1) == ident(1.9), "same bucket, same identity"
+    assert ident(1.9) != ident(2.1), "a bucket boundary is a new identity"
+
+
+def test_scene_identity_never_raises_on_a_malformed_scene():
+    # It runs on the serve path, so anything it cannot read must pass through
+    # rather than 500 a device's only route.
+    from homescreen.serve import _scene_identity
+    for body in ({}, {"components": None}, {"components": "x"},
+                 {"components": [None, 5, "s"]},
+                 {"components": [{"c": "radar", "items": None}]},
+                 {"components": [{"c": "radar", "items": [None, 3]}]},
+                 {"components": [{"c": "radar", "feed_age_s": "soon",
+                                  "items": [{"age": "soon"}]}]}):
+        _scene_identity(body)
+
+
+def test_scene_identity_leaves_a_component_without_items_alone():
+    from homescreen.serve import _scene_identity
+    out = _scene_identity({"components": [{"c": "text", "text": "hola"}]})
+    assert out["components"][0] == {"c": "text", "text": "hola"}

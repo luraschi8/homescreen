@@ -144,6 +144,38 @@ def _aircraft(env: dict | None) -> list:
     return raw if isinstance(raw, list) else []
 
 
+def _scene_identity(body: dict) -> dict:
+    """The scene's identity for ETag purposes: the body with its clocks
+    quantised to AGE_BUCKET_S.
+
+    Every time-derived number in a scene advances on every request, so hashing
+    the body verbatim makes each response unique and the 304 unreachable. These
+    are the only fields that move without the picture changing, so bucketing
+    exactly them -- and nothing else -- keeps the ETag honest about content
+    while letting an unchanged sky answer 304.
+    """
+    out = {k: v for k, v in body.items() if k != "components"}
+    components = []
+    for comp in body.get("components") or ():
+        if not isinstance(comp, dict):
+            components.append(comp)
+            continue
+        c = dict(comp)
+        if isinstance(c.get("feed_age_s"), (int, float)):
+            c["feed_age_s"] = int(c["feed_age_s"] // AGE_BUCKET_S)
+        items = []
+        for item in c.get("items") or ():
+            if isinstance(item, dict) and isinstance(item.get("age"),
+                                                     (int, float)):
+                item = {**item, "age": int(item["age"] // AGE_BUCKET_S)}
+            items.append(item)
+        if "items" in c:
+            c["items"] = items
+        components.append(c)
+    out["components"] = components
+    return out
+
+
 def _servable(env: dict | None, dwell: float) -> list:
     """The aircraft /data actually serves. /health reports len() of THIS, not of
     the raw list, or the debug endpoint misleads exactly when the cache is bad."""
@@ -674,12 +706,21 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # firmware's conditional GET was answered with a full body every time
         # and a holding device had to reconcile a payload it already had.
         #
-        # Hashed on the BODY, unlike /data: this payload carries no clock, so
-        # unchanged content really does mean an unchanged response -- and the
-        # component values ARE the state the device is holding, so a 304 here
-        # hides nothing (see AGE_BUCKET_S for the case where it would).
+        # Hashed on the body with its CLOCKS QUANTISED. The comment here used
+        # to say this payload carried no clock; that stopped being true the
+        # moment ages were recomputed at serve time, and the consequence was
+        # measured: `dwell` advances continuously, so an empty sky 50 ms later
+        # produced a different ETag and this route could never answer 304 at
+        # all. The whole conditional-GET path was dead for the one scene that
+        # uses it, and a device would parse a ~30 KB peak every poll to learn
+        # nothing.
+        #
+        # Same trade as AGE_BUCKET_S on /data, for the same reason: a 304 may
+        # hide at most one bucket of age drift, and the device advances the
+        # ages itself from its own content clock in the meantime.
         etag = '"%s"' % hashlib.sha256(
-            json.dumps(body, sort_keys=True, separators=(",", ":"),
+            json.dumps(_scene_identity(body), sort_keys=True,
+                       separators=(",", ":"),
                        ensure_ascii=False).encode()).hexdigest()[:16]
         if request.headers.get("If-None-Match") == etag:
             resp = Response(status=304)

@@ -422,3 +422,95 @@ def test_an_operator_cadence_reaches_every_route_too(ctx):
     assert client.get("/api/display/salon2/data").headers["X-Poll-Seconds"] == "90"
     assert client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1"
                       ).headers["X-Poll-Seconds"] == "90"
+
+
+# --- the scene ETag must be able to 304 -------------------------------------
+# Ages are recomputed at serve time, so `dwell` advances on every request. That
+# made every scene response unique and the 304 unreachable: measured, an empty
+# sky 50 ms later produced a different ETag. A conditional GET that can never
+# succeed is not a feature, and the device pays a ~30 KB parse peak every poll
+# to learn nothing.
+
+def _seed_sky(cache, when, aircraft):
+    import json as _json
+    from datetime import datetime, timezone
+    p = cache / "feed" / "adsb.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps({
+        "fetched_at": datetime.fromtimestamp(when, timezone.utc).isoformat(),
+        "ok": True, "error": None, "data": {"aircraft": aircraft}}))
+
+
+def test_an_unchanged_sky_answers_304_despite_the_clock_moving(ctx):
+    client, cache, clock = ctx
+    _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
+                                "cs": "IBE1"}])
+    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    client.get(q)
+    client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
+    etag = client.get(q).headers["ETag"]
+    clock.t += 0.05
+    assert client.get(q, headers={"If-None-Match": etag}).status_code == 304
+
+
+def test_the_hidden_age_drift_is_bounded_by_one_bucket(ctx):
+    from homescreen.serve import AGE_BUCKET_S
+    client, cache, clock = ctx
+    _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
+                                "cs": "IBE1"}])
+    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    client.get(q)
+    client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
+    etag = client.get(q).headers["ETag"]
+    clock.t += AGE_BUCKET_S * 2 + 0.1
+    r = client.get(q, headers={"If-None-Match": etag})
+    assert r.status_code == 200, "past one bucket the device must get real ages"
+    assert r.get_json()["components"][0]["items"][0]["age"] > 1.0
+
+
+def test_a_changed_sky_still_changes_the_etag_within_a_bucket(ctx):
+    # Bucketing must quantise only the clocks. If it swallowed a real change
+    # the device would hold a stale picture and never learn otherwise.
+    client, cache, clock = ctx
+    _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
+                                "cs": "IBE1"}])
+    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    client.get(q)
+    client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
+    etag = client.get(q).headers["ETag"]
+    _seed_sky(cache, clock.t, [{"lat": 41.9, "lon": -3.6, "age": 1.0,
+                                "cs": "IBE1"}])          # it moved
+    assert client.get(q, headers={"If-None-Match": etag}).status_code == 200
+
+
+def test_a_new_aircraft_changes_the_etag(ctx):
+    client, cache, clock = ctx
+    _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
+                                "cs": "IBE1"}])
+    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    client.get(q)
+    client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
+    etag = client.get(q).headers["ETag"]
+    _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
+                                "cs": "IBE1"},
+                               {"lat": 40.9, "lon": -3.9, "age": 1.0,
+                                "cs": "RYR2"}])
+    assert client.get(q, headers={"If-None-Match": etag}).status_code == 200
+
+
+def test_a_feed_going_down_changes_the_etag(ctx):
+    # feed_ok is part of the identity, not a clock: the device must be told.
+    import json as _json
+    from datetime import datetime, timezone
+    client, cache, clock = ctx
+    _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
+                                "cs": "IBE1"}])
+    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    client.get(q)
+    client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
+    etag = client.get(q).headers["ETag"]
+    p = cache / "feed" / "adsb.json"
+    env = _json.loads(p.read_text())
+    env["ok"] = False
+    p.write_text(_json.dumps(env))
+    assert client.get(q, headers={"If-None-Match": etag}).status_code == 200
