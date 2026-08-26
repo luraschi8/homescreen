@@ -186,15 +186,17 @@ def test_failure_recording_that_itself_fails_does_not_raise(tmp_path: Path, monk
     assert fetch_radar(CFG, DEV, tmp_path / "radar.json", session=s) is False
 
 
-def test_fetch_targets_picks_every_data_push_device(tmp_path: Path):
+def test_fetch_targets_is_one_entry_per_feed_not_per_device(tmp_path: Path):
+    # The cache is feed-keyed, so two screens on one feed is ONE upstream
+    # request -- not two racing into the same file against a 1 req/s limit.
     cfg = {"devices": [
         {"id": "radar", "render": "device", "feed": "adsb"},
-        {"id": "radar2", "render": "device", "feed": "adsb"},
+        {"id": "radar2", "render": "device", "feed": "adsb"},    # same feed
         {"id": "kitchen", "render": "server", "feed": "adsb"},   # pixel push
         {"id": "other", "render": "device", "feed": "weather"},  # other feed
     ]}
     got = [(d["id"], p.name) for d, p in fetch_targets(cfg, tmp_path)]
-    assert got == [("radar", "radar.json"), ("radar2", "radar2.json")]
+    assert got == [("radar", "adsb.json"), ("other", "weather.json")]
 
 
 # Every shape a hand-edited config.yaml realistically takes. `feeds:` with its
@@ -531,7 +533,7 @@ def test_device_lookup_and_feed_path(tmp_path: Path):
     dev = device(CFG, "radar")
     assert dev["id"] == "radar"
     assert device(CFG, "nope") is None
-    assert feed_cache_path(tmp_path, dev) == tmp_path / "feed" / "radar.json"
+    assert feed_cache_path(tmp_path, dev) == tmp_path / "feed" / "adsb.json"
     # Per DEVICE, not a literal and not per feed: two radars with different
     # centres must not collide on one file.
     assert (feed_cache_path(tmp_path, {"id": "radar2", "feed": "adsb"})

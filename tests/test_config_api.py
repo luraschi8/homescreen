@@ -39,7 +39,7 @@ def test_patch_changes_the_effective_value_and_persists(client, tmp_path):
 
 def test_patch_takes_effect_on_the_data_endpoint_without_a_restart(client, tmp_path):
     from homescreen.cache import write_cache
-    write_cache(tmp_path / "feed" / "radar.json", {"aircraft": []})
+    write_cache(tmp_path / "feed" / "adsb.json", {"aircraft": []})
     assert client.get("/api/display/radar/data").headers["X-Poll-Seconds"] == "5"
     client.patch("/api/config/devices/radar", json={"poll_seconds": 30})
     assert client.get("/api/display/radar/data").headers["X-Poll-Seconds"] == "30"

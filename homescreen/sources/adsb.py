@@ -212,10 +212,20 @@ def fetch_targets(cfg: dict, cache_dir: Path) -> list:
     devices = cfg.get("devices")
     if not isinstance(devices, list):
         return []
-    return [(d, feed_cache_path(cache_dir, d))
-            for d in devices
-            if isinstance(d, dict) and d.get("id")
-            and d.get("render") == "device" and d.get("feed") == "adsb"]
+    # One entry per FEED, not per device: the cache is feed-keyed, so N
+    # screens on one feed is one upstream request, not N hitting adsb.fi's
+    # 1 req/s limit and racing each other into the same file.
+    targets, seen = [], set()
+    for d in devices:
+        if not (isinstance(d, dict) and d.get("id")
+                and d.get("render") == "device" and d.get("feed") == "adsb"):
+            continue
+        path = feed_cache_path(cache_dir, d)
+        if path in seen:
+            continue
+        seen.add(path)
+        targets.append((d, path))
+    return targets
 
 
 def run_forever(cfg: dict, targets: list, *, session=None, sleep=time.sleep,

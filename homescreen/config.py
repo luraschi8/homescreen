@@ -122,8 +122,24 @@ def device(cfg: dict, device_id: str) -> dict | None:
     return None
 
 
+def feed_data_path(cache_dir: Path, feed_name: str) -> Path:
+    """Cache file for a FEED, not a device.
+
+    Corrected after a device assigned the `planes` scene showed an empty sky
+    forever: the fetcher wrote cache/feed/radar.json while the scene looked for
+    cache/feed/<device>.json, so any discovered device got silence.
+
+    Keying by device only works if every device carries `home`/`radius_km`,
+    and a self-registered device carries neither -- it declares a screen size,
+    not a location. The subscription is per-location: two screens in one house
+    want the same aircraft. Different centres are a different FEED.
+
+    This supersedes ADDENDUM §7 / PLAN.md A2 / VALIDATION C7, which all name
+    cache/feed/radar.json from before devices could self-register.
+    """
+    return cache_dir / "feed" / f"{str(feed_name or 'adsb')}.json"
+
+
 def feed_cache_path(cache_dir: Path, dev: dict) -> Path:
-    """Cache file for this device. Keyed by device id, not by a literal and not
-    by feed: `home`, `radius_km` and `max_aircraft` are per-device, so two
-    radars with different centres must not share one file."""
-    return cache_dir / "feed" / f"{dev['id']}.json"
+    """The feed file a DEVICE reads. Resolves through the device's `feed` key."""
+    return feed_data_path(cache_dir, (dev or {}).get("feed") or "adsb")

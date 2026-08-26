@@ -37,7 +37,7 @@ def ctx(tmp_path, monkeypatch):
         "homescreen.cache._now_iso",
         lambda: datetime.fromtimestamp(clock.t, timezone.utc).isoformat())
     app = create_app(CFG, tmp_path, clock=clock, version="abc1234")
-    return app.test_client(), tmp_path / "feed" / "radar.json", clock
+    return app.test_client(), tmp_path / "feed" / "adsb.json", clock
 
 
 def _seed(path, n=2):

@@ -85,7 +85,7 @@ def test_planes_emits_one_coarse_radar_component_for_data_push(tmp_path):
     # The design spec claimed the radar decomposes into generic rings+markers.
     # It does not -- the firmware draws eleven elements, two angles per marker,
     # and a collision ladder for labels. So it is ONE component carrying data.
-    write_cache(tmp_path / "feed" / "desk.json",
+    write_cache(tmp_path / "feed" / "adsb.json",
                 {"aircraft": [{"cs": "IBE1", "ty": "A320", "alt": "3675 ft",
                                "dst": 7.4, "ve": 0.1, "vn": 0.2, "age": 1.0}]})
     scene = scenes.build("planes", ctx(tmp_path, ROUND))
@@ -97,7 +97,7 @@ def test_planes_emits_one_coarse_radar_component_for_data_push(tmp_path):
 
 
 def test_planes_renders_a_list_for_pixel_push(tmp_path):
-    write_cache(tmp_path / "feed" / "desk.json",
+    write_cache(tmp_path / "feed" / "adsb.json",
                 {"aircraft": [{"cs": "IBE1", "ty": "A320", "alt": "3675 ft",
                                "dst": 7.4}]})
     html = scenes.build("planes", ctx(tmp_path)).html
@@ -105,7 +105,7 @@ def test_planes_renders_a_list_for_pixel_push(tmp_path):
 
 
 def test_planes_respects_the_device_cap(tmp_path):
-    write_cache(tmp_path / "feed" / "desk.json",
+    write_cache(tmp_path / "feed" / "adsb.json",
                 {"aircraft": [{"cs": f"A{i}", "dst": float(i)} for i in range(50)]})
     dev = {"hw": "x", "id": "desk", "name": "desk", "feed": "adsb",
            "max_aircraft": 5}
@@ -118,7 +118,7 @@ def test_planes_respects_the_device_cap(tmp_path):
     '{"fetched_at":"x","ok":true,"data":{"aircraft":[1,2,"three"]}}',
 ])
 def test_planes_never_raises_on_a_damaged_cache(tmp_path, bad):
-    path = tmp_path / "feed" / "desk.json"
+    path = tmp_path / "feed" / "adsb.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     if bad is not None:
         path.write_text(bad)
@@ -127,7 +127,7 @@ def test_planes_never_raises_on_a_damaged_cache(tmp_path, bad):
 
 
 def test_planes_says_so_when_the_feed_is_down(tmp_path):
-    write_cache(tmp_path / "feed" / "desk.json", {"aircraft": []}, ok=False,
+    write_cache(tmp_path / "feed" / "adsb.json", {"aircraft": []}, ok=False,
                 error="boom")
     html = scenes.build("planes", ctx(tmp_path)).html
     assert "sin señal" in html
