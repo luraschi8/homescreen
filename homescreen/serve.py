@@ -15,7 +15,8 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request
 
 from homescreen import overrides, registry, scenes, web
-from homescreen.render import RenderError, render_frame
+from homescreen.render import (RenderError, check_geometry as
+                               render_check_geometry, render_frame)
 from homescreen.cache import read_cache
 from homescreen.config import (check_device, device, feed_cache_path,
                                feed_config, load_config, server_config)
@@ -474,8 +475,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return err
         caps = rec.get("caps") or {}
         w, h = int(caps.get("w") or 800), int(caps.get("h") or 480)
-        if (w * h) % 8:
-            return jsonify({"error": f"{w}x{h} is not byte-aligned"}), 400
+        try:
+            # Reject before building or rendering: a device declares its own
+            # geometry, so this bounds what a device can make the Pi do.
+            render_check_geometry(w, h)
+        except RenderError as exc:
+            return jsonify({"error": str(exc)}), 400
         name, scene = _scene_for(hw, rec)
         if not scene.html:
             return jsonify({"error": f"scene {name!r} has no pixel rendering"}), 409

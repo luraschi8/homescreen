@@ -82,7 +82,7 @@ def test_grey_fraction_measures_antialiasing(tmp_path):
 
 # --- failure paths ----------------------------------------------------------
 
-def test_no_chromium_anywhere_raises_rendererror(monkeypatch, tmp_path):
+def test_no_chromium_anywhere_raises_rendererror(monkeypatch, cold_frame_cache):
     monkeypatch.setattr(render, "find_chromium", lambda: None)
     with pytest.raises(render.RenderError, match="no chromium"):
         render.render_frame(_page(), 800, 480)
@@ -132,3 +132,70 @@ def test_find_chromium_prefers_the_packaged_name(monkeypatch):
     monkeypatch.setattr(render.shutil, "which", which)
     assert render.find_chromium() == "/usr/bin/chromium"
     assert calls[0] == "chromium", "trixie packages it under this name"
+
+
+# --- the frame cache, which is what makes this endpoint affordable ----------
+
+def test_identical_html_is_rendered_once(chromium, cold_frame_cache):
+    # Without this, every poll forks a browser even when the response is a
+    # 304: measured 17,280 spawns per device per day at poll_seconds=5, on a
+    # Pi 4 where each costs ~200 MB and ~3 s.
+    before = render.cache_stats()
+    render.render_frame(_page(240, 240), 240, 240)
+    render.render_frame(_page(240, 240), 240, 240)
+    after = render.cache_stats()
+    assert after["misses"] - before["misses"] == 1
+    assert after["hits"] - before["hits"] == 1
+
+
+def test_different_html_is_not_confused(chromium, cold_frame_cache):
+    a = render.render_frame(_page(240, 240), 240, 240)
+    b = render.render_frame(_page(240, 240).replace("TEST", "OTHER"), 240, 240)
+    assert a != b, "the cache must key on content, not just geometry"
+
+
+def test_the_same_html_at_a_different_geometry_is_not_confused(chromium, cold_frame_cache):
+    a = render.render_frame(_page(240, 240), 240, 240)
+    b = render.render_frame(_page(80, 80), 80, 80)
+    assert len(a) != len(b)
+
+
+def test_the_cache_is_bounded(cold_frame_cache, monkeypatch):
+    # Stub the browser: this is testing eviction, and 21 real renders would
+    # cost a minute for no extra confidence.
+    monkeypatch.setattr(render, "html_to_png", lambda *a, **k: None)
+    monkeypatch.setattr(render, "png_to_packed", lambda p, w, h: b"\x00" * (w * h // 8))
+    for i in range(render._CACHE_MAX + 5):
+        render.render_frame(f"<html>{i}</html>", 80, 80)
+    assert render.cache_stats()["size"] == render._CACHE_MAX
+
+
+def test_eviction_is_least_recently_used(cold_frame_cache, monkeypatch):
+    monkeypatch.setattr(render, "html_to_png", lambda *a, **k: None)
+    monkeypatch.setattr(render, "png_to_packed", lambda p, w, h: b"\x00" * (w * h // 8))
+    for i in range(render._CACHE_MAX):
+        render.render_frame(f"<html>{i}</html>", 80, 80)
+    render.render_frame("<html>0</html>", 80, 80)          # touch the oldest
+    hits = render.cache_stats()["hits"]
+    render.render_frame("<html>new</html>", 80, 80)        # force one eviction
+    render.render_frame("<html>0</html>", 80, 80)          # still resident
+    assert render.cache_stats()["hits"] == hits + 1
+
+
+# --- geometry bounds: a device declares its own, so these bound the device --
+
+@pytest.mark.parametrize("w,h,why", [
+    (4096, 4096, "2 MB frame -- accepted before this cap"),
+    (2049, 8, "over the per-side limit"),
+    (0, 480, "not a geometry"),
+    (-8, 480, "negative"),
+    (101, 101, "not byte-aligned; w*h/8 would truncate"),
+])
+def test_an_abusive_geometry_is_refused_before_any_work(w, h, why):
+    with pytest.raises(render.RenderError):
+        render.check_geometry(w, h)
+
+
+@pytest.mark.parametrize("w,h", [(800, 480), (240, 240), (400, 300), (8, 8)])
+def test_real_geometries_are_accepted(w, h):
+    render.check_geometry(w, h)

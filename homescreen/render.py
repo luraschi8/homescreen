@@ -21,16 +21,41 @@ Every constant here is load-bearing and measured, not chosen:
 
 from __future__ import annotations
 
+import collections
+import hashlib
 import logging
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 THRESHOLD = 160
 RENDER_TIMEOUT_S = 30
+
+# A device declares its own geometry, so these are bounds on what a device can
+# make the Pi do, not on what we expect. 4096x4096 is byte-aligned and would
+# render a 2 MB frame -- accepted before this cap existed.
+MAX_DIMENSION = 2048
+MAX_FRAME_BYTES = 512_000
+
+# Chromium costs ~200 MB and ~3 s per invocation on a Pi 4 with 1.8 GB usable.
+# Eight concurrent requests measured 8 concurrent browsers; that is an OOM on
+# the target, so renders are serialised rather than merely rate-limited.
+_RENDER_SLOTS = threading.Semaphore(2)
+
+# Scene BUILDING is string formatting; RENDERING forks a browser. Identical
+# HTML at identical geometry is therefore worth caching outright -- keyed on
+# content, so it needs no TTL and cannot go stale. Without this, every poll
+# forks chromium even when the response is a 304: measured 17,280 spawns per
+# device per day at poll_seconds=5.
+_CACHE_MAX = 16
+_cache: "collections.OrderedDict[tuple, bytes]" = collections.OrderedDict()
+_cache_lock = threading.Lock()
+cache_hits = 0
+cache_misses = 0
 
 # --hide-scrollbars: a scrollbar steals ~15px and shifts the layout.
 # --default-background-color: a transparent backdrop thresholds to solid black.
@@ -101,14 +126,67 @@ def grey_fraction(png: Path) -> float:
     return (total - hist[0] - hist[255]) / total if total else 0.0
 
 
+def check_geometry(width: int, height: int) -> None:
+    """Reject a geometry before it costs anything. Raises RenderError."""
+    if width < 1 or height < 1:
+        raise RenderError(f"{width}x{height} is not a geometry")
+    if width > MAX_DIMENSION or height > MAX_DIMENSION:
+        raise RenderError(f"{width}x{height} exceeds {MAX_DIMENSION}px per side")
+    if (width * height) % 8:
+        raise RenderError(f"{width}x{height} is not byte-aligned")
+    if width * height // 8 > MAX_FRAME_BYTES:
+        raise RenderError(f"{width}x{height} would be "
+                          f"{width * height // 8:,} bytes, over the "
+                          f"{MAX_FRAME_BYTES:,} limit")
+
+
+def cache_stats() -> dict:
+    return {"hits": cache_hits, "misses": cache_misses, "size": len(_cache)}
+
+
+def clear_cache() -> None:
+    """Drop every cached frame.
+
+    Process-global state is shared between tests, which makes them
+    order-dependent unless each starts clean -- a conftest fixture calls this.
+    Also gives an operator a way to force a re-render without a restart.
+    """
+    global cache_hits, cache_misses
+    with _cache_lock:
+        _cache.clear()
+        cache_hits = cache_misses = 0
+
+
 def render_frame(html: str, width: int, height: int,
                  *, binary: str | None = None) -> bytes:
-    """HTML to a packed 1-bit framebuffer. Raises RenderError, never anything else."""
+    """HTML to a packed 1-bit framebuffer. Raises RenderError, never anything else.
+
+    Cached on the exact HTML and geometry: a poll that would produce the same
+    pixels reuses them rather than forking a browser.
+    """
+    global cache_hits, cache_misses
+    check_geometry(width, height)
+    key = (hashlib.sha256(html.encode()).hexdigest(), width, height)
+
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is not None:
+            _cache.move_to_end(key)
+            cache_hits += 1
+            return hit
+        cache_misses += 1
+
     expected = width * height // 8
-    with tempfile.TemporaryDirectory() as tmp:
-        png = Path(tmp) / "frame.png"
-        html_to_png(html, width, height, png, binary=binary)
-        packed = png_to_packed(png, width, height)
+    with _RENDER_SLOTS:
+        with tempfile.TemporaryDirectory() as tmp:
+            png = Path(tmp) / "frame.png"
+            html_to_png(html, width, height, png, binary=binary)
+            packed = png_to_packed(png, width, height)
     if len(packed) != expected:
         raise RenderError(f"expected {expected} bytes, packed {len(packed)}")
+
+    with _cache_lock:
+        _cache[key] = packed
+        while len(_cache) > _CACHE_MAX:
+            _cache.popitem(last=False)
     return packed
