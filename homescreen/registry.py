@@ -100,6 +100,9 @@ MAX_TELEMETRY_KEYS = 16
 MAX_VALUE_LEN = 128
 MAX_CAP_LIST = 32
 CAP_INT_RANGE = (1, 4096)
+#: Capability ints a device may declare. `max_items` is how many list entries
+#: it can hold: the device knows its own RAM and the server does not.
+CAP_INTS = ("w", "h", "depth", "max_items")
 
 # A repeat poll only moves last_seen. Rewriting the file for that is the wear
 # pattern write_failure already refuses; only persist once the stamp is stale
@@ -428,7 +431,11 @@ def clean_caps(raw) -> dict:
         return {}
     out = {}
     lo, hi = CAP_INT_RANGE
-    for key in ("w", "h", "depth"):
+    # CAP_INTS, not a second hand-written list. A literal here is how `max_items`
+    # was accepted by the route, range-checked, and then silently dropped before
+    # it reached the record -- the scene never saw it and the device would have
+    # been sent a body it could not parse.
+    for key in CAP_INTS:
         value = raw.get(key)
         if isinstance(value, bool):
             # int(True) is 1, which is a plausible-looking width. adsb_map._num

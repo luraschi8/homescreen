@@ -642,3 +642,21 @@ def test_the_liveness_overlay_never_mutates_the_stored_record(tmp_path: Path):
     registry.touch(tmp_path, HW, fw="9.9", now=1000.0)     # forces a write
     assert "5000" not in registry.registry_path(tmp_path).read_text()
     assert on_disk_before != registry.registry_path(tmp_path).read_text()
+
+
+def test_every_declared_capability_int_survives_to_the_record(tmp_path: Path):
+    # clean_caps kept its own literal tuple while the route used CAP_INTS, so a
+    # new capability was accepted, range-checked and then dropped on the floor.
+    # One list, and a test that fails if a second one appears.
+    caps = {k: 64 for k in registry.CAP_INTS}
+    rec = registry.touch(tmp_path, HW, caps=caps, now=1000.0)
+    assert set(rec["caps"]) == set(registry.CAP_INTS)
+    assert registry.CAP_INTS == ("w", "h", "depth", "max_items")
+
+
+@pytest.mark.parametrize("bad", [0, -5, 99999999, "x", None, True, 4097])
+def test_a_nonsense_item_cap_is_dropped_like_any_other(tmp_path: Path, bad):
+    rec = registry.touch(tmp_path, HW, caps={"w": 240, "h": 240,
+                                             "max_items": bad}, now=1000.0)
+    assert "max_items" not in rec["caps"]
+    assert rec["caps"]["w"] == 240, "and the good ones still land"

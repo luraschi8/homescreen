@@ -1,5 +1,6 @@
 # tests/test_scenes.py
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,10 @@ EPAPER = {"w": 800, "h": 480, "depth": 1, "layouts": ["fill"]}
 ROUND = {"w": 240, "h": 240, "depth": 16, "layouts": ["fill"]}
 
 
-def ctx(tmp_path, caps=None, device=None, now=1_787_000_000.0):
+NOW = 1_787_000_000.0
+
+
+def ctx(tmp_path, caps=None, device=None, now=NOW):
     return scenes.SceneContext(
         cfg=CFG, cache_dir=tmp_path, caps=caps or EPAPER, now=now,
         device=device or {"hw": "aabb00112233", "id": "desk",
@@ -294,7 +298,7 @@ def test_the_radar_component_carries_exactly_the_agreed_fields(tmp_path):
          "ve": 0.2, "vn": 0.0, "age": 3.1, "dst": 7.4,
          "cs": "IBE3221", "ty": "A320", "alt": "3675 ft"}]})
     comp, = scenes.build("planes", ctx(tmp_path)).components
-    assert set(comp) == {"c", "items", "feed_ok", "radius_km"}
+    assert set(comp) == {"c", "items", "feed_ok", "feed_age_s", "radius_km"}
     assert comp["c"] == "radar"
     assert set(comp["items"][0]) == RADAR_ITEM_KEYS
 
@@ -332,3 +336,89 @@ def test_the_clock_survives_every_timezone_being_broken(tmp_path):
     html = scenes.build("clock", c).html
     assert "--:--" in html, "a broken clock says so rather than going blank"
     assert "width:800px" in html
+
+
+def _feed_at(tmp_path, when, aircraft):
+    """Write the feed cache stamped at `when`, not at the wall clock.
+
+    `write_cache` stamps with the real time; every test here runs on a fixed
+    fake clock, so a real stamp puts the record decades in the future and the
+    dwell clamps to zero -- which is exactly the value the bug produced.
+    """
+    import json as _json
+    from datetime import timezone
+    path = tmp_path / "feed" / "adsb.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({
+        "fetched_at": datetime.fromtimestamp(when, timezone.utc).isoformat(),
+        "ok": True, "error": None, "data": {"aircraft": aircraft}}))
+
+
+# --- VALIDATION F4, second door ----------------------------------------------
+# The dwell correction was right on /api/display/<id>/data and absent here,
+# because this scene reads the cache file directly instead of going through
+# serve._servable. A device dead-reckons from `age`; passing it through
+# untouched means it extrapolates from a position kilometres behind the
+# aeroplane and never dims, because the number it tests never grows.
+
+def test_aircraft_age_is_recomputed_at_serve_time(tmp_path):
+    _feed_at(tmp_path, NOW, [{"lat": 40.5, "lon": -3.6, "age": 3.1, "cs": "IBE1"}])
+    fetched = scenes.build("planes", ctx(tmp_path)).components[0]["items"][0]["age"]
+    later = scenes.build("planes", ctx(tmp_path, now=NOW + 20.0)) \
+        .components[0]["items"][0]["age"]
+    assert fetched == pytest.approx(3.1, abs=0.1)
+    assert later == pytest.approx(23.1, abs=0.1), \
+        "20s in our cache must reach the device as 20s of extra age"
+
+
+def test_the_component_reports_the_feed_age_separately(tmp_path):
+    # Separate from the per-aircraft age on purpose: PLAN.md §3 records that
+    # summing the two staleness causes made targets blink once per cycle.
+    _feed_at(tmp_path, NOW, [{"lat": 40.5, "lon": -3.6, "age": 3.1, "cs": "IBE1"}])
+    comp = scenes.build("planes", ctx(tmp_path, now=NOW + 8.0)).components[0]
+    assert comp["feed_age_s"] == pytest.approx(8.0, abs=0.1)
+    assert comp["items"][0]["age"] == pytest.approx(11.1, abs=0.1)
+
+
+def test_a_future_stamped_cache_never_reports_negative_age(tmp_path):
+    # The Pi has no RTC and boots at the time timesyncd last saved.
+    _feed_at(tmp_path, NOW, [{"lat": 40.5, "lon": -3.6, "age": 3.1, "cs": "IBE1"}])
+    comp = scenes.build("planes", ctx(tmp_path, now=NOW - 3600)).components[0]
+    assert comp["feed_age_s"] >= 0.0
+    assert comp["items"][0]["age"] == pytest.approx(3.1, abs=0.1)
+
+
+def test_an_unreadable_age_is_dropped_rather_than_sent_as_zero(tmp_path):
+    _feed_at(tmp_path, NOW, [{"lat": 1.0, "lon": 2.0, "age": "soon", "cs": "BAD"},
+                             {"lat": 3.0, "lon": 4.0, "age": 1.0, "cs": "OK"}])
+    items = scenes.build("planes", ctx(tmp_path)).components[0]["items"]
+    assert [a["cs"] for a in items] == ["OK"]
+
+
+def test_a_device_never_receives_more_items_than_it_declared(tmp_path):
+    # ArduinoJson peaks near 44 KB parsing 100 of these against ~55 KB of free
+    # heap on the C3. The device knows its own RAM; the server does not. An
+    # operator raising max_aircraft must not be able to blank a panel.
+    _feed_at(tmp_path, NOW, [{"lat": 40.0 + i / 100, "lon": -3.6, "age": 1.0,
+                              "cs": f"IBE{i:04d}"} for i in range(300)])
+    dev = {"hw": "aa", "id": "d", "feed": "adsb", "max_aircraft": 200,
+           "max_items": 64}
+    items = scenes.build("planes", ctx(tmp_path, device=dev)).components[0]["items"]
+    assert len(items) == 64, "the device's own limit wins when it is smaller"
+
+
+def test_the_operators_limit_still_wins_when_it_is_smaller(tmp_path):
+    _feed_at(tmp_path, NOW, [{"lat": 40.0 + i / 100, "lon": -3.6, "age": 1.0,
+                              "cs": f"IBE{i:04d}"} for i in range(300)])
+    dev = {"hw": "aa", "id": "d", "feed": "adsb", "max_aircraft": 12,
+           "max_items": 64}
+    items = scenes.build("planes", ctx(tmp_path, device=dev)).components[0]["items"]
+    assert len(items) == 12, "the operator says how many are useful"
+
+
+def test_a_device_that_declares_no_limit_gets_the_operators(tmp_path):
+    _feed_at(tmp_path, NOW, [{"lat": 40.0 + i / 100, "lon": -3.6, "age": 1.0,
+                              "cs": f"IBE{i:04d}"} for i in range(300)])
+    dev = {"hw": "aa", "id": "d", "feed": "adsb", "max_aircraft": 30}
+    items = scenes.build("planes", ctx(tmp_path, device=dev)).components[0]["items"]
+    assert len(items) == 30

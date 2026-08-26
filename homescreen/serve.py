@@ -458,7 +458,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         return True
 
     _SETTABLE = ("name", "scene", "poll_seconds")
-    _CAP_INTS = ("w", "h", "depth")
+    _CAP_INTS = registry.CAP_INTS
     _CAP_LISTS = ("layouts", "components")
 
     #: What the last serve to each device actually did, in memory only. Spec
@@ -630,7 +630,14 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             device={"hw": hw, "id": rec.get("name") or hw,
                     "name": rec.get("name"), "feed": "adsb",
                     "max_aircraft": (device(_live(), rec.get("name") or "") or {})
-                                    .get("max_aircraft", 20)})
+                                    .get("max_aircraft", 20),
+                    # What the DEVICE says it can hold. A scene that ignores it
+                    # sends a body the device cannot parse: ArduinoJson peaks
+                    # around 44 KB at 100 items, against ~55 KB of free heap,
+                    # so an operator raising max_aircraft would blank the panel
+                    # at exactly the busiest time of day.
+                    "max_items": registry.clean_caps(
+                        rec.get("caps") or {}).get("max_items")})
         if name in ("unassigned", "error"):
             return name, scenes.safe_build("status", ctx)
         return name, scenes.safe_build(name, ctx)
