@@ -398,3 +398,38 @@ def test_a_name_of_exactly_the_maximum_length_is_allowed(tmp_path: Path):
     registry.assign(tmp_path, HW, name="n" * registry.NAME_MAX)
     with pytest.raises(ValueError):
         registry.assign(tmp_path, HW, name="n" * (registry.NAME_MAX + 1))
+
+
+def test_a_one_bit_panel_is_told_the_epaper_cadence(tmp_path: Path):
+    # Storing DEFAULT_POLL_SECONDS at registration masked this entirely: every
+    # record carried an explicit 5, so the derived default never ran and a 1-bit
+    # panel was told to refresh every 5s -- on glass whose own full refresh
+    # takes ~3s. Caught on the live Pi, not by the suite.
+    rec = registry.touch(tmp_path, HW, caps={"w": 800, "h": 480, "depth": 1},
+                         now=1000.0)
+    assert rec["poll_seconds"] is None, "nobody has chosen a cadence yet"
+    assert registry.poll_seconds(rec) == 30
+
+    round_rec = registry.touch(tmp_path, "rr", caps={"w": 240, "h": 240,
+                                                     "depth": 16}, now=1000.0)
+    assert registry.poll_seconds(round_rec) == 5, "the radar dead-reckons"
+
+
+def test_an_operator_cadence_beats_the_derived_one(tmp_path: Path):
+    registry.touch(tmp_path, HW, caps={"w": 800, "h": 480, "depth": 1}, now=1000.0)
+    registry.assign(tmp_path, HW, poll_seconds=120)
+    assert registry.poll_seconds(registry.load(tmp_path)[HW]) == 120
+
+
+def test_liveness_uses_the_cadence_the_device_was_told(tmp_path: Path):
+    # An e-paper told to poll every 30s must not be called offline at 15s.
+    registry.forget_contacts()
+    rec = registry.touch(tmp_path, HW, caps={"w": 800, "h": 480, "depth": 1},
+                         now=1000.0)
+    assert registry.is_online(rec, 1000.0 + 80), "3 x 30s is the window"
+    assert not registry.is_online(rec, 1000.0 + 100)
+
+
+def test_a_device_with_no_declared_depth_keeps_the_default(tmp_path: Path):
+    rec = registry.touch(tmp_path, HW, caps={"w": 800, "h": 480}, now=1000.0)
+    assert registry.poll_seconds(rec) == registry.DEFAULT_POLL_SECONDS

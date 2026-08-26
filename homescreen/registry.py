@@ -173,13 +173,21 @@ def _valid_record(rec) -> bool:
     if not isinstance(rec.get("telemetry", {}), dict):
         return False
     poll = rec.get("poll_seconds", DEFAULT_POLL_SECONDS)
+    if poll is None:
+        return True                      # nobody has chosen; derived per caps
     return isinstance(poll, (int, float)) and not isinstance(poll, bool)
 
 
 def default_poll_seconds(caps) -> int:
-    """The cadence a device gets when nobody has set one for it."""
+    """The cadence a device gets when nobody has set one for it. Never raises.
+
+    `caps` can be anything: devices.json is hand-editable and this runs on the
+    serve path, where an AttributeError is a 500 on a device's only route.
+    """
+    if not isinstance(caps, dict):
+        return DEFAULT_POLL_SECONDS
     try:
-        depth = int((caps or {}).get("depth"))
+        depth = int(caps.get("depth"))
     except (TypeError, ValueError):
         return DEFAULT_POLL_SECONDS
     return EPAPER_POLL_SECONDS if depth == 1 else DEFAULT_POLL_SECONDS
@@ -451,7 +459,12 @@ def _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now) -> dict:
                         evictable[0])
             del data[evictable[0]]
         rec = {"name": None, "scene": "unassigned", "first_seen": stamp,
-               "poll_seconds": DEFAULT_POLL_SECONDS, "fw": None,
+               # None, not DEFAULT_POLL_SECONDS. Storing the default at
+               # registration masked `default_poll_seconds` entirely: every
+               # device carried an explicit 5, so a 1-bit panel was still told
+               # to come back in 5 seconds. Absent means "nobody has chosen",
+               # which is the truth until an operator PATCHes one.
+               "poll_seconds": None, "fw": None,
                "caps": {}, "telemetry": {}}
         log.info("new device registered: %s", hw_id)
 
@@ -568,10 +581,10 @@ def is_online(rec: dict, now: float) -> bool:
     seen = _epoch(rec.get("last_seen"))
     if seen is None:
         return False
-    try:
-        poll = float(rec.get("poll_seconds") or DEFAULT_POLL_SECONDS)
-    except (TypeError, ValueError):
-        poll = DEFAULT_POLL_SECONDS
+    # The cadence we ADVERTISED, not the bare default: an e-paper is told 30s,
+    # so judging it against 3 x 5s would call a device offline two polls before
+    # it was ever due to speak. These two numbers must come from one place.
+    poll = poll_seconds(rec)
     delta = now - seen
     if delta < -1.0:
         return False                    # clock skew, not freshness
