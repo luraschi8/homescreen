@@ -6,3 +6,7 @@ build/
 *.png
 .DS_Store
 config.local.yaml
+
+# PlatformIO build + downloaded libs (1,600+ files)
+.pio/
+firmware/.pio/
