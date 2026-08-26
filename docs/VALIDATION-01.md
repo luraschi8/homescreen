@@ -203,6 +203,23 @@ and the property is not honoured the same way. The Pi may antialias regardless.
 pixel fraction of the Pi's own render. If it is not ~0%, the panel is relying on the
 threshold rather than on aliased text, and the 10px tier needs re-examination on glass.
 
+### ANSWERED 2026-08-26 — the Pi does NOT honour it the way macOS does
+
+Measured on the Pi (Chromium 151, Debian trixie, Inter installed locally), same page,
+same flags:
+
+| | intermediate greys | 128 vs 160 differ |
+|---|---|---|
+| macOS Chrome | 0.010% | **0 px** |
+| **Pi Chromium** | **0.558%** | **304 px** |
+
+Fifty-six times more antialiasing despite `-webkit-font-smoothing: none`. So on the
+target machine **the threshold of 160 is load-bearing**, not a safety net — 304 pixels
+of thin stroke survive at 160 that vanish at 128. The rule is doing real work, and this
+is the case the original finding flagged as unverified. It also means the 10px tier
+enters milestone B2 with antialiasing present, which is the harder condition for
+legibility.
+
 ### Bonus: the dotted/solid rule hierarchy survives the pipeline
 
 Spec §3 distinguishes section boundaries (solid) from item separators (1px dotted).
