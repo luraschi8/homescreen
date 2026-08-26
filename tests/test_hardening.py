@@ -100,34 +100,43 @@ def test_deleting_an_override_that_does_not_exist_writes_nothing(tmp_path):
 
 # --- the frame must match the panel that asked for it -----------------------
 
-def test_a_poisoned_handshake_is_refused_not_rendered_wrong(client):
-    # Registration is unauthenticated, so any LAN host can claim to be any
-    # device. What it must NEVER get is a wrong-length body at HTTP 200: the
-    # panel streams that straight at hardware and cannot detect it. The server
-    # refuses instead, and says exactly what it holds.
+def test_a_stranger_cannot_change_the_length_of_anyone_elses_frame(client):
+    # Registration is unauthenticated, so anyone can claim to be any device.
+    # The invariant that survives that: the body is always exactly the length
+    # THIS caller asked for. Two earlier attempts -- trust the record, then
+    # agree the record against the request -- both fell, because /scene still
+    # let an anonymous GET write the record that /frame then trusted.
     _needs_chromium()
     client.get("/api/device/panel/scene?w=800&h=480&depth=1")
     assert len(client.get("/api/device/panel/frame?w=800&h=480").get_data()) \
         == 800 * 480 // 8
 
-    client.get("/api/device/panel/scene?w=1024&h=256")            # the attack
+    client.get("/api/device/panel/scene?w=1024&h=768")            # the attack
+    client.get("/api/device/panel/frame?w=1024&h=768")            # and again
 
     r = client.get("/api/device/panel/frame?w=800&h=480")
-    assert r.status_code == 409, "a disagreement must never render"
-    assert r.get_json()["registered"] == {"w": 1024, "h": 256}
-    assert r.get_json()["requested"] == {"w": 800, "h": 480}
+    assert r.status_code == 200, "the panel is never locked out of its own frame"
+    assert len(r.get_data()) == 800 * 480 // 8, "nor handed someone else's size"
+    assert r.headers["X-Frame-Bytes"] == str(800 * 480 // 8)
 
 
-def test_the_panel_heals_itself_on_its_next_handshake(client):
-    # The device speaks every cycle; the attacker spoke once. So the damage
-    # window is one poll interval, and it closes without an operator.
+def test_a_frame_request_that_declares_nothing_is_refused(client):
+    # The server will not guess a length. Guessing is where every wrong-length
+    # body came from: the guess read a record a stranger could write.
     _needs_chromium()
-    client.get("/api/device/panel2/scene?w=800&h=480&depth=1")
-    client.get("/api/device/panel2/scene?w=1024&h=256")           # the attack
-    assert client.get("/api/device/panel2/frame?w=800&h=480").status_code == 409
+    client.get("/api/device/panel/scene?w=800&h=480&depth=1")
+    r = client.get("/api/device/panel/frame")
+    assert r.status_code == 400
+    assert "w=" in r.get_json()["error"]
 
-    client.get("/api/device/panel2/scene?w=800&h=480&depth=1")    # next cycle
-    assert len(client.get("/api/device/panel2/frame?w=800&h=480").get_data()) \
+
+def test_the_scene_a_frame_renders_uses_the_requested_geometry(client):
+    # Not the stored one: otherwise the layout is chosen by whoever wrote the
+    # record last, even when the byte count is right.
+    _needs_chromium()
+    client.get("/api/device/panel/scene?w=800&h=480&depth=1")
+    client.get("/api/device/panel/scene?w=240&h=240")             # the attack
+    assert len(client.get("/api/device/panel/frame?w=800&h=480").get_data()) \
         == 800 * 480 // 8
 
 
@@ -166,7 +175,10 @@ def test_a_hand_edited_capability_never_500s_a_route(tmp_path, caps):
     raw["P"]["caps"] = caps
     registry.registry_path(tmp_path).write_text(json.dumps(raw))
     assert client.get("/api/device/P/scene").status_code == 200
-    assert client.get("/api/device/P/frame").status_code == 200
+    # Geometry now comes from the request, so a junk record cannot reach int()
+    # on this path at all -- but the scene still reads the record for
+    # `components`, and the fleet view still renders it.
+    assert client.get("/api/device/P/frame?w=800&h=480").status_code == 200
 
 
 @pytest.mark.parametrize("w,h", [(12, 8), (4, 2), (101, 8)])

@@ -84,12 +84,15 @@ def test_an_unrenderable_geometry_is_refused_before_any_work(client, w, h, why):
 
 
 @pytest.mark.parametrize("w", [0, -8, "abc", 99999999999])
-def test_an_out_of_range_dimension_falls_back_rather_than_failing(client, needs_chromium, w):
-    # clean_caps drops nonsense before the geometry check ever sees it, so the
-    # device gets the default panel size rather than an error it cannot act on.
+def test_an_unreadable_dimension_is_refused_not_silently_replaced(client,
+                                                                  needs_chromium, w):
+    # This used to fall back to 800x480. Falling back is wrong here even when
+    # the input is junk: a device that asked for something we could not read
+    # would receive 48,000 bytes with no indication they were not what it asked
+    # for, and stream them at whatever panel it actually has.
     r = client.get(f"/api/device/{HW}/frame?w={w}&h=480&depth=1")
-    assert r.status_code == 200
-    assert len(r.get_data()) == 800 * 480 // 8
+    assert r.status_code == 400
+    assert r.mimetype == "application/json", "an error is never a framebuffer"
 
 
 def test_an_operator_scene_change_is_not_throttled(client, needs_chromium):
@@ -192,11 +195,12 @@ def test_the_frame_is_served_as_binary_not_json(client, needs_chromium):
     assert r.mimetype == "application/octet-stream"
 
 
-def test_a_device_declaring_no_geometry_gets_the_default_panel(client, needs_chromium):
-    # Every other frame test passes w/h explicitly, so the fallback was
-    # invisible: changing it to 8x480 passed the whole suite.
+def test_a_device_declaring_no_geometry_is_told_to_declare_one(client, needs_chromium):
+    # There used to be an 800x480 fallback here. It was the hole: the fallback
+    # read stored caps, and stored caps are written by whoever asks last.
     r = client.get(f"/api/device/{HW}/frame?fw=0.1")
-    assert len(r.get_data()) == 800 * 480 // 8
+    assert r.status_code == 400
+    assert "w=" in r.get_json()["error"] and "h=" in r.get_json()["error"]
 
 
 def test_a_device_is_told_a_default_cadence_before_it_is_assigned(client):

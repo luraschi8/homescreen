@@ -562,15 +562,21 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         resp.headers["X-Poll-Seconds"] = str(_poll_seconds(rec))
         return resp
 
-    def _scene_for(hw: str, rec: dict):
+    def _scene_for(hw: str, rec: dict, caps: dict | None = None):
         """(scene_name, Scene). An unassigned device gets a real scene telling
-        a human what to do, never an error and never a blank."""
+        a human what to do, never an error and never a blank.
+
+        `caps` overrides the stored record. The frame route passes the caps
+        from THIS request, so a scene is never laid out for a geometry a
+        stranger wrote into the record.
+        """
         name = rec.get("scene") or "unassigned"
         ctx = scenes.SceneContext(
             cfg=_live(), cache_dir=cache_dir,
             # Sanitised once here: a hand-edited devices.json could otherwise
             # put a string in `w`, and every scene does int(caps["w"]).
-            caps=registry.clean_caps(rec.get("caps") or {}),
+            caps=registry.clean_caps(caps if caps is not None
+                                     else rec.get("caps") or {}),
             now=clock(),
             device={"hw": hw, "id": rec.get("name") or hw,
                     "name": rec.get("name"), "feed": "adsb",
@@ -626,35 +632,32 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         resp.headers["ETag"] = etag
         return _poll_header(resp, rec)
 
-    def _agreed_geometry(rec: dict, args: dict):
-        """(w, h, error_response). The one number a device cannot check.
+    def _requested_geometry(args: dict):
+        """(w, h, error_response). Read from THIS request, never from storage.
 
-        A device streams the body straight at the panel, so a wrong-length body
-        at HTTP 200 is a corrupt screen rather than an error it can detect.
-        The rule is therefore: the request SAYS what it expects, the server
-        AGREES or refuses. Disagreement is a 409, never a silent substitution.
+        Two rounds of patching taught the lesson the hard way. A frame's length
+        is the one thing a device cannot check -- it streams the body straight
+        at the panel -- so any path where a THIRD party influences that length
+        is a corrupt screen. Trusting stored caps was the first version;
+        agreeing stored caps against the request was the second, and it fell to
+        the same attack through the other route, because `/scene` still let an
+        anonymous GET write the record that `/frame` then agreed with.
 
-        This replaces "merge the query over the stored record", which read as a
-        defence and was not one: `_register` had already merged the query INTO
-        the record, so both sides of the merge were the attacker's. One
-        unauthenticated GET re-geometried someone else's panel and the next
-        poll got 7,200 bytes at HTTP 200 for 800x480 glass.
+        The invariant that actually holds without authentication: the body is
+        always exactly the length the CALLER asked for. A stranger claiming to
+        be this device gets the frame they asked for and nobody else's panel
+        changes. A device that states nothing gets a 400 rather than a guess,
+        because a guess is where the wrong length came from every time.
         """
-        stored = registry.clean_caps(rec.get("caps") or {})
         asked = registry.clean_caps({k: v for k, v in args.items()
                                      if k in ("w", "h")})
-        sw, sh = stored.get("w"), stored.get("h")
-        aw, ah = asked.get("w"), asked.get("h")
-        if aw is None and ah is None:
-            return int(sw or 800), int(sh or 480), None
-        w, h = int(aw or sw or 800), int(ah or sh or 480)
-        if sw is not None and sh is not None and (w, h) != (int(sw), int(sh)):
+        w, h = asked.get("w"), asked.get("h")
+        if w is None or h is None:
             return 0, 0, (jsonify({
-                "error": "geometry disagrees with this device's handshake",
-                "requested": {"w": w, "h": h},
-                "registered": {"w": int(sw), "h": int(sh)},
-                "hint": "re-declare capabilities on /scene, then retry"}), 409)
-        return w, h, None
+                "error": "declare the geometry you expect: ?w=<px>&h=<px>",
+                "why": "a frame is raw pixels; its length is the device's "
+                       "contract and the server will not guess it"}), 400)
+        return int(w), int(h), None
 
     @app.get("/api/device/<hw>/frame")
     def device_frame(hw: str):
@@ -667,7 +670,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         rec, err = _register(hw, declare=False)
         if err:
             return err
-        w, h, err = _agreed_geometry(rec, request.args.to_dict())
+        w, h, err = _requested_geometry(request.args.to_dict())
         if err:
             return err
         try:
@@ -676,7 +679,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             render_check_geometry(w, h)
         except RenderError as exc:
             return jsonify({"error": str(exc)}), 400
-        name, scene = _scene_for(hw, rec)
+        name, scene = _scene_for(hw, rec, caps={"w": w, "h": h})
         _note(hw, **({"scene_error": scene.error} if scene.error else {}))
         if not scene.html:
             return jsonify({"error": f"scene {name!r} has no pixel rendering"}), 409
