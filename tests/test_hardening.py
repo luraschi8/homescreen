@@ -13,6 +13,7 @@ import pytest
 from homescreen import registry, render, scenes
 from homescreen.cache import write_cache
 from homescreen.serve import create_app
+from tests.conftest import FrozenClock
 
 CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
        "feeds": {"adsb": {"source": "api", "endpoint": "https://x"}},
@@ -21,14 +22,24 @@ CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
 
 @pytest.fixture
 def client(tmp_path):
-    c = create_app(CFG, tmp_path, version="t").test_client()
+    c = create_app(CFG, tmp_path, version="t", clock=FrozenClock()).test_client()
     c.cache_dir = tmp_path          # so a test can read what the route wrote
     return c
 
 
 def _needs_chromium():
+    """For the few tests whose subject really is the browser's output."""
     if render.find_chromium() is None:
         pytest.skip("no chromium/chrome on this machine")
+
+
+def _stub_browser(monkeypatch):
+    from PIL import Image
+
+    def stub(html, w, h, out_png, binary=None):
+        Image.new("1", (w, h), 1).save(out_png)
+
+    monkeypatch.setattr("homescreen.render.html_to_png", stub)
 
 
 # --- a malformed record must be hidden, never deleted -----------------------
@@ -65,7 +76,7 @@ def test_a_malformed_record_cannot_be_assigned_over(tmp_path):
 def test_admin_routes_return_503_on_a_read_only_card(tmp_path):
     # ext4 remounts read-only on error and CLAUDE.md flags SD wear as live.
     registry.touch(tmp_path, "A", now=1000.0)
-    client = create_app(CFG, tmp_path, version="t").test_client()
+    client = create_app(CFG, tmp_path, version="t", clock=FrozenClock()).test_client()
     os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
     try:
         assert client.patch("/api/devices/A", json={"name": "x"}).status_code == 503
@@ -78,7 +89,7 @@ def test_the_config_api_returns_503_on_a_read_only_card(tmp_path):
     cfg = {**CFG, "devices": [{"id": "radar", "kind": "gc9a01_client",
                                "render": "device", "feed": "adsb",
                                "home": {"lat": 1, "lon": 2}}]}
-    client = create_app(cfg, tmp_path, version="t").test_client()
+    client = create_app(cfg, tmp_path, version="t", clock=FrozenClock()).test_client()
     os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
     try:
         r = client.patch("/api/config/devices/radar", json={"max_aircraft": 30})
@@ -90,7 +101,7 @@ def test_the_config_api_returns_503_on_a_read_only_card(tmp_path):
 def test_deleting_an_override_that_does_not_exist_writes_nothing(tmp_path):
     cfg = {**CFG, "devices": [{"id": "radar", "kind": "gc9a01_client",
                                "render": "device", "feed": "adsb"}]}
-    client = create_app(cfg, tmp_path, version="t").test_client()
+    client = create_app(cfg, tmp_path, version="t", clock=FrozenClock()).test_client()
     assert client.delete("/api/config/devices/nope").status_code == 404
     r = client.delete("/api/config/devices/radar")
     assert r.status_code == 200
@@ -100,13 +111,16 @@ def test_deleting_an_override_that_does_not_exist_writes_nothing(tmp_path):
 
 # --- the frame must match the panel that asked for it -----------------------
 
-def test_a_stranger_cannot_change_the_length_of_anyone_elses_frame(client):
+def test_a_stranger_cannot_change_the_length_of_anyone_elses_frame(client, monkeypatch):
     # Registration is unauthenticated, so anyone can claim to be any device.
     # The invariant that survives that: the body is always exactly the length
     # THIS caller asked for. Two earlier attempts -- trust the record, then
     # agree the record against the request -- both fell, because /scene still
     # let an anonymous GET write the record that /frame then trusted.
-    _needs_chromium()
+    # Stubbed, not skipped: CLAUDE.md records that the deploy target has no
+    # Chromium, and skipping meant P1's own regression tests reported green on
+    # the box that actually serves them. None of this logic needs a browser.
+    _stub_browser(monkeypatch)
     client.get("/api/device/panel/scene?w=800&h=480&depth=1")
     assert len(client.get("/api/device/panel/frame?w=800&h=480").get_data()) \
         == 800 * 480 // 8
@@ -120,20 +134,20 @@ def test_a_stranger_cannot_change_the_length_of_anyone_elses_frame(client):
     assert r.headers["X-Frame-Bytes"] == str(800 * 480 // 8)
 
 
-def test_a_frame_request_that_declares_nothing_is_refused(client):
+def test_a_frame_request_that_declares_nothing_is_refused(client, monkeypatch):
     # The server will not guess a length. Guessing is where every wrong-length
     # body came from: the guess read a record a stranger could write.
-    _needs_chromium()
+    _stub_browser(monkeypatch)
     client.get("/api/device/panel/scene?w=800&h=480&depth=1")
     r = client.get("/api/device/panel/frame")
     assert r.status_code == 400
     assert "w=" in r.get_json()["error"]
 
 
-def test_the_scene_a_frame_renders_uses_the_requested_geometry(client):
+def test_the_scene_a_frame_renders_uses_the_requested_geometry(client, monkeypatch):
     # Not the stored one: otherwise the layout is chosen by whoever wrote the
     # record last, even when the byte count is right.
-    _needs_chromium()
+    _stub_browser(monkeypatch)
     client.get("/api/device/panel/scene?w=800&h=480&depth=1")
     client.get("/api/device/panel/scene?w=240&h=240")             # the attack
     assert len(client.get("/api/device/panel/frame?w=800&h=480").get_data()) \
@@ -150,10 +164,10 @@ def test_a_fragment_cannot_redefine_what_a_device_is(client):
         == ["radar"]
 
 
-def test_the_frame_route_cannot_declare_anything_at_all(client):
+def test_the_frame_route_cannot_declare_anything_at_all(client, monkeypatch):
     # Defence in depth: even a full, well-formed handshake on /frame must not
     # be persisted. The frame route reads the record; it never writes to it.
-    _needs_chromium()
+    _stub_browser(monkeypatch)
     client.get("/api/device/panel3/scene?w=800&h=480&depth=1&components=text")
     client.get("/api/device/panel3/frame?w=800&h=480&components=nothing&depth=16")
     caps = registry.load(client.cache_dir)["panel3"]["caps"]
@@ -169,7 +183,7 @@ def test_a_hand_edited_capability_never_500s_a_route(tmp_path, caps):
     # HTTP; a hand-edited devices.json does not go through clean_caps, and the
     # "registry is full" message invites exactly that edit.
     _needs_chromium()
-    client = create_app(CFG, tmp_path, version="t").test_client()
+    client = create_app(CFG, tmp_path, version="t", clock=FrozenClock()).test_client()
     client.get("/api/device/P/scene")
     raw = json.loads(registry.registry_path(tmp_path).read_text())
     raw["P"]["caps"] = caps
@@ -283,15 +297,6 @@ def test_assignable_scenes_behaves_like_a_real_sequence():
 
 # --- the render queue is not a public resource --------------------------------
 
-def _stub_browser(monkeypatch):
-    from PIL import Image
-
-    def stub(html, w, h, out_png, binary=None):
-        Image.new("1", (w, h), 1).save(out_png)
-
-    monkeypatch.setattr("homescreen.render.html_to_png", stub)
-
-
 def _flood(client, monkeypatch, peer, n=120):
     """n hostile GETs from one host, each claiming to be a different device."""
     codes = []
@@ -401,3 +406,78 @@ def test_no_cadence_lets_a_device_spend_the_browser_faster_than_the_floor(
         client.get(f"/api/device/fast/frame?w={800 + 8 * i}&h=480")
     assert render.cache_stats()["misses"] - before <= 1, \
         "one cold render per floor interval, whatever the cadence says"
+
+
+# --- every in-memory map fed by the network must be bounded -------------------
+# These caps exist because the maps are written by unauthenticated requests and
+# live for the process lifetime. All three survived mutation: nothing measured
+# them, so they could have been deleted and the suite would still be green.
+
+def test_every_in_memory_map_stays_bounded_under_a_flood(client, monkeypatch):
+    _stub_browser(monkeypatch)
+    render.clear_cache()
+    for i in range(600):
+        peer = f"10.0.{i // 250}.{i % 250}"
+        client.get(f"/api/device/id{i}/scene?w=800&h=480&depth=1",
+                   environ_base={"REMOTE_ADDR": peer})
+        client.get(f"/api/device/id{i}/frame?w=800&h=480",
+                   environ_base={"REMOTE_ADDR": peer})
+    client.get("/api/display/radar/data?" + "&".join(f"k{i}=1" for i in range(40)))
+
+    # Notes are only written for a device the server SUBSTITUTED something
+    # for, so filling that map needs devices that get a substitution -- without
+    # this loop the cap was unreachable and its removal changed no test.
+    for i in range(registry.MAX_DEVICES * 2 + 20):
+        hw = f"sub{i}"
+        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.patch(f"/api/devices/{hw}", json={"scene": "planes"})
+        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+
+    mem = client.get("/api/status").get_json()["memory"]
+    assert mem["cold_render_ids"] <= registry.MAX_DEVICES * 2, mem
+    assert mem["peer_buckets"] <= 256, mem
+    assert mem["serve_notes"] <= registry.MAX_DEVICES, mem
+    assert mem["frame_cache"] <= 16, mem
+    assert len(registry.load(client.cache_dir)) <= registry.MAX_DEVICES
+
+
+def test_a_flood_cannot_grow_the_servers_memory_without_limit(client,
+                                                              monkeypatch):
+    # Measured indirectly but honestly: the registry is the only thing these
+    # maps are allowed to outgrow, so after a flood of 400 invented ids the
+    # server must still answer, and the registry must still be bounded.
+    _stub_browser(monkeypatch)
+    render.clear_cache()
+    for i in range(400):
+        client.get(f"/api/device/f{i}/scene?w=800&h=480&depth=1",
+                   environ_base={"REMOTE_ADDR": f"10.1.{i // 250}.{i % 250}"})
+        client.get(f"/api/device/f{i}/frame?w=800&h=480",
+                   environ_base={"REMOTE_ADDR": f"10.1.{i // 250}.{i % 250}"})
+    assert len(registry.load(client.cache_dir)) <= registry.MAX_DEVICES
+    assert client.get("/api/devices").status_code == 200
+    assert client.get("/home").status_code == 200
+
+
+def test_a_note_about_a_device_that_no_longer_exists_is_dropped(client,
+                                                                monkeypatch):
+    # The size threshold here was unreachable -- a note needs an assigned
+    # scene, which needs a registry record, which is capped at MAX_DEVICES --
+    # while the real leak was slower and different in kind: every device that
+    # is evicted or forgotten left its note behind forever.
+    _stub_browser(monkeypatch)
+    for i in range(registry.MAX_DEVICES):
+        hw = f"note{i}"
+        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.patch(f"/api/devices/{hw}", json={"scene": "planes"})
+        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+    assert client.get("/api/status").get_json()["memory"]["serve_notes"] \
+        == registry.MAX_DEVICES
+
+    for i in range(registry.MAX_DEVICES):                    # evict them all
+        client.delete(f"/api/devices/note{i}")
+    for i in range(3):                                       # any later serve
+        hw = f"fresh{i}"
+        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.patch(f"/api/devices/{hw}", json={"scene": "planes"})
+        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+    assert client.get("/api/status").get_json()["memory"]["serve_notes"] <= 4

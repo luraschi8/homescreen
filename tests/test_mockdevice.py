@@ -154,10 +154,11 @@ def test_every_declared_kind_has_a_byte_aligned_geometry():
 def wired(tmp_path, monkeypatch):
     """Route the mock device's urllib calls into a real Flask app."""
     from homescreen.serve import create_app
+    from tests.conftest import FrozenClock
     cfg = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
            "feeds": {"adsb": {"source": "api", "endpoint": "https://x"}},
            "devices": []}
-    client = create_app(cfg, tmp_path, version="t").test_client()
+    client = create_app(cfg, tmp_path, version="t", clock=FrozenClock()).test_client()
 
     class FakeResp:
         def __init__(self, r):

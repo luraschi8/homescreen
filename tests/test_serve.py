@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from homescreen import registry as registry_mod
 from homescreen.cache import write_cache, write_failure
 from homescreen.serve import create_app, startup as serve_startup
 
@@ -491,3 +492,36 @@ def test_the_hidden_age_error_is_bounded_by_one_bucket(ctx):
     assert AGE_BUCKET_S == 2.0
     assert AGE_BUCKET_S < STALE_HORIZON_S / 4, \
         "a 304 must not be able to hide a meaningful slice of the horizon"
+
+
+def test_the_horizon_forces_a_body_even_inside_one_age_bucket(ctx):
+    # Two guards keep a stalling feed honest and they overlap almost
+    # everywhere, so `fresh = ok and dwell < STALE_HORIZON_S` -> `fresh = ok`
+    # changed no test. The gap: two polls PAST the horizon that land in the
+    # same 2s bucket have an identical ETag, so only the horizon check is left
+    # to force a body -- and that body is what carries the true age.
+    client, path, clock = ctx
+    _write_feed(path, clock.t, [{"cs": "IBE1", "age": 1.0}])
+    clock.t += 13.0                       # past 12s, bucket 6
+    first = client.get("/api/display/radar/data")
+    clock.t += 0.5                        # still bucket 6
+    again = client.get("/api/display/radar/data",
+                       headers={"If-None-Match": first.headers["ETag"]})
+    assert again.headers["ETag"] == first.headers["ETag"], "same bucket"
+    assert again.status_code == 200, "a feed past the horizon must not 304"
+    assert again.get_json()["aircraft"][0]["age"] == pytest.approx(14.5)
+
+
+def test_the_in_memory_telemetry_map_is_bounded(ctx):
+    # /data stores query args in a process-lifetime dict and echoes them on
+    # /api/status and /home. It stored 60,000-byte values before the registry's
+    # own caps were applied here, and removing them changed no test.
+    client, path, clock = ctx
+    _seed(path)
+    client.get("/api/display/radar/data?" + "&".join(
+        f"k{i}=v{i}" for i in range(80)) + "&big=" + "A" * 5000)
+    body = client.get("/api/status").get_json()
+    tel = body["devices"][0]["last_telemetry"]
+    assert len(tel) <= registry_mod.MAX_TELEMETRY_KEYS + 1   # +1 for "at"
+    assert all(len(str(v)) <= registry_mod.MAX_VALUE_LEN
+               for k, v in tel.items() if k != "at")

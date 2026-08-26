@@ -474,8 +474,16 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             _serve_notes[hw] = fields
         else:
             _serve_notes.pop(hw, None)
-        if len(_serve_notes) > registry.MAX_DEVICES * 2:
-            _serve_notes.clear()
+        if len(_serve_notes) > registry.MAX_DEVICES:
+            # Prune by registry membership, not by a size threshold. A
+            # threshold was unreachable in any real flow -- a note needs an
+            # assigned scene, which needs a registry record -- while the true
+            # leak is slower and different in kind: every device that is
+            # evicted or forgotten leaves its note behind forever. A note about
+            # a device that no longer exists is not a note, it is a leak.
+            known = set(registry.load(cache_dir))
+            for key in [k for k in _serve_notes if k not in known]:
+                _serve_notes.pop(key, None)
 
     def _fleet_entry(hw: str, rec: dict, now: float) -> dict:
         entry = {"hw": hw, "name": rec.get("name"), "scene": rec.get("scene"),
@@ -770,6 +778,17 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 "endpoint": feed.get("endpoint"),
                 "fetch_seconds": feed.get("fetch_seconds"),
             },
+            # Four maps are written by unauthenticated requests and live for
+            # the process lifetime. Each is capped, but a cap nothing can see
+            # is a cap nothing checks: all four survived mutation because no
+            # test could measure them. Reporting the sizes makes the bound
+            # both testable and visible to an operator watching a Pi with
+            # 1.8 GB of RAM.
+            "memory": {"cold_render_ids": len(_last_cold),
+                       "peer_buckets": len(_peer_bucket),
+                       "serve_notes": len(_serve_notes),
+                       "telemetry": len(telemetry),
+                       "frame_cache": render.cache_stats()["size"]},
             "fleet": [_fleet_entry(hw, rec, now)
                       for hw, rec in sorted(registry.load(cache_dir).items())],
             "devices": [_device_summary(cfg, d, cache_dir, now, telemetry)

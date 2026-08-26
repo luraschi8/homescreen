@@ -21,3 +21,30 @@ def cold_frame_cache():
     render.clear_cache()
     yield
     render.clear_cache()
+
+
+class FrozenClock:
+    """A clock the test moves, not the wall.
+
+    Scene HTML embeds `%H:%M`, so a real-clock test that polls twice across a
+    minute boundary renders different HTML the second time -- a cold render,
+    which the throttle answers with 429. That made three files intermittently
+    red (3 failures in 12 runs) and, worse, silently corrupted a mutation
+    sweep: three mutations were recorded as killed by a flake rather than by
+    an assertion.
+    """
+
+    def __init__(self, t: float = 1_787_000_000.0):
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> float:
+        self.t += seconds
+        return self.t
+
+
+@pytest.fixture
+def frozen_clock():
+    return FrozenClock()

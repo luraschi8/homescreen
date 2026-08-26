@@ -3,6 +3,7 @@ import pytest
 
 from homescreen import registry, render
 from homescreen.serve import create_app
+from tests.conftest import FrozenClock
 
 HW = "aabb00112233"
 CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
@@ -13,7 +14,7 @@ EPAPER_Q = "?fw=0.2.0&w=800&h=480&depth=1&layouts=fill"
 
 @pytest.fixture
 def client(tmp_path):
-    return create_app(CFG, tmp_path, version="t").test_client()
+    return create_app(CFG, tmp_path, version="t", clock=FrozenClock()).test_client()
 
 
 @pytest.fixture
@@ -95,7 +96,8 @@ def test_an_unreadable_dimension_is_refused_not_silently_replaced(client,
     assert r.mimetype == "application/json", "an error is never a framebuffer"
 
 
-def test_an_operator_scene_change_is_not_throttled(client, needs_chromium):
+def test_an_operator_scene_change_is_not_throttled(client, needs_chromium,
+                                                   cold_frame_cache):
     # The cold-render throttle protects the render queue from strangers, not
     # from the operator. A scene change must reach the glass on the next poll,
     # not half a poll interval later -- which on an e-paper is 15 seconds.
@@ -248,5 +250,39 @@ def test_a_config_device_still_wins_its_own_name(tmp_path):
     cfg = {**CFG, "devices": [{"id": "radar", "kind": "gc9a01_client",
                                "render": "device", "feed": "adsb",
                                "poll_seconds": 5}]}
-    c = create_app(cfg, tmp_path, version="t").test_client()
+    c = create_app(cfg, tmp_path, version="t", clock=FrozenClock()).test_client()
     assert c.get("/api/display/radar/data").status_code == 200
+
+
+def test_a_busy_render_queue_is_a_503_with_a_retry_hint(client, monkeypatch,
+                                                        cold_frame_cache):
+    # RenderBusy was tested at the render layer only; the ROUTE's except clause
+    # never executed, so deleting it fell through to the RenderError handler --
+    # still a 503, but silently without Retry-After, which is the only thing
+    # telling a device when to come back.
+    def busy(*a, **k):
+        raise render.RenderBusy("render queue busy for 20s")
+
+    monkeypatch.setattr("homescreen.serve.render_frame", busy)
+    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    assert r.status_code == 503
+    assert r.headers["Retry-After"] == "5"
+    assert "busy" in r.get_json()["error"]
+
+
+def test_the_frame_cache_drops_the_least_recently_used_entry(monkeypatch,
+                                                             cold_frame_cache):
+    # `popitem(last=False)` -> `last=True` survived: nothing distinguished
+    # dropping the oldest from dropping the newest, so the cache could have
+    # been evicting the frame it had just built.
+    from PIL import Image
+    monkeypatch.setattr(render, "html_to_png",
+                        lambda html, w, h, out, binary=None:
+                        Image.new("1", (w, h), 1).save(out))
+    for i in range(render._CACHE_MAX):
+        render.render_frame(f"<p>{i}</p>", 800, 480)
+    render.render_frame("<p>0</p>", 800, 480)          # touch the oldest
+    render.render_frame("<p>new</p>", 800, 480)        # forces one eviction
+    assert render.is_cached("<p>0</p>", 800, 480), "the touched entry survives"
+    assert not render.is_cached("<p>1</p>", 800, 480), "the next-oldest goes"
+    assert render.is_cached("<p>new</p>", 800, 480)

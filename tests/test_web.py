@@ -190,8 +190,10 @@ def test_the_fleet_page_shows_what_the_server_substituted():
         "fw": "1.0", "poll_seconds": 5, "caps": {"w": 240, "h": 240},
         "last_seen": "x", "first_seen": "y",
         "unsupported": ["radar"], "scene_error": "fallo en planes: KeyError"}]))
-    assert "dropped" in html and "radar" in html
-    assert "not declared by this device" in html
+    # `"radar" in html` held from the device NAME regardless of the list.
+    assert "<dt>dropped</dt>" in html
+    assert "<dd class=\"bad\">radar &mdash; not declared by this device</dd>" \
+        in html
     assert "fallo en planes: KeyError" in html
 
 
@@ -200,7 +202,10 @@ def test_a_healthy_device_carries_no_substitution_rows():
         "hw": "aabb", "name": "radar", "scene": "planes", "online": True,
         "fw": "1.0", "poll_seconds": 5, "caps": {}, "last_seen": "x",
         "first_seen": "y"}]))
-    assert "dropped" not in html and "scene_error" not in html
+    # `"scene_error" not in html` could never fail: web.py emits <dt>scene</dt>
+    # and never the literal key, so the assertion passed with the row present.
+    assert "<dt>dropped</dt>" not in html
+    assert "<dt>scene</dt>" not in html
 
 
 def test_a_substitution_message_is_escaped():

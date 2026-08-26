@@ -466,3 +466,179 @@ def test_two_quarantines_in_the_same_second_keep_both(tmp_path):
         registry.touch(tmp_path, f"d{i}", now=1000.0)
     saved = sorted(p.read_text() for p in tmp_path.glob("devices.corrupt-*"))
     assert saved == ["{ first", "{ second"]
+
+
+# --- the lock's own contract --------------------------------------------------
+
+def _lock_depth(cache_dir: Path) -> int:
+    held = getattr(registry._depth, "held", {}) or {}
+    return held.get(str(registry.registry_path(cache_dir)), 0)
+
+
+def test_a_mutator_can_be_composed_inside_another_lock(tmp_path: Path):
+    # `_touch_locked`/`_assign_locked` exist so mutators can be composed, and
+    # the first composition would have wedged the daemon: flock is per-fd, so a
+    # second acquisition in the same thread blocked on itself -- unrecoverably,
+    # because the worker stops without the process dying and Restart=always
+    # never fires. The reentrancy was written but nothing performed the
+    # composition, so removing it changed no test.
+    inner, real = [], registry._touch_locked
+
+    def spy(cache_dir, *a, **k):
+        inner.append(_lock_depth(cache_dir))
+        return real(cache_dir, *a, **k)
+
+    registry._touch_locked = spy
+    try:
+        def compose():
+            with registry._locked(tmp_path):
+                registry.touch(tmp_path, HW, now=1000.0)      # takes it again
+                registry.assign(tmp_path, HW, name="desk", scene="clock")
+
+        worker = threading.Thread(target=compose, daemon=True)
+        worker.start()
+        worker.join(timeout=5.0)
+    finally:
+        registry._touch_locked = real
+    assert not worker.is_alive(), "nested _locked deadlocked"
+    assert inner == [2], f"the inner acquisition must nest, got depth {inner}"
+    assert _lock_depth(tmp_path) == 0, "and the depth must unwind"
+    assert registry.load(tmp_path)[HW]["scene"] == "clock"
+
+
+def test_the_lock_depth_unwinds_when_the_body_raises(tmp_path: Path):
+    # A depth left non-zero would make that thread hold the lock forever
+    # without holding the file lock -- every later mutation on it silently
+    # unsynchronised.
+    with pytest.raises(RuntimeError):
+        with registry._locked(tmp_path):
+            with registry._locked(tmp_path):
+                raise RuntimeError("boom")
+    assert _lock_depth(tmp_path) == 0
+    registry.touch(tmp_path, HW, now=1000.0)          # still usable
+
+
+def test_quarantine_happens_inside_the_lock(tmp_path: Path):
+    # It was called OUTSIDE, so its parse-check and its rename were not atomic
+    # against a concurrent writer: a poll read a corrupt file, another writer
+    # repaired it, and the first then filed the now-VALID registry as corrupt,
+    # taking a real panel's name and scene. Reproduced before the fix; nothing
+    # pinned it afterwards, so moving the call back out changed no test.
+    seen = []
+    real = registry._quarantine
+
+    def spy(cache_dir):
+        seen.append(_lock_depth(cache_dir))
+        return real(cache_dir)
+
+    registry._quarantine = spy
+    try:
+        registry.touch(tmp_path, HW, now=1000.0)
+        registry.assign(tmp_path, HW, name="d", scene="clock")
+        registry.seed_from_config({"devices": []}, tmp_path, now=1000.0)
+    finally:
+        registry._quarantine = real
+    assert seen and all(d >= 1 for d in seen), \
+        f"quarantine ran outside the lock: depths {seen}"
+
+
+def test_seeding_holds_the_lock_across_its_read_modify_write(tmp_path: Path):
+    # The one load-modify-save that sat outside the lock. It runs before the
+    # listener binds, so nothing raced it in practice -- but a concurrent
+    # poll's brand-new device vanished when one was injected.
+    depths = []
+    real = registry._save_unlocked
+
+    def spy(cache_dir, data):
+        depths.append(_lock_depth(cache_dir))
+        return real(cache_dir, data)
+
+    registry._save_unlocked = spy
+    try:
+        registry.seed_from_config(
+            {"devices": [{"id": "radar", "scene": "planes"}]}, tmp_path,
+            now=1000.0)
+    finally:
+        registry._save_unlocked = real
+    assert depths == [1], f"seeding saved at lock depth {depths}"
+
+
+def test_eviction_drops_the_stalest_unconfigured_record(tmp_path: Path):
+    # Reversing the sort survived: nothing said WHICH record goes, so the
+    # registry could have been evicting the device that just called in and
+    # keeping one last seen a week ago.
+    for i in range(registry.MAX_DEVICES):
+        registry.touch(tmp_path, f"bot{i:09x}", now=1000.0 + i)
+    registry.touch(tmp_path, "newest", now=9999.0)
+    data = registry.load(tmp_path)
+    assert "bot000000000" not in data, "the stalest unconfigured record goes"
+    assert f"bot{registry.MAX_DEVICES - 1:09x}" in data, "the freshest stays"
+
+
+def test_a_telemetry_key_longer_than_32_chars_is_dropped_not_truncated(
+        tmp_path: Path):
+    # The old assertion was `all(len(k) <= 32)`, which truncation satisfies
+    # too -- so a device's key could have been silently renamed rather than
+    # rejected, and two long keys could have collided into one.
+    long_key = "k" * 40
+    registry.touch(tmp_path, HW, now=1000.0,
+                   telemetry={long_key: "v", "ok": "1"})
+    keys = registry.load(tmp_path)[HW]["telemetry"]
+    assert set(keys) == {"ok"}, f"expected the long key gone, got {set(keys)}"
+    assert long_key[:32] not in keys, "dropped, not truncated"
+
+
+def test_a_stored_fractional_cadence_is_rounded_for_the_device(tmp_path: Path):
+    # int(round(...)) -> int(...) survived. A stored 1.9 became a header of 1,
+    # so the fleet view and the device disagreed and the device always polled
+    # faster than it was told to.
+    registry.touch(tmp_path, HW, now=1000.0)
+    registry.assign(tmp_path, HW, poll_seconds=1.9)
+    assert registry.poll_seconds(registry.load(tmp_path)[HW]) == 2
+
+
+def test_a_config_seed_with_an_unusable_cadence_falls_back(tmp_path: Path):
+    registry.seed_from_config(
+        {"devices": [{"id": "a", "poll_seconds": 99999},
+                     {"id": "b", "poll_seconds": "soon"},
+                     {"id": "c", "poll_seconds": 0}]}, tmp_path, now=1000.0)
+    data = registry.load(tmp_path)
+    for key in ("cfg:a", "cfg:b", "cfg:c"):
+        assert data[key]["poll_seconds"] == registry.DEFAULT_POLL_SECONDS
+
+
+def test_a_config_seed_naming_an_unknown_scene_lands_unassigned(tmp_path: Path):
+    # Writing it through would put a name in the registry that `assign` itself
+    # would reject, discovered later at render time rather than at seed time.
+    registry.seed_from_config(
+        {"devices": [{"id": "a", "scene": "nosuchscene"}]}, tmp_path, now=1000.0)
+    assert registry.load(tmp_path)["cfg:a"]["scene"] == "unassigned"
+
+
+def test_resolve_name_is_deterministic_when_two_records_share_a_name(
+        tmp_path: Path):
+    # `_check_name` blocks duplicates over HTTP, but devices.json is
+    # hand-editable. Without sorted(), which device a name resolves to depended
+    # on dict order -- so the same URL could serve two different panels.
+    registry.touch(tmp_path, "bbbb", now=1000.0)
+    registry.touch(tmp_path, "aaaa", now=1000.0)
+    raw = json.loads(registry.registry_path(tmp_path).read_text())
+    raw["aaaa"]["name"] = raw["bbbb"]["name"] = "kitchen"
+    registry.registry_path(tmp_path).write_text(json.dumps(raw))
+    assert registry.resolve_name(tmp_path, "kitchen") == "aaaa"
+    assert registry.resolve_name(tmp_path, "kitchen") == "aaaa"
+
+
+def test_the_liveness_overlay_never_mutates_the_stored_record(tmp_path: Path):
+    # `{**rec, ...}` -> in-place survived. Mutating would put the in-memory
+    # contact time into the dict a mutator later writes back, defeating the
+    # wear guard the overlay exists to work around.
+    registry.touch(tmp_path, HW, now=1000.0)
+    registry.forget_contacts()
+    registry._note_contact(tmp_path, HW, 5000.0)
+    on_disk_before = registry.registry_path(tmp_path).read_text()
+    assert registry.load(tmp_path)[HW]["last_seen"] != \
+        registry.load_raw(tmp_path)[HW]["last_seen"], "the overlay is a view"
+    registry.touch(tmp_path, HW, fw="9.9", now=1000.0)     # forces a write
+    assert "5000" not in registry.registry_path(tmp_path).read_text()
+    assert on_disk_before != registry.registry_path(tmp_path).read_text()

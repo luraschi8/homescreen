@@ -318,3 +318,17 @@ def test_the_dead_reckoning_fields_are_never_dropped(tmp_path):
          "ve": 0.13, "vn": -0.17, "age": 3.1, "dst": 7.4, "cs": "IBE1"}]})
     item = scenes.build("planes", ctx(tmp_path)).components[0]["items"][0]
     assert (item["ve"], item["vn"], item["age"]) == (0.13, -0.17, 3.1)
+
+
+def test_the_clock_survives_every_timezone_being_broken(tmp_path):
+    # The all-broken fallback was uncovered: with both zones unusable the scene
+    # must still produce a panel, because a device showing nothing looks
+    # identical to a device that has lost the server.
+    cfg = {"location": {"name": "Nowhere", "timezone": "Not/AZone"},
+           "secondary_clock": {"label": "X", "timezone": "Also/Bad"},
+           "feeds": {}, "devices": []}
+    c = scenes.SceneContext(cfg=cfg, cache_dir=tmp_path, caps=EPAPER,
+                            now=1_787_000_000.0, device={"hw": "aa"})
+    html = scenes.build("clock", c).html
+    assert "--:--" in html, "a broken clock says so rather than going blank"
+    assert "width:800px" in html

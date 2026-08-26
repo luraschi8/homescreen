@@ -110,6 +110,12 @@ def apply(cfg: dict, cache_dir: Path, *, _data: dict | None = None) -> dict:
     merged = []
     for dev in devices:
         if not isinstance(dev, dict):
+            # Kept, not dropped. Skipping it silently shortened the device
+            # list, so a single bad entry in a hand-edited config.yaml would
+            # make /api/status report fewer devices than the file declares --
+            # a config fault presenting as a missing device.
+            log.warning("config device entry is not a mapping: %r", dev)
+            merged.append(dev)
             continue
         over = data.get(dev.get("id"))
         if not over:

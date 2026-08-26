@@ -225,3 +225,52 @@ def test_an_oversized_body_is_refused_without_being_parsed(tmp_path):
                      content_type="application/json")
     assert r.status_code == 413
     assert not overrides.overrides_path(tmp_path).exists()
+
+
+def test_reverting_an_override_on_a_read_only_card_is_a_503(tmp_path):
+    # The PATCH 503 was tested and the DELETE 503 was not, though both write to
+    # the same card and ext4 remounts read-only on error.
+    client = create_app(_CFG(), tmp_path, version="t").test_client()
+    assert client.patch("/api/config/devices/radar",
+                        json={"max_aircraft": 30}).status_code == 200
+
+    def boom(*a, **k):
+        raise OSError(30, "Read-only file system")
+
+    import homescreen.serve as serve_mod
+    real = serve_mod.overrides.save
+    serve_mod.overrides.save = boom
+    try:
+        r = client.delete("/api/config/devices/radar")
+    finally:
+        serve_mod.overrides.save = real
+    assert r.status_code == 503
+    assert "unavailable" in r.get_json()["error"]
+
+
+@pytest.mark.parametrize("cfg_devices", [None, "a string", 42, {"id": "x"}])
+def test_apply_survives_a_config_whose_devices_are_not_a_list(tmp_path,
+                                                              cfg_devices):
+    # `apply` is called per request by `_live()`, so anything it raises on is a
+    # 500 on every route. Both shape guards survived mutation because no test
+    # combined a damaged config WITH a stored overlay.
+    overrides.save(tmp_path, {"radar": {"max_aircraft": 30}})
+    out = overrides.apply({"devices": cfg_devices}, tmp_path)
+    assert out["devices"] == cfg_devices
+
+
+def test_apply_skips_a_device_entry_that_is_not_a_mapping(tmp_path):
+    overrides.save(tmp_path, {"radar": {"max_aircraft": 30}})
+    out = overrides.apply(
+        {"devices": ["not a dict", {"id": "radar"}, None]}, tmp_path)
+    assert out["devices"][0] == "not a dict"
+    assert out["devices"][1]["max_aircraft"] == 30
+    assert out["devices"][2] is None
+
+
+def test_a_dotted_override_over_a_scalar_does_not_500_the_config_route(tmp_path):
+    # `home: "x"` in config.yaml plus a `home.lat` override: _set_dotted walked
+    # into a string. That is a 500 on /api/config and on every device route.
+    overrides.save(tmp_path, {"radar": {"home.lat": 41.0}})
+    out = overrides.apply({"devices": [{"id": "radar", "home": "x"}]}, tmp_path)
+    assert out["devices"][0]["home"] == {"lat": 41.0}

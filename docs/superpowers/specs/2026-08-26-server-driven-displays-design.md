@@ -150,6 +150,16 @@ No authentication and no pending-approval state. This is a LAN service; a device
 guesses the URL and registers itself as unassigned is harmless. Consistent with
 ADDENDUM §5's "no TLS" reasoning.
 
+> **Amendment, 2026-08-26.** "Derived, never stored" acquired a second input:
+> an **in-process contact map**. `last_seen` reaches the disk at most every
+> `MIN_LAST_SEEN_DELTA_S` (30s) to spare the microSD, while liveness judges against
+> `OFFLINE_AFTER_POLLS * poll_seconds` (15s for the radar) — as written the two rules
+> could not both hold, and a device polling exactly on cadence read offline on 47% of
+> checks. `registry.load()` now overlays the precise in-memory contact time; `load_raw()`
+> deliberately does not, so mutators still persist only what the wear guard allows. The
+> map is bounded by registry membership and is empty after a restart, at which point
+> liveness falls back to the disk — which is honest: we have not heard from anyone yet.
+
 ## 5. Phase 2 — Scene and component model
 
 ### 5.1 A scene is a function
@@ -257,7 +267,10 @@ is honest: at 240×240 there is no room for more.
 ### 5.5 Capability mismatch is the server's problem
 
 If a scene requests a component the device did not declare, **the server drops it** and
-records the substitution in the fleet view. The device never receives something it
+records the substitution in the fleet view. §6.3 says the server "never emits a partial
+component list"; where the two read differently, **this section wins** — the list is
+filtered and the omission is reported, rather than the whole scene being replaced.
+§6.3's rule applies to a scene that *failed*, not to one that was filtered. The device never receives something it
 cannot draw and therefore needs no error path for it.
 
 The fleet-view half was missing until 2026-08-26: the substitution reached the device's
