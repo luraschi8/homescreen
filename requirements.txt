@@ -6,3 +6,5 @@ pytest>=8.0
 # hangs the suite instead of failing it, which reads as a stuck CI rather than
 # a bug. A global timeout turns that into a normal red test.
 pytest-timeout>=2.3
+# Thresholds the rendered PNG to the panel's 1-bit wire format.
+pillow>=10.0

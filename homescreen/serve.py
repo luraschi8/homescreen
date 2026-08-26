@@ -14,7 +14,8 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request
 
-from homescreen import overrides, registry, web
+from homescreen import overrides, registry, scenes, web
+from homescreen.render import RenderError, render_frame
 from homescreen.cache import read_cache
 from homescreen.config import (check_device, device, feed_cache_path,
                                feed_config, load_config, server_config)
@@ -431,19 +432,68 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         resp.headers["X-Poll-Seconds"] = str(poll)
         return resp
 
+    def _scene_for(hw: str, rec: dict):
+        """(scene_name, Scene). An unassigned device gets a real scene telling
+        a human what to do, never an error and never a blank."""
+        name = rec.get("scene") or "unassigned"
+        ctx = scenes.SceneContext(
+            cfg=_live(), cache_dir=cache_dir, caps=rec.get("caps") or {},
+            now=clock(),
+            device={"hw": hw, "id": rec.get("name") or hw,
+                    "name": rec.get("name"), "feed": "adsb",
+                    "max_aircraft": (device(_live(), rec.get("name") or "") or {})
+                                    .get("max_aircraft", 20)})
+        if name in ("unassigned", "error"):
+            return name, scenes.safe_build("status", ctx)
+        return name, scenes.safe_build(name, ctx)
+
     @app.get("/api/device/<hw>/scene")
     def device_scene(hw: str):
         rec, err = _register(hw)
         if err:
             return err
-        assigned = rec.get("scene") not in (None, "unassigned")
-        body = {"hw": hw, "name": rec.get("name"),
-                "scene": rec.get("scene") or "unassigned", "assigned": assigned}
+        name, scene = _scene_for(hw, rec)
+        assigned = name not in ("unassigned", "error")
+        body = {"hw": hw, "name": rec.get("name"), "scene": name,
+                "assigned": assigned, "layout": scene.layout,
+                "components": list(scene.components)}
         if not assigned:
-            # A newly flashed board should be able to tell you what to type
-            # into the fleet view, rather than sitting blank.
             body["message"] = "not assigned - set a scene in the fleet view"
         return _poll_header(jsonify(body), rec)
+
+    @app.get("/api/device/<hw>/frame")
+    def device_frame(hw: str):
+        """Packed 1bpp, MSB first, 1 = black. No header, no compression.
+
+        The device streams this straight at the panel, so anything other than
+        exactly w*h/8 bytes is a corrupt screen rather than an error it can
+        detect. We would rather 503 than serve a short frame.
+        """
+        rec, err = _register(hw)
+        if err:
+            return err
+        caps = rec.get("caps") or {}
+        w, h = int(caps.get("w") or 800), int(caps.get("h") or 480)
+        if (w * h) % 8:
+            return jsonify({"error": f"{w}x{h} is not byte-aligned"}), 400
+        name, scene = _scene_for(hw, rec)
+        if not scene.html:
+            return jsonify({"error": f"scene {name!r} has no pixel rendering"}), 409
+        try:
+            packed = render_frame(scene.html, w, h)
+        except RenderError as exc:
+            # Chromium missing or a render timeout must not look like a frame.
+            log.error("frame render failed for %s: %s", hw, exc)
+            return jsonify({"error": f"render failed: {exc}"}), 503
+        etag = '"%s"' % hashlib.sha256(packed).hexdigest()[:16]
+        if request.headers.get("If-None-Match") == etag:
+            resp = Response(status=304)
+        else:
+            resp = Response(packed, mimetype="application/octet-stream")
+        resp.headers["ETag"] = etag
+        resp.headers["X-Frame-Bytes"] = str(len(packed))
+        resp.headers["X-Scene"] = name
+        return _poll_header(resp, rec)
 
     @app.get("/api/status")
     def status():

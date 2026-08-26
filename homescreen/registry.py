@@ -38,8 +38,36 @@ log = logging.getLogger(__name__)
 # the seam. `unassigned` and `error` are server-chosen fallback states, so they
 # are deliberately NOT assignable.
 BUILTIN_SCENES = ("unassigned", "error")
-ASSIGNABLE_SCENES = ("planes",)
-KNOWN_SCENES = BUILTIN_SCENES + ASSIGNABLE_SCENES
+
+
+def _assignable() -> tuple[str, ...]:
+    """Derived from the scene table, not a second list that can drift."""
+    from homescreen import scenes
+    return scenes.names()
+
+
+class _Assignable(tuple):
+    """Behaves as a tuple but resolves lazily, so importing registry does not
+    import every scene (and scenes import cache, which would cycle)."""
+
+    def __new__(cls):
+        return super().__new__(cls)
+
+    def __iter__(self):
+        return iter(_assignable())
+
+    def __contains__(self, item):
+        return item in _assignable()
+
+    def __len__(self):
+        return len(_assignable())
+
+    def __repr__(self):
+        return repr(_assignable())
+
+
+ASSIGNABLE_SCENES = _Assignable()
+KNOWN_SCENES = BUILTIN_SCENES + ("planes",)
 
 NAME_MAX = 64
 HW_MAX = 128
