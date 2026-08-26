@@ -292,40 +292,112 @@ def _stub_browser(monkeypatch):
     monkeypatch.setattr("homescreen.render.html_to_png", stub)
 
 
+def _flood(client, monkeypatch, peer, n=120):
+    """n hostile GETs from one host, each claiming to be a different device."""
+    codes = []
+    for i in range(n):
+        codes.append(client.get(f"/api/device/bot{i}/frame?w=800&h=480",
+                                environ_base={"REMOTE_ADDR": peer}).status_code)
+    return codes
+
+
 def test_minting_hardware_ids_does_not_buy_render_slots(client, monkeypatch):
     # A per-device throttle alone is defeated by inventing devices: 40 made-up
     # ids bought 40 cold renders at ~2.9s of Chromium each, against 2 slots.
     _stub_browser(monkeypatch)
     render.clear_cache()
     before = render.cache_stats()["misses"]
-    codes = []
-    for i in range(120):
-        codes.append(client.get(
-            f"/api/device/bot{i % 40}/frame?w=800&h=480").status_code)
+    codes = _flood(client, monkeypatch, "10.0.0.66")
     forks = render.cache_stats()["misses"] - before
-    assert forks <= 3, f"{forks} cold renders bought by 120 hostile GETs"
+    assert forks <= 6, f"{forks} cold renders bought by 120 hostile GETs"
     assert codes.count(429) > 100
 
 
-def test_a_configured_panel_is_served_while_the_flood_runs(client, monkeypatch):
-    # The gate must protect the fleet, not join the attack. A device an
-    # operator has actually assigned is never subject to the global budget.
+def test_a_flood_from_one_host_does_not_starve_another(client, monkeypatch):
+    # The version of this guard that rationed unconfigured devices GLOBALLY
+    # made this false: a newly flashed panel is unconfigured too, its first
+    # frame is always a cold render, and a flood rotating ids held the budget
+    # permanently -- the real panel never got a first frame at all.
     _stub_browser(monkeypatch)
     render.clear_cache()
-    client.get("/api/device/desk/scene?w=800&h=480&depth=1")
+    _flood(client, monkeypatch, "10.0.0.66")
+    r = client.get("/api/device/brandnew/frame?w=800&h=480",
+                   environ_base={"REMOTE_ADDR": "192.168.1.40"})
+    assert r.status_code == 200, "a different host is a different budget"
+    assert len(r.get_data()) == 800 * 480 // 8
+
+
+def test_a_configured_panel_is_served_while_the_flood_runs(client, monkeypatch):
+    # The gate must protect the fleet, not join the attack.
+    _stub_browser(monkeypatch)
+    render.clear_cache()
+    client.get("/api/device/desk/scene?w=800&h=480&depth=1",
+               environ_base={"REMOTE_ADDR": "192.168.1.41"})
     client.patch("/api/devices/desk", json={"name": "desk", "scene": "clock"})
-    for i in range(60):
-        client.get(f"/api/device/bot{i}/frame?w=800&h=480")
-    r = client.get("/api/device/desk/frame?w=800&h=480")
+    _flood(client, monkeypatch, "10.0.0.66", n=60)
+    r = client.get("/api/device/desk/frame?w=800&h=480",
+                   environ_base={"REMOTE_ADDR": "192.168.1.41"})
     assert r.status_code == 200
     assert len(r.get_data()) == 800 * 480 // 8
 
 
-def test_a_newly_flashed_panel_still_gets_its_first_frame(client, monkeypatch):
-    # The cost of the global budget is borne by real hardware exactly once, on
-    # first boot, and must be seconds -- not a lockout.
+def test_a_peer_budget_refills_so_a_transient_burst_is_not_a_ban(client,
+                                                                monkeypatch):
+    # A device that reboots in a loop, or an operator refreshing, must recover
+    # without anyone intervening.
     _stub_browser(monkeypatch)
     render.clear_cache()
-    r = client.get("/api/device/brandnew/frame?w=800&h=480")
+    import time as _t
+    _flood(client, monkeypatch, "10.0.0.77", n=30)
+    assert client.get("/api/device/later/frame?w=800&h=480",
+                      environ_base={"REMOTE_ADDR": "10.0.0.77"}
+                      ).status_code == 429
+    real = _t.monotonic
+    monkeypatch.setattr(_t, "monotonic", lambda: real() + 3600)
+    r = client.get("/api/device/later2/frame?w=800&h=480",
+                   environ_base={"REMOTE_ADDR": "10.0.0.77"})
+    assert r.status_code == 200, "the bucket must refill, not latch"
+
+
+def test_a_newly_flashed_panel_still_gets_its_first_frame(client, monkeypatch):
+    # An unconfigured device is not an attacker. Its first frame is always a
+    # cold render, because the unassigned scene embeds its own hw id.
+    _stub_browser(monkeypatch)
+    render.clear_cache()
+    r = client.get("/api/device/brandnew/frame?w=800&h=480",
+                   environ_base={"REMOTE_ADDR": "192.168.1.42"})
     assert r.status_code == 200, "an unconfigured device is not an attacker"
     assert len(r.get_data()) == 800 * 480 // 8
+
+
+def test_a_configured_panel_sharing_an_address_with_a_flood_is_still_served(
+        client, monkeypatch):
+    # Peer-keying cannot separate two processes on one host, and a panel does
+    # not get to choose its neighbours. An assigned device is exempt from the
+    # peer budget for exactly that reason.
+    _stub_browser(monkeypatch)
+    render.clear_cache()
+    client.get("/api/device/deskx/scene?w=800&h=480&depth=1",
+               environ_base={"REMOTE_ADDR": "10.0.0.99"})
+    client.patch("/api/devices/deskx", json={"name": "deskx", "scene": "clock"})
+    _flood(client, monkeypatch, "10.0.0.99", n=80)
+    r = client.get("/api/device/deskx/frame?w=800&h=480",
+                   environ_base={"REMOTE_ADDR": "10.0.0.99"})
+    assert r.status_code == 200
+    assert len(r.get_data()) == 800 * 480 // 8
+
+
+def test_no_cadence_lets_a_device_spend_the_browser_faster_than_the_floor(
+        client, monkeypatch):
+    # `poll_seconds: 1` made the per-hw interval 0.5s, so 40 self-assigned
+    # devices thrashed the frame cache and every render went cold.
+    _stub_browser(monkeypatch)
+    render.clear_cache()
+    client.get("/api/device/fast/scene?w=800&h=480&depth=1")
+    client.patch("/api/devices/fast",
+                 json={"name": "fast", "scene": "clock", "poll_seconds": 1})
+    before = render.cache_stats()["misses"]
+    for i in range(40):
+        client.get(f"/api/device/fast/frame?w={800 + 8 * i}&h=480")
+    assert render.cache_stats()["misses"] - before <= 1, \
+        "one cold render per floor interval, whatever the cadence says"

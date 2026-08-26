@@ -384,32 +384,63 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                         "note": "reverted to config.yaml"})
 
     _DEVICE_READONLY = ("fw", "caps", "telemetry", "first_seen", "last_seen")
-    #: A cold frame costs ~2.9s of Chromium on the Pi against 2 render slots.
-    #: A device polling on cadence needs at most one per interval; anything
-    #: faster is either a bug or a stranger, and both are answered instantly
-    #: instead of being allowed to occupy a slot.
+    #: A cold frame costs ~2.9s of Chromium on the Pi against 2 render slots,
+    #: so the queue has to be rationed. The question is what to ration it BY.
+    #:
+    #: Per hardware id alone fails: ids are free to invent, and 40 invented ids
+    #: bought 40 renders. A global budget for unconfigured devices fails worse:
+    #: a newly flashed panel is unconfigured too, its first frame is always a
+    #: cold render (the unassigned scene embeds its own hw id), and a flood
+    #: rotating ids held that budget permanently -- the real panel never got a
+    #: first frame at all, which is the opposite of what the budget was for.
+    #:
+    #: The honest fairness key is the peer address. A flood from one host
+    #: spends one host's budget; a real panel is a different host and is
+    #: unaffected. Spoofing is possible on a LAN but the spoofer must still
+    #: receive the reply, which is a far higher bar than making up a MAC. Both
+    #: keys are used: per-peer rations the cost, per-hw stops one device
+    #: hammering us regardless of where it sits.
+    #: An assigned device is entitled to the frames it polls for -- the fleet
+    #: is bounded at MAX_DEVICES and an operator chose every one of them -- so
+    #: it is exempt from the peer budget. That matters when a panel and a
+    #: hostile process share an address, which peer-keying alone cannot
+    #: separate. What still bounds a configured device is COLD_FLOOR_S below.
+    #: A stranger CAN assign itself a scene, because the fleet API is
+    #: deliberately unauthenticated on a trusted LAN -- see CLAUDE.md. That is
+    #: the accepted cost of that decision, not an oversight here.
+    COLD_BURST = 4                 # renders an unconfigured peer may take at once
+    COLD_REFILL_S = 3.0            # ...and one more every this many seconds
+    #: No device, however it is configured, may spend the browser faster than
+    #: this. `poll_seconds: 1` otherwise bought a cold render every 0.5s.
+    COLD_FLOOR_S = 2.0
+    _peer_bucket: dict[str, list] = {}
     _last_cold: dict[str, float] = {}
 
-    #: A per-hw throttle alone is defeated by minting hardware ids: 40 invented
-    #: ids buy 40 cold renders. So an UNCONFIGURED device -- one no operator has
-    #: ever assigned a scene to -- also draws on a single global budget. That is
-    #: exactly the attacker's shape, and it costs a real newly-flashed panel at
-    #: most a few seconds of waiting on its very first boot. A configured device
-    #: is never gated by this: the fleet is bounded at MAX_DEVICES and every one
-    #: of them is entitled to the frames it polls for.
-    UNCONFIGURED_COLD_INTERVAL_S = 1.0
-    _last_unconfigured = [0.0]
+    def _peer_allows_cold(peer: str) -> bool:
+        now = time.monotonic()
+        tokens, stamp = _peer_bucket.get(peer, (float(COLD_BURST), now))
+        tokens = min(float(COLD_BURST),
+                     tokens + (now - stamp) / COLD_REFILL_S)
+        if tokens < 1.0:
+            _peer_bucket[peer] = (tokens, now)
+            return False
+        _peer_bucket[peer] = (tokens - 1.0, now)
+        if len(_peer_bucket) > 256:
+            for key in sorted(_peer_bucket, key=lambda k: _peer_bucket[k][1])[:128]:
+                _peer_bucket.pop(key, None)
+        return True
 
-    def _cold_render_allowed(hw: str, rec: dict) -> bool:
-        interval = registry.poll_seconds(rec) * 0.5
+    def _cold_render_allowed(hw: str, rec: dict, peer: str) -> bool:
+        # Per-hw first: a device polling faster than half its own cadence is
+        # either broken or not the device, and either way the answer is cheap.
+        interval = max(COLD_FLOOR_S, registry.poll_seconds(rec) * 0.5)
         now = time.monotonic()
         last = _last_cold.get(hw)
         if last is not None and now - last < interval:
             return False
-        if rec.get("scene") in (None, "", "unassigned"):
-            if now - _last_unconfigured[0] < UNCONFIGURED_COLD_INTERVAL_S:
-                return False
-            _last_unconfigured[0] = now
+        configured = rec.get("scene") not in (None, "", "unassigned")
+        if not configured and not _peer_allows_cold(peer):
+            return False
         _last_cold[hw] = now
         if len(_last_cold) > registry.MAX_DEVICES * 2:
             for key in sorted(_last_cold, key=_last_cold.get)[:registry.MAX_DEVICES]:
@@ -684,7 +715,8 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         if not scene.html:
             return jsonify({"error": f"scene {name!r} has no pixel rendering"}), 409
         if not render.is_cached(scene.html, w, h) \
-                and not _cold_render_allowed(hw, rec):
+                and not _cold_render_allowed(hw, rec,
+                                             request.remote_addr or "?"):
             resp = jsonify({"error": "frame requested faster than this device "
                                      "polls; the render queue is not a toy"})
             resp.headers["Retry-After"] = "5"
