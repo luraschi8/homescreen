@@ -123,9 +123,10 @@ HomeScreen/firmware/
   test/
     mocks/                           copied, extended in Task 0
     fixtures_wire.h                  GENERATED from the server
-    test_smoke/ test_device_id/ test_server_config/ test_scene_client/
-    test_components/ test_display/ test_geo/ test_render_policy/
-    test_settings/ test_wifi/ test_runway_cap/ test_main/
+    test_mocks/ test_smoke/ test_device_id/ test_server_config/
+    test_scene_client/ test_components/ test_display/ test_geo/
+    test_render_policy/ test_settings/ test_wifi/ test_runway_cap/
+    test_main/ test_debug_log/
 HomeScreen/
   scripts/dump_wire_fixture.py       NEW
   tests/test_wire_contract.py        NEW
@@ -157,8 +158,10 @@ exist, and each one blocked a whole task.
 - `MockWiFi::rssi_`, `WiFi.RSSI()`, `WiFi.macAddress(uint8_t*)`
 - `MockHttp::response_headers`, `last_if_none_match`, `content_length_override`,
   `HTTPClient::addHeader/collectHeaders/header`, `HTTP_CODE_NOT_MODIFIED`
-- `MockWiFiClient::stop_calls` — so the socket-teardown fix in Task 3 is testable
-- `MockWmStats::params` + `hasParameter`/`setParameterValue`/`parameterValue`
+- `MockWiFiClientStats g_wc` — so the socket-teardown fix in Task 3 is testable
+- `g_mutex_on_give` — a `std::function<void()>` the semaphore mock calls just before
+  releasing, so a test can observe what was true while the lock was held
+- `g_wm_params` registry + `wmHasParameter()` / `wmSetParameterValue()`
 - `GfxRecorder::textContains()`, `lastX()` — queries over the existing `ops` log
 
 - [ ] **Step 1: Copy the mocks and assets**
@@ -181,32 +184,31 @@ test "$(git -C $REF status --porcelain | wc -l | tr -d ' ')" = "0" || \
 `putUChar/getUChar/putBool/getBool/putDouble/getDouble`. Add to `class Preferences`,
 following the existing `open_` / `read_only_` no-op discipline exactly:
 
+**Into the existing `g_nvs.store`, via the existing `key()`/`put()`/`get<T>()`.** A
+separate map would be invisible to `MockNvs::namespaceExists()`, which scans `store` only
+— and `begin(ns, true)` returns false when the namespace does not exist, so *every*
+read-only open would fail and `server_config::load()` would silently always fall back to
+the compiled default. Add these as public members of `class Preferences`:
+
 ```cpp
-  size_t putString(const char* key, const char* value) {
-    if (!open_ || read_only_ || key == nullptr || value == nullptr) return 0;
-    g_nvs.strings[ns_ + ":" + key] = value;
-    return strlen(value);
+  void putString(const char* k, const char* v) {
+    // Same no-op discipline as put(): a handle that failed to open, or was
+    // opened read-only, silently drops the write -- which is how an unchecked
+    // begin() loses data on real hardware.
+    if (!open_ || read_only_ || v == nullptr) return;
+    g_nvs.store[key(k)] = std::string(v);
   }
-  String getString(const char* key, const char* fallback = "") {
-    if (!open_) return String(fallback);
-    auto it = g_nvs.strings.find(ns_ + ":" + key);
-    return it == g_nvs.strings.end() ? String(fallback)
-                                     : String(it->second.c_str());
+  String getString(const char* k, const char* d = "") {
+    auto it = g_nvs.store.find(key(k));
+    return it == g_nvs.store.end() ? String(d) : String(it->second.c_str());
   }
-  size_t putUShort(const char* key, uint16_t value) {
-    if (!open_ || read_only_) return 0;
-    g_nvs.ushorts[ns_ + ":" + key] = value;
-    return sizeof(value);
-  }
-  uint16_t getUShort(const char* key, uint16_t fallback = 0) {
-    if (!open_) return fallback;
-    auto it = g_nvs.ushorts.find(ns_ + ":" + key);
-    return it == g_nvs.ushorts.end() ? fallback : it->second;
-  }
+  void putUShort(const char* k, uint16_t v) { put(k, &v, sizeof(v)); }
+  uint16_t getUShort(const char* k, uint16_t d = 0) { return get<uint16_t>(k, d); }
 ```
 
-Add `std::map<std::string, std::string> strings;` and
-`std::map<std::string, uint16_t> ushorts;` to `MockNvs`, and clear both in its `reset()`.
+Nothing is added to `MockNvs`: `store`, `namespaceExists()` and `reset()` all keep
+working unchanged. `get<T>()` compares `size() != sizeof(T)`, so a string stored under a
+key can never be misread as a number.
 
 - [ ] **Step 3: WiFi — MAC and RSSI**
 
@@ -260,13 +262,31 @@ In `class HTTPClient`:
 at exactly the moment the firmware reintroduces a socket-teardown bug (see Task 3's
 `s_client.stop()`). Add to the plain `WiFiClient` in `mocks/WiFiClientSecure.h`:
 
+`class WiFiClient` has only `body` and `pos` — there is no `connected_` to clear, and no
+member for a test to read. Add a **separate global**, because the obvious alternative
+does not work: a counter reset by `g_http.reset()` is zeroed by the `poll()` helper's own
+first statement, so `const int before = g_wc.stop_calls;` then `poll(...)` compares
+against a counter that just went back to 0.
+
+In `mocks/WiFiClientSecure.h`, above `class WiFiClient`:
+
 ```cpp
-  int stop_calls = 0;
-  void stop() { ++stop_calls; connected_ = false; }
+/** Plain-TCP teardown counter. MockTlsStats models the TLS one; this firmware
+ *  has no TLS, and without this the host suite loses its only way to see a
+ *  socket-teardown bug at the moment the firmware reintroduces one. */
+struct MockWiFiClientStats { int stop_calls = 0; void reset() { stop_calls = 0; } };
+extern MockWiFiClientStats g_wc;
 ```
-and expose it as `extern MockWiFiClientStats g_wc;` in `mock_globals.h`, or simply make
-`stop_calls` a file-scope counter reset by `g_http.reset()`. Either is fine; the test in
-Task 3 must be able to assert it.
+and inside `class WiFiClient`:
+```cpp
+  void stop() { ++g_wc.stop_calls; pos = 0; }
+```
+`mock_globals.h` holds definitions, not `extern`s, so add `MockWiFiClientStats g_wc;`
+there next to `MockTlsStats g_tls;`. Reset it in each suite's `setUp()`, never from
+`g_http.reset()`.
+
+**Do not delete `mocks/WiFiClientSecure.h`.** `class WiFiClient` is defined inside it and
+`HTTPClient.h` includes it.
 
 **Do not delete `mocks/WiFiClientSecure.h`.** `class WiFiClient` is defined *inside* it
 and `HTTPClient.h` includes it; deleting it breaks the whole suite.
@@ -274,21 +294,37 @@ and `HTTPClient.h` includes it; deleting it breaks the whole suite.
 - [ ] **Step 6: WiFiManager — record parameters**
 
 `addParameter` currently records nothing, so a test cannot ask whether the portal offers
-a field. Add to `MockWmStats`:
+a field. **Not on `MockWmStats`, and not by rewriting `getValue()`.** Three reasons, each fatal:
+`WiFiManagerParameter` has no `getID()`; `g_wm` is declared *after* the parameter class,
+so an inline `getValue()` referencing it does not compile; and `test_wifi.cpp`'s `setUp`
+does `g_wm = MockWmStats()` every test while `attachPortalParams()` runs **once** per
+binary behind a file-static `s_wm_configured` guard — so anything stored on `g_wm` is
+wiped before the appended tests run.
+
+A separate registry of *pointers*, which `setUp` does not touch, and which sets the value
+through the parameter's own API exactly as a real form POST does. In `WiFiManager.h`,
+after `class WiFiManagerParameter`:
 
 ```cpp
-  std::map<std::string, std::string> params;
-  bool hasParameter(const char* id) const { return params.count(id) != 0; }
-  void setParameterValue(const char* id, const char* v) { params[id] = v; }
-  const char* parameterValue(const char* id) {
-    auto it = params.find(id);
-    return it == params.end() ? "" : it->second.c_str();
-  }
+/** Registered portal parameters, by id. Deliberately NOT part of MockWmStats:
+ *  test_wifi.cpp resets that every test, while attachPortalParams() runs once
+ *  per binary behind a file-static guard. */
+extern std::map<std::string, WiFiManagerParameter*> g_wm_params;
+inline bool wmHasParameter(const char* id) { return g_wm_params.count(id) != 0; }
+inline void wmSetParameterValue(const char* id, const char* v) {
+  auto it = g_wm_params.find(id);
+  if (it != g_wm_params.end()) it->second->setValue(v, 64);
+}
 ```
-Have `WiFiManager::addParameter(WiFiManagerParameter* p)` do
-`g_wm.params[p->getID()] = p->getValue();`, and have `WiFiManagerParameter::getValue()`
-return `g_wm.params[id_]` when present so a test can script a value the save callback
-then reads.
+`addParameter` becomes `void addParameter(WiFiManagerParameter* p) { if (p) g_wm_params[p->id_] = p; }`
+— `id_` is already public. Define `std::map<std::string, WiFiManagerParameter*> g_wm_params;`
+in `mock_globals.h`, and add `#include <map>` to `WiFiManager.h`.
+
+The appended tests in Task 8 use `wmHasParameter("server")` and
+`wmSetParameterValue("server", ...)`. Leaving `getValue()` alone matters: preferring a
+registry value inside it would make the existing
+`test_saving_params_applies_a_valid_location` read a stale registered `"0"` instead of
+the value it just set.
 
 - [ ] **Step 7: GfxRecorder — two queries over the log it already keeps**
 
@@ -320,7 +356,29 @@ purpose (scripted behaviour like `sprite_alloc_fails` deliberately survives it).
 `drew_circle` is not needed: `g_gfx.count(DrawOp::Circle) > 0` already answers it, and
 the plan's tests use that form.
 
-- [ ] **Step 8: Test the mocks themselves**
+- [ ] **Step 8: A hook the semaphore mock does not have**
+
+`test_the_content_clock_is_stamped_with_the_swap_under_one_lock` needs to observe what was
+true *while* the lock was held. The host mutex never blocks, so the only way to see that
+is a callback fired inside `xSemaphoreGive`, before the counter drops. In
+`mocks/freertos/semphr.h`:
+
+```cpp
+#include <functional>
+/** Fired inside xSemaphoreGive BEFORE g_mutex_outstanding drops, so a test can
+ *  assert on state that was only true while the lock was held. Null by default;
+ *  a test sets it, then clears it. */
+extern std::function<void()> g_mutex_on_give;
+```
+and in `xSemaphoreGive`, as the first statement of the `if (m)` branch:
+```cpp
+    if (g_mutex_on_give) g_mutex_on_give();
+```
+Define `std::function<void()> g_mutex_on_give;` in `mock_globals.h` beside the other
+counters. Clear it in every `setUp()` that sets it — a lambda capturing a dead stack
+frame fires on the next test otherwise.
+
+- [ ] **Step 9: Test the mocks themselves**
 
 ```cpp
 // firmware/test/test_mocks/test_mocks.cpp
@@ -334,7 +392,10 @@ the plan's tests use that form.
 
 #include "../mocks/mock_globals.h"
 
-void setUp(void) { g_nvs.reset(); g_http.reset(); g_gfx.reset(); }
+void setUp(void) {
+  g_nvs.reset(); g_http.reset(); g_gfx.reset(); g_wc.reset();
+  g_mutex_on_give = nullptr;
+}
 void tearDown(void) {}
 
 void test_preferences_round_trips_strings_and_ushorts(void) {
@@ -380,6 +441,20 @@ void test_wifi_reports_a_mac_and_an_rssi(void) {
   TEST_ASSERT_EQUAL_INT(-58, WiFi.RSSI());
 }
 
+void test_the_give_hook_sees_the_lock_still_held(void) {
+  // If it fired after the decrement it would always read 0 and the test that
+  // depends on it would pass against a clock stamped outside the lock.
+  int seen = -1;
+  SemaphoreHandle_t m = xSemaphoreCreateMutex();
+  g_mutex_on_give = [&]() { seen = g_mutex_outstanding; };
+  xSemaphoreTake(m, 0);
+  xSemaphoreGive(m);
+  g_mutex_on_give = nullptr;
+  TEST_ASSERT_EQUAL_INT(1, seen);
+  TEST_ASSERT_EQUAL_INT(0, g_mutex_outstanding);
+  vSemaphoreDelete(m);
+}
+
 void test_the_gfx_recorder_can_be_asked_what_was_drawn(void) {
   DrawOp op;
   op.kind = DrawOp::Text;
@@ -399,12 +474,13 @@ int main(void) {
   RUN_TEST(test_a_read_only_open_refuses_writes);
   RUN_TEST(test_the_http_mock_serves_headers_and_records_the_conditional);
   RUN_TEST(test_wifi_reports_a_mac_and_an_rssi);
+  RUN_TEST(test_the_give_hook_sees_the_lock_still_held);
   RUN_TEST(test_the_gfx_recorder_can_be_asked_what_was_drawn);
   return UNITY_END();
 }
 ```
 
-- [ ] **Step 9: Commit** (the suite cannot run until Task 1 writes `platformio.ini`)
+- [ ] **Step 10: Commit** (the suite cannot run until Task 1 writes `platformio.ini`)
 
 ```bash
 git add firmware/ && git commit -m "test(firmware): extend the copied mocks for the scene client"
@@ -564,13 +640,15 @@ constexpr unsigned long kDebugFrameReportMs = 1000;
 
 /**
  * Largest scene body we will parse. ArduinoJson 7 peaks around 4.6x the body
- * size for this shape (measured: 9,628 B -> 30,575 B at 64 items), so 12 KB of
- * body is ~55 KB of peak -- the whole budget. Anything larger is a
+ * size for this shape (measured: 9,628 B -> 30,575 B at 64 items). At
+ * max_items=64 the server cannot exceed ~9.6 KB, so 8 KB bounds the peak near
+ * 37 KB and still fits every body we ask for -- 12 KB would have allowed a
+ * ~56 KB peak, which is the entire post-TLS budget with no margin, and the pool
+ * needs contiguity rather than just total free bytes. Anything larger is a
  * misconfiguration or a chunked response, and both must be refused rather than
- * attempted: a NoMemory mid-parse is indistinguishable on screen from a dead
- * server.
+ * attempted: a NoMemory mid-parse looks exactly like a dead server on the glass.
  */
-constexpr int kMaxBodyBytes = 12288;
+constexpr int kMaxBodyBytes = 8192;
 
 // --- UI colours (RGB565) — status screens ---
 constexpr uint16_t kColorBlack = 0x0000;
@@ -603,9 +681,10 @@ void test_no_feed_url_is_compiled_into_this_firmware(void) {
 }
 
 void test_the_body_cap_leaves_room_for_the_parse_to_peak(void) {
-  // Measured: ArduinoJson 7.4 peaks ~4.6x body for this shape. 12 KB of body
-  // is ~55 KB of peak, which is the entire post-TLS heap budget.
-  TEST_ASSERT_EQUAL_INT(12288, config::kMaxBodyBytes);
+  // Measured: ArduinoJson 7.4 peaks ~4.6x body for this shape, and the server
+  // cannot send more than ~9.6 KB at max_items=64. 8 KB bounds the peak near
+  // 37 KB with real margin.
+  TEST_ASSERT_EQUAL_INT(8192, config::kMaxBodyBytes);
 }
 
 void setUp(void) {}
@@ -1015,9 +1094,13 @@ building, no field-fallback chains (the server did that), a real 304 path, and t
 distinct expiry conditions instead of one.
 
 **Files:** Create `firmware/{include,src}/services/scene_client.{h,cpp}`,
-`firmware/test/test_scene_client/test_scene_client.cpp`. Consumes `firmware/test/fixtures_wire.h`
-from Task 4 — **do Task 4 first if you are working strictly in order**; the two are
-separated only because one is Python and one is C++.
+`firmware/test/test_scene_client/test_scene_client.cpp`.
+
+**Depends on Task 4**, whose generator produces the `fixtures_wire.h` these tests parse.
+The tasks are numbered in dependency order everywhere else; this one pair is inverted
+only because it reads better. **Execute Task 4 first.** Revision 2 claimed "tasks were
+reordered so nothing depends on a later one" — that claim was false for this pair, and
+following the numbering literally leaves the tree red at Task 3's commit.
 
 **Interfaces:**
 - Consumes: `services::deviceId()`, `services::server::baseUrl()`, `config::*`,
@@ -1079,11 +1162,16 @@ constexpr float kExtrapolationHorizonSec = 12.0f;
 /** Silence from the SERVER this long and the picture must go. */
 constexpr float kContactExpirySec = 60.0f;
 /**
- * Unchanged CONTENT this long and the picture must go too, even though the
- * server is answering. Longer than the contact bound because a genuinely quiet
- * sky legitimately produces identical bytes for minutes.
+ * The server's own feed cache this stale and the picture must go, even though
+ * the server is answering us perfectly.
+ *
+ * This is the number that matters, and it took two reviews to find. `feed_ok`
+ * cannot carry this: `cache.write_failure` only runs when a fetch RUNS and
+ * fails, so a fetch daemon that was stopped, hung, or exited 78 on a bad config
+ * leaves `ok: true` on disk forever while the data rots. `feed_age_s` grows in
+ * every one of those cases, because `fetched_at` stops advancing.
  */
-constexpr float kContentExpirySec = 300.0f;
+constexpr float kFeedExpirySec = 60.0f;
 
 /** One HTTP exchange. True on 200 or 304; false leaves the picture untouched. */
 bool pollOnce();
@@ -1113,18 +1201,24 @@ float secondsSinceContent();
 float secondsSinceContentRaw();
 
 /**
- * True once the picture must not be shown at all. THREE conditions, because
- * one clock cannot see all the ways this fails:
+ * True once the picture must not be shown at all. TWO conditions, one for each
+ * thing that can die:
  *
- *   1. the server says its own feed is dead (`feed_ok: false`)
- *   2. we have not heard from the server for kContactExpirySec
- *   3. the content has not changed for kContentExpirySec
+ *   1. we have not heard from the SERVER for kContactExpirySec
+ *   2. the server's own FEED has not moved for kFeedExpirySec
  *
- * Condition 1 is the one the reference could not have: there, the device WAS
- * the feed client, so a dead feed and a failed fetch were the same event. Here
- * the Pi serves from cache and keeps answering 200/304 forever after its
- * fetcher dies -- so a contact-clock test alone can never fire, and the panel
- * would present hours-old traffic as live.
+ * The second is the one the reference could not have: there, the device WAS the
+ * feed client, so a dead feed and a failed fetch were the same event. Here the
+ * Pi serves from cache and keeps answering 200/304 forever after its fetcher
+ * dies, so a contact test alone can never fire and the panel would present
+ * hours-old traffic as live.
+ *
+ * `feed_ok` is deliberately NOT a condition. `cache.write_failure` keeps the
+ * last good aircraft and flips only the flag, so a single upstream timeout --
+ * one of many, on a 3-second fetch cycle -- would blank the whole radar for a
+ * poll and restore it, which is the once-per-cycle blink that radar_display.cpp
+ * was written to eliminate. It is a rendering hint (draw the "sin señal" pill),
+ * not an expiry.
  */
 bool contentExpired();
 
@@ -1324,24 +1418,39 @@ void test_silence_from_the_server_expires_the_picture(void) {
 }
 
 void test_a_server_that_answers_forever_with_a_dead_feed_still_expires(void) {
-  // THE failure the reference could not have. serve.py serves from cache and
-  // never fetches on a device request, so when the Pi's fetcher dies the server
-  // keeps answering 304 with a stable ETag indefinitely. A contact-clock test
-  // alone never fires and the panel shows hours-old traffic as live.
+  // THE failure the reference could not have, and the one two reviews were
+  // needed to state correctly. serve.py serves from cache and never fetches on
+  // a device request, so a STOPPED fetch daemon leaves ok:true on disk forever
+  // -- cache.write_failure only runs when a fetch RUNS and fails. Nothing flips
+  // feed_ok, the server keeps answering, and only feed_age_s grows.
   poll(kWireAssigned, HTTP_CODE_OK, kWireAssignedEtag);
-  for (int i = 0; i < 60; ++i) {                 // ten minutes of 304s
+  for (int i = 0; i < 12; ++i) {                 // two minutes of 304s
     mockAdvanceMs(10000);
     TEST_ASSERT_TRUE(poll("", HTTP_CODE_NOT_MODIFIED, kWireAssignedEtag));
   }
   TEST_ASSERT_TRUE(contentExpired());
 }
 
-void test_the_server_saying_its_feed_is_dead_expires_immediately(void) {
-  // The server already knows. Waiting five minutes to agree with it is a
-  // choice, and the wrong one.
+void test_one_upstream_hiccup_does_not_blank_the_radar(void) {
+  // write_failure KEEPS the last good aircraft and flips only the flag, on a
+  // 3-second fetch cycle. Expiring on feed_ok would blank the whole picture for
+  // one poll and restore it -- the once-per-cycle blink radar_display.cpp was
+  // written to eliminate.
   TEST_ASSERT_TRUE(poll(kWireAssigned, HTTP_CODE_OK, "\"a\""));
   TEST_ASSERT_FALSE(contentExpired());
   TEST_ASSERT_TRUE(poll(kWireFeedDown, HTTP_CODE_OK, "\"b\""));
+  TEST_ASSERT_FALSE_MESSAGE(contentExpired(),
+                            "a transient must not blank the panel");
+  TEST_ASSERT_FALSE(feedOk());          // ...but the renderer may show a pill
+}
+
+void test_a_feed_that_stays_down_does_expire(void) {
+  // The other half: not blinking is not the same as never noticing.
+  poll(kWireAssigned, HTTP_CODE_OK, "\"a\"");
+  for (int i = 0; i < 12; ++i) {
+    mockAdvanceMs(10000);
+    poll("", HTTP_CODE_NOT_MODIFIED, "\"a\"");
+  }
   TEST_ASSERT_TRUE(contentExpired());
 }
 
@@ -1374,10 +1483,19 @@ void test_every_failure_path_drops_the_socket(void) {
   // session on every failure for exactly this reason; without it the device
   // stops updating and never self-heals.
   poll(kWireAssigned);
-  for (const char* body : {"", "<html>nope</html>", "{\"a\":1}"}) {
+  // One case per failure path, each with the status code that actually reaches
+  // it -- sending a malformed BODY with a 500 exits at the status check and
+  // never touches the shape guard, so the guard's teardown would go untested.
+  struct Case { const char* body; int code; } cases[] = {
+      {"", 500},                       // HTTP error
+      {"", HTTPC_ERROR_CONNECTION_REFUSED},
+      {"<html>nope</html>", HTTP_CODE_OK},    // parse error
+      {"{\"a\":1}", HTTP_CODE_OK},            // shape guard
+  };
+  for (const auto& c : cases) {
     const int before = g_wc.stop_calls;
-    poll(body, body[0] == '<' ? HTTP_CODE_OK : 500);
-    TEST_ASSERT_GREATER_THAN_MESSAGE(before, g_wc.stop_calls, body);
+    poll(c.body, c.code);
+    TEST_ASSERT_GREATER_THAN_MESSAGE(before, g_wc.stop_calls, c.body);
   }
 }
 
@@ -1502,13 +1620,20 @@ void test_the_reader_lock_is_taken_and_released_around_every_publish(void) {
   TEST_ASSERT_EQUAL_INT(0, g_mutex_outstanding);
 }
 
-void test_the_clocks_and_the_swap_move_together(void) {
-  // Set outside the lock, a render frame can land between them and draw the NEW
-  // positions with the OLD content time -- up to a poll interval of extra dead
-  // reckoning, ~1 km at 400 kt, as a jump-and-snap once per poll.
+void test_the_content_clock_is_stamped_with_the_swap_under_one_lock(void) {
+  // The host is single-threaded, so no test here can make a frame interleave.
+  // What CAN be asserted is that the stamp happens while the mutex is held --
+  // which is the property that makes interleaving safe on the device. Set
+  // outside the lock, a frame draws the NEW positions against the OLD content
+  // time: up to a poll interval of extra dead reckoning, ~1 km at 400 kt, as a
+  // jump-and-snap once per poll.
+  int held_during_stamp = -1;
+  g_mutex_on_give = [&]() { held_during_stamp = g_mutex_outstanding; };
   poll(kWireAssigned);
-  const float age_at_publish = secondsSinceContentRaw();
-  TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, age_at_publish);
+  g_mutex_on_give = nullptr;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, held_during_stamp,
+                                "the clock was stamped outside the lock");
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, secondsSinceContentRaw());
   TEST_ASSERT_EQUAL_UINT(2, aircraftCount());
 }
 
@@ -1547,7 +1672,8 @@ int main(void) {
   RUN_TEST(test_a_304_does_not_disturb_the_parsed_picture);
   RUN_TEST(test_silence_from_the_server_expires_the_picture);
   RUN_TEST(test_a_server_that_answers_forever_with_a_dead_feed_still_expires);
-  RUN_TEST(test_the_server_saying_its_feed_is_dead_expires_immediately);
+  RUN_TEST(test_one_upstream_hiccup_does_not_blank_the_radar);
+  RUN_TEST(test_a_feed_that_stays_down_does_expire);
   RUN_TEST(test_nothing_is_expired_before_the_first_reply);
   RUN_TEST(test_an_http_error_keeps_the_last_good_scene);
   RUN_TEST(test_every_failure_path_drops_the_socket);
@@ -1561,7 +1687,7 @@ int main(void) {
   RUN_TEST(test_an_overlong_tag_cannot_overrun_its_buffer);
   RUN_TEST(test_a_non_finite_number_never_reaches_the_renderer);
   RUN_TEST(test_the_reader_lock_is_taken_and_released_around_every_publish);
-  RUN_TEST(test_the_clocks_and_the_swap_move_together);
+  RUN_TEST(test_the_content_clock_is_stamped_with_the_swap_under_one_lock);
   RUN_TEST(test_losing_the_link_drops_the_socket);
   RUN_TEST(test_the_link_down_teardown_happens_once_not_every_tick);
   return UNITY_END();
@@ -1628,6 +1754,10 @@ unsigned long s_content_ms = 0;
 unsigned long s_contact_ms = 0;
 bool s_ever_received = false;
 bool s_was_link_up = false;
+/** Result of the last pollTick, so the task can pick its delay. */
+bool s_last_poll_ok = false;
+/** collectHeaders reallocates per call; register the list once. */
+bool s_headers_registered = false;
 
 char s_etag[40] = {0};
 char s_scene[24] = {0};
@@ -1809,8 +1939,14 @@ bool pollOnce() {
   }
   s_http.setConnectTimeout(kConnectAttemptMs);
   s_http.setTimeout(kRequestTimeoutMs);
-  static const char* kWanted[] = {"ETag", "X-Poll-Seconds"};
-  s_http.collectHeaders(kWanted, 2);
+  // collectHeaders new[]s and delete[]s its array on every call, so this is
+  // hoisted to once per connection rather than once per poll. sendRequest()
+  // clears the collected VALUES per request, so the registration persists.
+  if (!s_headers_registered) {
+    static const char* kWanted[] = {"ETag", "X-Poll-Seconds"};
+    s_http.collectHeaders(kWanted, 2);
+    s_headers_registered = true;
+  }
   if (s_etag[0] != '\0') {
     s_http.addHeader("If-None-Match", s_etag);
   }
@@ -1926,9 +2062,11 @@ bool pollOnce() {
 
   install(back, p, millis(), /*content_changed=*/true);
 
-  // Read the headers AFTER end(): HTTPClient::clear() resets _returnCode, _size
-  // and _headers but does NOT touch _currentHeaders[i].value, which survives
-  // until the next sendRequest(). This looks like a use-after-free and is not.
+  // Headers are read BEFORE end() here, which needs no justification -- but it
+  // would also be safe after it: HTTPClient::clear() resets _returnCode, _size
+  // and _headers and does NOT touch _currentHeaders[i].value, which survives
+  // until the next sendRequest(). Noted because it looks like a use-after-free
+  // either way, and someone will eventually "fix" it in the wrong direction.
   const String etag = s_http.header("ETag");
   strncpy(s_etag, etag.c_str(), sizeof(s_etag) - 1);
   s_etag[sizeof(s_etag) - 1] = '\0';
@@ -1939,6 +2077,7 @@ bool pollOnce() {
 }
 
 void pollTick(bool link_up) {
+  feedWatchdog();
   if (!link_up) {
     if (s_was_link_up) {
       // Once, on the transition. A socket that survives a Wi-Fi drop times out
@@ -1946,10 +2085,11 @@ void pollTick(bool link_up) {
       dropSocket();
       s_was_link_up = false;
     }
+    s_last_poll_ok = false;
     return;
   }
   s_was_link_up = true;
-  pollOnce();
+  s_last_poll_ok = pollOnce();
 }
 
 size_t aircraftCount() { return s_counts[s_front]; }
@@ -1980,13 +2120,19 @@ bool contentExpired() {
   if (!s_ever_received) {
     return false;                       // nothing to expire yet
   }
-  if (!s_feed_ok) {
-    return true;                        // the server says its own feed is dead
-  }
   if (secondsSince(s_contact_ms) >= kContactExpirySec) {
     return true;                        // the server itself is gone
   }
-  return secondsSince(s_content_ms) >= kContentExpirySec;
+  // The server is answering, but its feed stopped moving. feed_age_s is the
+  // only number that grows in every way that fails -- daemon stopped, daemon
+  // hung, daemon exited 78, upstream down -- because all of them leave
+  // fetched_at frozen. It also does not twitch on a single transient, which is
+  // exactly why feed_ok is not tested here.
+  if (s_feed_age_s >= 0.0f && s_feed_age_s + secondsSince(s_content_ms)
+                                  >= kFeedExpirySec) {
+    return true;
+  }
+  return false;
 }
 
 unsigned long pollIntervalMs() { return s_poll_ms; }
@@ -2009,8 +2155,14 @@ namespace {
 
 void pollTaskBody(void*) {
   for (;;) {
-    const bool ok = pollOnce();
-    vTaskDelay(pdMS_TO_TICKS(ok ? s_poll_ms : config::kPollErrorMs));
+    // pollTick, NOT pollOnce: the link-down teardown and the watchdog feed both
+    // live in pollTick, and a task that calls pollOnce directly reaches neither.
+    // That is not a style point -- it is the difference between a socket that
+    // survives a Wi-Fi drop and times out for 8 s on every later poll, and one
+    // that does not.
+    pollTick(WiFi.status() == WL_CONNECTED);
+    vTaskDelay(pdMS_TO_TICKS(s_last_poll_ok ? s_poll_ms
+                                            : config::kPollErrorMs));
   }
 }
 
@@ -2040,6 +2192,8 @@ void resetForTest() {
   s_content_ms = s_contact_ms = 0;
   s_ever_received = false;
   s_was_link_up = false;
+  s_last_poll_ok = false;
+  s_headers_registered = false;
   s_etag[0] = s_scene[0] = s_component[0] = s_message[0] = '\0';
   s_assigned = false;
   s_feed_ok = false;
@@ -2065,22 +2219,24 @@ The mutation must apply to a literal that exists. Check first, then mutate:
 
 ```bash
 cd firmware
-grep -c "s_contact_ms = now;" src/services/scene_client.cpp    # expect 1
+BEFORE=$(grep -c "s_contact_ms = now;" src/services/scene_client.cpp)
+echo "$BEFORE"        # expect 2: install() and noteContact() both stamp it
 cp src/services/scene_client.cpp /tmp/sc.bak
-# Collapse them, as the reference has them:
+# Collapse them, as the reference has them. Both sites are mutated, which is
+# what we want -- either one alone would still freeze the content clock.
 sed -i '' 's/^  s_contact_ms = now;$/  s_contact_ms = now; s_content_ms = now;/' \
   src/services/scene_client.cpp
-grep -c "s_content_ms = now;" src/services/scene_client.cpp    # expect 2 -- the
-                                                               # mutation applied
+test "$(grep -c 's_content_ms = now;' src/services/scene_client.cpp)" = "3" || \
+  { echo "mutation did NOT apply -- fix the pattern before trusting this"; exit 1; }
 export PATH="$HOME/.platformio/penv/bin:$PATH"
 pio test -e native -f test_scene_client                        # MUST fail
 cp /tmp/sc.bak src/services/scene_client.cpp
 pio test -e native -f test_scene_client                        # green again
 ```
 Expected: the mutated build fails
-`test_a_304_freezes_the_content_clock_and_refreshes_the_contact_clock`. If the second
-`grep -c` prints 1, the mutation did not apply and the check proved nothing — fix the
-pattern before continuing.
+`test_a_304_freezes_the_content_clock_and_refreshes_the_contact_clock`. The guard above
+exits non-zero if the mutation did not apply, so a green run after a failed `sed` is not
+possible.
 
 - [ ] **Step 7: Prove the socket teardown is really tested**
 
@@ -2224,9 +2380,11 @@ verbatim.
 ```bash
 cd /Users/matias/Documents/repos/HomeScreen
 venv/bin/python scripts/dump_wire_fixture.py
-grep -c '"c":"radar"' firmware/test/fixtures_wire.h     # expect 3 (assigned,
-                                                        # dropped is empty,
-                                                        # feed_down)
+grep -c '"c":"radar"' firmware/test/fixtures_wire.h     # expect 2: kWireAssigned
+                                                        # and kWireFeedDown.
+                                                        # kWireDropped comes back
+                                                        # as "components":[] with
+                                                        # "unsupported":["radar"]
 grep 'kWireAssignedEtag' firmware/test/fixtures_wire.h  # must be \"...\" escaped
 ```
 
@@ -2348,7 +2506,7 @@ for f in ui/radar_display.cpp ui/radar_geo.cpp ui/radar_range.cpp \
 done
 cp $REF/test/fixtures_geo.h firmware/test/
 cp -R $REF/test/test_geo $REF/test/test_render_policy $REF/test/test_settings \
-      $REF/test/test_runway_cap firmware/test/
+      $REF/test/test_runway_cap $REF/test/test_debug_log firmware/test/
 test "$(git -C $REF status --porcelain | wc -l | tr -d ' ')" = "0" || \
   { echo "REFERENCE REPO MODIFIED -- STOP"; exit 1; }
 ```
@@ -2383,8 +2541,8 @@ are `kDisplayRgbOrder` and `kDebugFrameReportMs`, both in the new `config.h`.
 
 - [ ] **Step 3: Point the copied suites at the new sources**
 
-`test_geo`, `test_render_policy`, `test_settings` and `test_runway_cap` contain **no**
-`adsb` references — verified. They compile as copied. Run them:
+`test_geo`, `test_render_policy`, `test_settings`, `test_runway_cap` and `test_debug_log`
+contain **no** `adsb` references — verified. They compile as copied. Run them:
 
 ```bash
 export PATH="$HOME/.platformio/penv/bin:$PATH"
@@ -2394,7 +2552,49 @@ Expected: everything from Tasks 0–4 plus `test_geo`, `test_render_policy`,
 `test_settings`, `test_runway_cap` pass. `test_display` is **not** copied yet — it is
 Task 6, because it needs a rewrite rather than a copy.
 
-- [ ] **Step 4: Note what still calls `fetchRadiusKm()`**
+- [ ] **Step 4: Add the third staleness cause the firmware requirements ask for**
+
+`PLAN.md` §3: *"Note `radar_display.cpp` tests the two staleness causes separately and
+deliberately — the comment there records that summing them made targets blink once per
+cycle. Preserve that structure and add `feed.age_s` as a THIRD separately-tested cause.
+Do not merge them."* Revision 2 declared `feedAgeS()` and consumed it nowhere.
+
+At `radar_display.cpp:532`, the existing test is two `||` terms. Add the third:
+
+```cpp
+    const bool stale = planes[i].pos_age_s >= services::scene::kExtrapolationHorizonSec ||
+                       fetch_age_raw >= services::scene::kExtrapolationHorizonSec ||
+                       services::scene::feedAgeS() >= services::scene::kExtrapolationHorizonSec;
+```
+
+Separately tested, not summed: a device receiving fresh scenes from a server whose feed
+has stalled has a healthy content clock and a healthy contact clock, and only this term
+can dim its targets.
+
+Add to `test_display.cpp`, with a `RUN_TEST` line:
+
+```cpp
+void test_a_stalled_server_feed_dims_targets_even_when_scenes_are_fresh(void) {
+  Target t[1] = {{5.0f, 0.0f, 400.0f, 90.0f, 0.0f, "STALE"}};
+  publishTargets(t, 1);                       // feed_age_s 1.0 in the helper
+  g_gfx.reset();
+  ui::radarDisplayRefreshAircraft();
+  const uint16_t fresh = g_gfx.of(DrawOp::Triangle).back().color;
+
+  const std::string p = payloadFor(t, 1);
+  std::string stalled = p;
+  const std::string from = "\"feed_age_s\":1.0";
+  stalled.replace(stalled.find(from), from.size(), "\"feed_age_s\":30.0");
+  g_http.reset(); g_http.body = stalled; g_http.code = HTTP_CODE_OK;
+  TEST_ASSERT_TRUE(services::scene::pollOnce());
+  g_gfx.reset();
+  ui::radarDisplayRefreshAircraft();
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(fresh, g_gfx.of(DrawOp::Triangle).back().color,
+                                "a stalled feed must dim the targets");
+}
+```
+
+- [ ] **Step 5: Note what still calls `fetchRadiusKm()`**
 
 `runway_overlay.cpp` calls `radar::fetchRadiusKm()` to bound which airports it draws, so
 `radar_range.cpp` must keep the function even though it no longer sizes any request. Add
@@ -2414,7 +2614,7 @@ open(p,'w').write(s)
 PY
 ```
 
-- [ ] **Step 5: Build for the target and commit**
+- [ ] **Step 6: Build for the target and commit**
 
 ```bash
 cd firmware && pio run -e c3
@@ -2455,8 +2655,13 @@ cd firmware
 sed -i '' \
   -e 's|#include "../../src/services/adsb_client.cpp"|#include "../../src/services/device_id.cpp"\n#include "../../src/services/server_config.cpp"\n#include "../../src/services/scene_client.cpp"|' \
   -e 's|services::adsb::|services::scene::|g' \
+  -e 's|kDataExpirySec|kContactExpirySec|g' \
   test/test_display/test_display.cpp
 ```
+
+`kDataExpirySec` is used at `test_display.cpp:889` and has no counterpart in
+`scene_client.h` -- the substitution above maps it onto `kContactExpirySec`, which is the
+bound it was testing.
 
 - [ ] **Step 3: Rewrite `payloadFor()` to emit a scene**
 
@@ -2465,36 +2670,49 @@ Replace the existing helper. `ve`/`vn` are computed **in the test helper** from 
 their meaning — the server does this same arithmetic in `adsb_map.py`.
 
 ```cpp
-// firmware/test/test_display/test_display.cpp  -- replaces payloadFor()
+// firmware/test/test_display/test_display.cpp  -- replaces payloadFor() only
 static constexpr float kKnotsToKmPerSec = 1.852f / 3600.0f;
 static constexpr float kDegToRad = 0.01745329252f;
 
 /** A scene envelope carrying these targets, shaped exactly like the server's. */
 static std::string payloadFor(const Target* t, int n) {
+  // KEEP the projection. All ~54 call sites specify targets as offsets in km
+  // from the radar centre; without this they land at lat = east_km, lon =
+  // north_km -- off the dial -- and every geometry assertion in this file
+  // quietly changes meaning.
+  const double cos_lat = cos(kLat * M_PI / 180.0);
   std::string s =
       "{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"planes\","
-      "\"components\":[{\"c\":\"radar\",\"feed_ok\":true,\"feed_age_s\":1.0,"
-      "\"radius_km\":60.0,\"items\":[";
-  char buf[400];
+      "\"components\":[{\"c\":\"radar\",\"feed_ok\":true,"
+      "\"feed_age_s\":1.0,\"radius_km\":60.0,\"items\":[";
   for (int i = 0; i < n; ++i) {
+    const double lat = kLat + t[i].north_km / 111.0;
+    const double lon = kLon + t[i].east_km / (111.0 * cos_lat);
     // The server resolves track+gs into east/north km/s once per fetch; the
     // firmware reads ve/vn and never recomputes. Do the same arithmetic here or
     // every extrapolation test silently runs against a stationary target.
-    const float gs_km_s = t[i].gs * kKnotsToKmPerSec;
-    const float trk_rad = t[i].track * kDegToRad;
-    snprintf(buf, sizeof(buf),
+    const float gs_km_s = t[i].gs_kt * kKnotsToKmPerSec;
+    const float trk_rad = t[i].track_deg * kDegToRad;
+    char b[400];
+    snprintf(b, sizeof(b),
              "%s{\"lat\":%.6f,\"lon\":%.6f,\"nose\":%.1f,\"trk\":%.1f,"
-             "\"gs\":%.1f,\"ve\":%.6f,\"vn\":%.6f,\"age\":%.2f,\"dst\":-1.0,"
-             "\"cs\":\"%s\",\"ty\":\"B738\",\"alt\":\"3675 ft\"}",
-             i ? "," : "", t[i].lat, t[i].lon, t[i].heading, t[i].track,
-             t[i].gs, gs_km_s * sinf(trk_rad), gs_km_s * cosf(trk_rad),
-             t[i].seen_pos, t[i].flight);
-    s += buf;
+             "\"gs\":%.1f,\"ve\":%.6f,\"vn\":%.6f,\"age\":%.2f,"
+             "\"dst\":-1.0,\"cs\":\"%s\",\"ty\":\"B738\","
+             "\"alt\":\"3675 ft\"}",
+             i ? "," : "", lat, lon, t[i].track_deg, t[i].track_deg,
+             t[i].gs_kt, gs_km_s * sinf(trk_rad), gs_km_s * cosf(trk_rad),
+             t[i].seen_pos, t[i].callsign);
+    s += b;
   }
-  s += "]}]}";
-  return s;
+  return s + "]}]}";
 }
 ```
+
+The real struct is `struct Target { float east_km, north_km, gs_kt, track_deg,
+seen_pos; const char* callsign; }` — six members, offsets in km, and no `heading` field
+(the reference sends `track_deg` for both `track` and `true_heading`). Do not invent
+`lat`/`lon`/`gs`/`flight` members; the aggregate initialisers at every call site are
+positional and would silently mean something else.
 
 - [ ] **Step 4: Rewrite `publishTargets()` to drive the scene client**
 
@@ -2526,7 +2744,8 @@ void test_a_moving_target_actually_moves_between_frames(void) {
   // The port's failure mode: after a naive rename, every item parses with
   // ve = vn = 0 and every dead-reckoning assertion in this file passes against
   // a stationary aeroplane. This is the test that fails when that happens.
-  Target t[1] = {{40.5f, -3.6f, 90.0f, 90.0f, 400.0f, 0.0f, "MOVER"}};
+  // east_km, north_km, gs_kt, track_deg, seen_pos, callsign -- six, in km.
+  Target t[1] = {{5.0f, 0.0f, 400.0f, 90.0f, 0.0f, "MOVER"}};
   publishTargets(t, 1);
   TEST_ASSERT_TRUE(services::scene::aircraftList()[0].vel_e_km_s > 0.15f);
 
@@ -2548,22 +2767,40 @@ The glyph is a `Triangle` in the recorder's vocabulary — confirm with
 drawn with a different primitive, assert on that kind instead. The property being tested
 is that the drawn position changes with time, not which primitive draws it.
 
-- [ ] **Step 6: Register every appended test**
+- [ ] **Step 6: Reset the scene client between tests**
+
+`test_display`'s `setUp()` resets the gfx recorder, the clock and the fonts, but the
+scene client is new to this suite and carries file-static state — both clocks, the
+buffers, the etag. Combined with a `mockSetMs()` that moves time *backwards* after a test
+that advanced it, `secondsSince()` computes an unsigned underflow. Add to `setUp()`:
+
+```cpp
+  services::scene::resetForTest();
+```
+
+- [ ] **Step 7: Register every appended test**
 
 Unity only runs what the runner lists. Appended `void test_...` functions with no
 `RUN_TEST` line compile and are silently skipped — and the step still reports "all pass".
 
 ```bash
 cd firmware
-# every test function must have a RUN_TEST
-diff <(grep -oE '^void (test_[a-z0-9_]+)\(' test/test_display/test_display.cpp | \
-       sed -E 's/^void //; s/\($//' | sort) \
-     <(grep -oE 'RUN_TEST\((test_[a-z0-9_]+)\)' test/test_display/test_display.cpp | \
-       sed -E 's/RUN_TEST\(//; s/\)//' | sort)
+# Every test function must have a RUN_TEST. The copied suites declare tests as
+# `static void test_x(void)`, so a pattern anchored on a bare `void` matches
+# NOTHING and the check can never fail for the reason it exists.
+check_runners() {
+  diff <(grep -oE '^(static )?void +test_[a-z0-9_]+ *\(' "$1" \
+         | sed -E 's/^(static )?void +//; s/ *\($//' | sort) \
+       <(grep -oE 'RUN_TEST\( *test_[a-z0-9_]+ *\)' "$1" \
+         | sed -E 's/RUN_TEST\( *//; s/ *\)//' | sort)
+}
+check_runners test/test_display/test_display.cpp
 ```
-Expected: no output. Any line prefixed `<` is a test that never runs.
+Expected: no output. A line prefixed `<` is a test that compiles and never runs; `>` is a
+`RUN_TEST` for a function that no longer exists. Verify the check itself works by
+deleting one `RUN_TEST` line and re-running before you trust a clean result.
 
-- [ ] **Step 7: Run green and commit**
+- [ ] **Step 8: Run green and commit**
 
 ```bash
 export PATH="$HOME/.platformio/penv/bin:$PATH"
@@ -2617,8 +2854,18 @@ void statusScreenUnassigned(const char* hw_id, const char* message);
 ```
 
 And implement them in `firmware/src/ui/status_screens.cpp` following the file's existing
-screens exactly — same `tft.fillScreen`, `setTextDatum`, `drawString` idiom, same
-`config::kColorYellow` / `kTextOnYellow` palette as the portal screen:
+screens exactly — same `tft.fillScreen`, `setTextDatum`, `drawString` idiom, and the same
+black/`kTextOnBlack` palette the connecting screen uses (the portal screen is the yellow
+one; these are not it).
+
+**Both must fit the glass.** The server's message is
+`"sin asignar · elige una escena en el panel"` — 42 characters, ~290 px at the mock's
+metrics, on a 240 px round panel where the usable chord at that height is narrower still.
+The file already solves this: `kConnectingTextMaxWidthPx = 220` and the truncate-with-`…`
+loop at `status_screens.cpp:109-125`. Reuse it rather than drawing the string raw. Factor
+that loop into a small `fitToWidth(const char* in, char* out, size_t n, int max_px)` and
+call it from both new screens and from the existing SSID path, so there is one
+implementation:
 
 ```cpp
 void statusScreenNoServer(const char* base_url) {
@@ -2627,8 +2874,11 @@ void statusScreenNoServer(const char* base_url) {
   tft.setTextDatum(middle_center);
   tft.drawString("SIN SERVIDOR", config::kDisplayWidth / 2,
                  config::kDisplayHeight / 2 - 24);
-  tft.drawString(base_url == nullptr ? "" : base_url,
-                 config::kDisplayWidth / 2, config::kDisplayHeight / 2 + 4);
+  char fitted[48];
+  fitToWidth(base_url == nullptr ? "" : base_url, fitted, sizeof(fitted),
+             kConnectingTextMaxWidthPx);
+  tft.drawString(fitted, config::kDisplayWidth / 2,
+                 config::kDisplayHeight / 2 + 4);
   tft.drawString("revisa el portal", config::kDisplayWidth / 2,
                  config::kDisplayHeight / 2 + 30);
 }
@@ -2641,9 +2891,12 @@ void statusScreenUnassigned(const char* hw_id, const char* message) {
                  config::kDisplayHeight / 2 - 30);
   tft.drawString(hw_id == nullptr ? "" : hw_id, config::kDisplayWidth / 2,
                  config::kDisplayHeight / 2);
-  // The server's own words, if it sent any -- it knows what the fleet view says.
+  // The server's own words, if it sent any -- it knows what the fleet view
+  // says. Fitted: the real message is 42 characters and the panel is 240 px.
   if (message != nullptr && message[0] != '\0') {
-    tft.drawString(message, config::kDisplayWidth / 2,
+    char fitted[48];
+    fitToWidth(message, fitted, sizeof(fitted), kConnectingTextMaxWidthPx);
+    tft.drawString(fitted, config::kDisplayWidth / 2,
                    config::kDisplayHeight / 2 + 30);
   }
 }
@@ -2667,6 +2920,10 @@ void statusScreenUnassigned(const char* hw_id, const char* message) {
 #include "../../src/ui/radar_geo.cpp"
 #include "../../src/ui/runway_overlay.cpp"
 #include "../../src/data/large_airports_data.cpp"
+// display.cpp is the ONLY definition of `LGFX tft` -- display.h declares it
+// extern, and both radar_display.cpp and status_screens.cpp use it. Every other
+// drawing suite includes it for the same reason.
+#include "../../src/hardware/display.cpp"
 #include "../../src/ui/radar_display.cpp"
 #include "../../src/ui/status_screens.cpp"
 #include "../../src/ui/components.cpp"
@@ -2737,6 +2994,19 @@ void test_an_unassigned_device_shows_its_id_and_the_servers_message(void) {
   TEST_ASSERT_TRUE(g_gfx.textContains("sin asignar"));   // the server's words
 }
 
+void test_nothing_drawn_on_a_status_screen_runs_off_the_glass(void) {
+  // The server's real message is 42 characters, ~290 px at the mock's metrics,
+  // on a 240 px round panel. Every drawn string must be fitted.
+  poll(kWireUnassigned);
+  ui::renderScene();
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind != DrawOp::Text) continue;
+    TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(
+        220, static_cast<int>(op.text.size()) * g_gfx.char_width,
+        op.text.c_str());
+  }
+}
+
 void test_an_expired_picture_is_dropped_rather_than_shown_as_live(void) {
   poll(kWireAssigned);
   mockAdvanceMs(61000);                  // past the contact bound
@@ -2745,9 +3015,15 @@ void test_an_expired_picture_is_dropped_rather_than_shown_as_live(void) {
   TEST_ASSERT_FALSE(g_gfx.textContains("IBE3221"));
 }
 
-void test_a_dead_feed_drops_the_picture_even_while_the_server_answers(void) {
+void test_a_feed_that_stays_dead_drops_the_picture(void) {
+  // The server keeps answering; only feed_age_s grows. One poll of feed_ok
+  // false must NOT blank it -- that is a transient -- but a minute must.
   poll(kWireAssigned);
   poll(kWireFeedDown);
+  g_gfx.reset();
+  ui::renderScene();
+  TEST_ASSERT_TRUE(g_gfx.textContains("IBE3221"));   // still there: transient
+  for (int i = 0; i < 12; ++i) { mockAdvanceMs(10000); poll(kWireFeedDown); }
   g_gfx.reset();
   ui::renderScene();
   TEST_ASSERT_FALSE(g_gfx.textContains("IBE3221"));
@@ -2769,8 +3045,9 @@ int main(void) {
   RUN_TEST(test_an_assigned_radar_scene_draws_the_radar);
   RUN_TEST(test_a_device_that_never_reached_the_server_says_so_with_the_address);
   RUN_TEST(test_an_unassigned_device_shows_its_id_and_the_servers_message);
+  RUN_TEST(test_nothing_drawn_on_a_status_screen_runs_off_the_glass);
   RUN_TEST(test_an_expired_picture_is_dropped_rather_than_shown_as_live);
-  RUN_TEST(test_a_dead_feed_drops_the_picture_even_while_the_server_answers);
+  RUN_TEST(test_a_feed_that_stays_dead_drops_the_picture);
   RUN_TEST(test_a_scene_whose_component_we_cannot_draw_does_not_blank_the_screen);
   return UNITY_END();
 }
@@ -2916,7 +3193,8 @@ WiFiManagerParameter s_param_server(
     " placeholder=\"192.168.1.116:8080\"");
 ```
 
-Register it **first** in `setupParameters()` — it is the field a new board most needs:
+Register it **first** in `attachPortalParams()` (`wifi_setup.cpp:122` — not
+"setupParameters", which does not exist) — it is the field a new board most needs:
 
 ```cpp
   wm.addParameter(&s_param_server);
@@ -2924,7 +3202,10 @@ Register it **first** in `setupParameters()` — it is the field a new board mos
   ...
 ```
 
-In the existing save-params callback, before the location fields:
+`wifi_setup.cpp` must also gain `#include "services/server_config.h"`; nothing else in it
+includes that header. Then, in the existing named save callback `onPortalParamsSaved()`
+(`wifi_setup.cpp:103` — a file-static function, not a lambda), before the location
+fields:
 
 ```cpp
   // A refused value leaves the stored one alone: a typo in the portal must not
@@ -2934,9 +3215,11 @@ In the existing save-params callback, before the location fields:
   }
 ```
 
-The reference's callback is a file-static lambda with no external entry point, and
-`test_wifi.cpp` already reaches the `WiFiManager` through its own `s_wm` handle. Use the
-mock's existing `fireSaveParamsCallback()` rather than inventing a `ForTest` symbol.
+`test_wifi.cpp` reaches the callback through the mock's existing
+`fireSaveParamsCallback()`, which the reference suite already uses -- no `ForTest` symbol
+is needed or wanted. The suite must also gain
+`#include "../../src/services/server_config.cpp"`, or the three appended tests fail to
+link on `services::server::host()`.
 
 - [ ] **Step 3: Append the portal tests, and register them**
 
@@ -2946,12 +3229,12 @@ void test_the_portal_offers_a_server_address_field(void) {
   // How a freshly flashed board learns where the Pi is. Without it, pointing a
   // device at a server means a recompile -- the thing this phase exists to stop.
   wifiSetupConnect();
-  TEST_ASSERT_TRUE(g_wm.hasParameter("server"));
+  TEST_ASSERT_TRUE(wmHasParameter("server"));
 }
 
 void test_a_saved_server_address_is_persisted_and_applied(void) {
   wifiSetupConnect();
-  g_wm.setParameterValue("server", "192.168.1.116:8080");
+  wmSetParameterValue("server", "192.168.1.116:8080");
   g_wm.fireSaveParamsCallback();
   TEST_ASSERT_EQUAL_STRING("192.168.1.116", services::server::host());
   TEST_ASSERT_EQUAL_UINT16(8080, services::server::port());
@@ -2960,14 +3243,13 @@ void test_a_saved_server_address_is_persisted_and_applied(void) {
 void test_a_rejected_server_address_does_not_wipe_the_working_one(void) {
   services::server::saveFromString("192.168.1.116");
   wifiSetupConnect();
-  g_wm.setParameterValue("server", "https://nope");
+  wmSetParameterValue("server", "https://nope");
   g_wm.fireSaveParamsCallback();
   TEST_ASSERT_EQUAL_STRING("192.168.1.116", services::server::host());
 }
 ```
 
-Add the three `RUN_TEST` lines, and run the same runner-vs-function diff as Task 6 Step 6
-over `test_wifi.cpp`.
+Add the three `RUN_TEST` lines, then `check_runners test/test_wifi/test_wifi.cpp`.
 
 - [ ] **Step 4: Write `main.cpp`**
 
@@ -3150,13 +3432,16 @@ sed -i '' \
   -e 's|#include "../../src/services/adsb_client.cpp"|#include "../../src/services/device_id.cpp"\n#include "../../src/services/server_config.cpp"\n#include "../../src/services/scene_client.cpp"\n#include "../../src/ui/components.cpp"|' \
   -e 's|services::adsb::|services::scene::|g' \
   -e 's|startFetchTask|startPollTask|g' \
+  -e 's|kFetchTaskRetryMs|kPollTaskRetryMs|g' \
   test/test_main/test_main.cpp
-grep -n "fetchUpdate\|adsb" test/test_main/test_main.cpp
+# kFetchTaskRetryMs is renamed in the new config.h and the grep below cannot
+# see it -- without the substitution above this fails to compile mid-task with
+# no clue why.
+grep -n "fetchUpdate\|adsb\|kFetchTaskRetryMs" test/test_main/test_main.cpp
 ```
 Every remaining hit needs a hand edit: replace `fetchUpdate(...)` calls with the
 `g_http`-scripted `pollOnce()` helper from Task 6 Step 4, and `s_task` pokes with
-`startPollTask()` / `pollTaskStackFree()`. Then run the runner-vs-function diff from
-Task 6 Step 6 over this file too.
+`startPollTask()` / `pollTaskStackFree()`. Then run `check_runners test/test_main/test_main.cpp`.
 
 - [ ] **Step 6: Build, test, commit**
 
@@ -3181,54 +3466,100 @@ reset this board. Task 3's socket handling is the hang it would rescue.
 **Files:** modify `firmware/src/services/scene_client.cpp`, `firmware/src/main.cpp`,
 `firmware/test/test_scene_client/test_scene_client.cpp`.
 
-- [ ] **Step 1: Subscribe the poll task**
+- [ ] **Step 1: Mock the watchdog so the calls stay compiled and visible**
 
-In `pollTaskBody`:
+Create `firmware/test/mocks/esp_task_wdt.h`:
+
+```cpp
+#pragma once
+// The host has no task watchdog. Mocked rather than #ifdef'd out, so the calls
+// stay in the code where a reader can see them -- and so a test can assert the
+// loop actually feeds the thing.
+struct MockWdt {
+  int inits = 0;
+  int adds = 0;
+  int resets = 0;
+  unsigned timeout_s = 0;
+  bool panic = false;
+  void reset() { *this = MockWdt(); }
+};
+extern MockWdt g_wdt;
+
+inline int esp_task_wdt_init(unsigned timeout_s, bool panic) {
+  ++g_wdt.inits; g_wdt.timeout_s = timeout_s; g_wdt.panic = panic; return 0;
+}
+inline int esp_task_wdt_add(void*) { ++g_wdt.adds; return 0; }
+inline int esp_task_wdt_reset() { ++g_wdt.resets; return 0; }
+```
+Define `MockWdt g_wdt;` in `mock_globals.h`. `MockWdt::reset()` matters: the test calls it
+and the plan's revision-2 sketch declared a struct without one.
+
+- [ ] **Step 2: Subscribe in the task, feed in the tick**
+
+In `scene_client.cpp`, add `#include <esp_task_wdt.h>` and:
+
+```cpp
+/**
+ * 60 s, not the SDK's 5. WiFiClient::connect() resolves the host BEFORE
+ * applying the connect timeout, and hostByName can block ~31 s on its own DNS
+ * waits which setConnectTimeout() does not bound; add the 8 s header timeout
+ * and a legitimately slow poll can exceed 30 s. Long enough never to fire on a
+ * device that is merely slow, far shorter than a human noticing a frozen panel.
+ */
+constexpr uint32_t kWatchdogTimeoutSec = 60;
+
+void feedWatchdog() { esp_task_wdt_reset(); }
+```
+
+`feedWatchdog()` is called at the top of `pollTick()` — already written into the
+implementation in Task 3 — and the subscription happens once, in the task body:
 
 ```cpp
 void pollTaskBody(void*) {
-  // Nothing else can reset this board: Arduino only subscribes loopTask if you
-  // call enableLoopWDT(), and the idle-task check is off in this SDK config. The
-  // poll task is the one that can block for 8 s on a dead socket, so it is the
-  // one worth watching.
+  // Nothing else can reset this board: Arduino subscribes loopTask only if you
+  // call enableLoopWDT(), and the idle-task check is off in this SDK config
+  // (CONFIG_ESP_TASK_WDT=y, PANIC=y, TIMEOUT_S=5, idle check unset). The poll
+  // task is the one that can block for 8 s on a dead socket.
+  esp_task_wdt_init(kWatchdogTimeoutSec, /*panic=*/true);
   esp_task_wdt_add(nullptr);
   for (;;) {
-    esp_task_wdt_reset();
-    const bool ok = pollOnce();
-    vTaskDelay(pdMS_TO_TICKS(ok ? s_poll_ms : config::kPollErrorMs));
+    pollTick(WiFi.status() == WL_CONNECTED);
+    vTaskDelay(pdMS_TO_TICKS(s_last_poll_ok ? s_poll_ms
+                                            : config::kPollErrorMs));
   }
 }
 ```
 
-The timeout is 5 s and `kRequestTimeoutMs` is 8 s, so a single stalled request would trip
-it. Raise the subscription's timeout to cover a legitimate slow poll:
+**The feed must be in `pollTick`, and the task must call `pollTick`.** Revision 2 had the
+task calling `pollOnce()` directly while the feed lived in `pollTick` — so on hardware the
+subscribed task would never have fed the watchdog, and a 60 s panic reboot loop would
+have been the first thing the board did. `pio test -e native` and `pio run -e c3` both
+pass in that state; only this pairing catches it.
+
+- [ ] **Step 3: Test that the loop really feeds it**
 
 ```cpp
-  esp_task_wdt_init(kWatchdogTimeoutSec, /*panic=*/true);
-```
-with `constexpr uint32_t kWatchdogTimeoutSec = 30;` — comfortably longer than one poll
-including retries, far shorter than a human noticing a frozen screen.
-
-Guard both calls with `#ifndef UNIT_TEST` or add no-op mocks; the host build has no
-`esp_task_wdt.h`. Prefer the mock, so the calls stay compiled and visible.
-
-- [ ] **Step 2: Test that the loop feeds it**
-
-```cpp
-// append to test_scene_client.cpp
+// append to test_scene_client.cpp, with a RUN_TEST line
 void test_the_poll_loop_feeds_the_watchdog(void) {
-  // A watchdog nobody feeds is a reboot loop; a watchdog nobody subscribes to
-  // is decoration. This asserts the subscription exists and is reset per pass.
+  // A watchdog nobody feeds is a reboot loop; one nobody subscribes to is
+  // decoration. Both halves, and the feed must survive a link-down tick --
+  // that is precisely when the device is doing nothing and looks hung.
   g_wdt.reset();
   services::scene::pollTick(true);
   TEST_ASSERT_EQUAL_INT(1, g_wdt.resets);
-  services::scene::pollTick(true);
-  TEST_ASSERT_EQUAL_INT(2, g_wdt.resets);
+  services::scene::pollTick(false);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, g_wdt.resets,
+                                "a link-down tick must still feed it");
+}
+
+void test_the_watchdog_is_configured_longer_than_a_slow_poll(void) {
+  // 8 s header timeout plus up to ~31 s of DNS is more than the SDK's 5 s
+  // default and more than 30.
+  TEST_ASSERT_GREATER_OR_EQUAL(45u, services::scene::kWatchdogTimeoutSec);
 }
 ```
-Add a `MockWdt { int adds = 0; int resets = 0; }` to the mocks with
-`esp_task_wdt_add`/`esp_task_wdt_reset`/`esp_task_wdt_init` recording into it, and move
-the `esp_task_wdt_reset()` into `pollTick` so it is reachable without the task.
+`kWatchdogTimeoutSec` must therefore be declared in `scene_client.h`, not in the anonymous
+namespace.
 
 - [ ] **Step 3: Run green and commit**
 
@@ -3360,13 +3691,23 @@ hang it was written for, and the host test cannot prove it.
 
 - [ ] **Step 5: Stop only the fetcher**
 
-The failure a contact clock alone cannot see:
+The failure a contact clock alone cannot see, and the one whose expected result revision
+2 got wrong. Stopping the daemon does **not** set `feed_ok: false` — `write_failure` only
+runs when a fetch runs and fails, so nothing writes at all and `ok: true` stays on disk.
+The only thing that moves is `feed_age_s`.
 
 ```bash
 ssh pi@192.168.1.116 'sudo systemctl stop homescreen-fetch'
+watch -n5 "curl -s http://192.168.1.116:8080/api/device/$HW/scene\
+?w=240\&h=240\&depth=16\&max_items=64\&components=radar \
+  | python3 -c 'import json,sys; c=json.load(sys.stdin)[\"components\"][0]; \
+    print(c[\"feed_ok\"], c[\"feed_age_s\"])'"
 ```
-The server keeps answering, so the device keeps hearing from it. Expected: the picture
-drops anyway, because `feed_ok` goes false — within one poll, not five minutes.
+Expected: `feed_ok` stays **True** while `feed_age_s` climbs. On the glass: targets keep
+dead-reckoning, dim past 12 s, and the picture drops to rings-only once `feed_age_s`
+passes `kFeedExpirySec` (60 s). If the panel blanks in the first few seconds, the
+firmware is expiring on `feed_ok` and will blink on every upstream hiccup. Restart the
+fetcher and confirm the radar returns within one poll.
 
 - [ ] **Step 6: Write the docs and commit**
 
