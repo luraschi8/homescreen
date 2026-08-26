@@ -45,6 +45,10 @@ MAX_FRAME_BYTES = 512_000
 # Eight concurrent requests measured 8 concurrent browsers; that is an OOM on
 # the target, so renders are serialised rather than merely rate-limited.
 _RENDER_SLOTS = threading.Semaphore(2)
+# Nothing bounds the queue BEHIND the semaphore, and Werkzeug spawns a thread
+# per request. Measured: 20 concurrent requests reached 45s latency, by which
+# point a device has timed out and retried, adding to the queue. Shed instead.
+RENDER_QUEUE_TIMEOUT_S = 20
 
 # Scene BUILDING is string formatting; RENDERING forks a browser. Identical
 # HTML at identical geometry is therefore worth caching outright -- keyed on
@@ -68,6 +72,11 @@ CHROMIUM_FLAGS = (
 
 class RenderError(RuntimeError):
     """Rendering failed. Never allowed to escape into a request handler."""
+
+
+class RenderBusy(RenderError):
+    """Too many renders queued. Retryable, unlike its parent -- a caller should
+    tell the device to come back rather than reporting a broken scene."""
 
 
 def find_chromium() -> str | None:
@@ -132,8 +141,13 @@ def check_geometry(width: int, height: int) -> None:
         raise RenderError(f"{width}x{height} is not a geometry")
     if width > MAX_DIMENSION or height > MAX_DIMENSION:
         raise RenderError(f"{width}x{height} exceeds {MAX_DIMENSION}px per side")
-    if (width * height) % 8:
-        raise RenderError(f"{width}x{height} is not byte-aligned")
+    if width % 8:
+        # Pillow pads each ROW to a byte, so the constraint is on WIDTH, not
+        # on the area. (w*h)%8 lets 12x8 through, which then forks a browser,
+        # renders for ~3s, fails packing and returns a retryable 503 that is
+        # never cached -- a spawn loop from one misconfigured device.
+        raise RenderError(f"width {width} is not a multiple of 8; "
+                          f"rows pad to whole bytes")
     if width * height // 8 > MAX_FRAME_BYTES:
         raise RenderError(f"{width}x{height} would be "
                           f"{width * height // 8:,} bytes, over the "
@@ -177,11 +191,15 @@ def render_frame(html: str, width: int, height: int,
         cache_misses += 1
 
     expected = width * height // 8
-    with _RENDER_SLOTS:
+    if not _RENDER_SLOTS.acquire(timeout=RENDER_QUEUE_TIMEOUT_S):
+        raise RenderBusy(f"render queue busy for {RENDER_QUEUE_TIMEOUT_S}s")
+    try:
         with tempfile.TemporaryDirectory() as tmp:
             png = Path(tmp) / "frame.png"
             html_to_png(html, width, height, png, binary=binary)
             packed = png_to_packed(png, width, height)
+    finally:
+        _RENDER_SLOTS.release()
     if len(packed) != expected:
         raise RenderError(f"expected {expected} bytes, packed {len(packed)}")
 

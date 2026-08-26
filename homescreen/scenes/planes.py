@@ -21,6 +21,7 @@ pretending otherwise would mean rebuilding a working renderer badly.
 
 from __future__ import annotations
 
+import html
 from datetime import datetime
 
 from homescreen.cache import read_cache
@@ -60,11 +61,24 @@ def build(ctx: SceneContext) -> Scene:
     # Pixel push: the same data as a legible list.
     w = int(ctx.caps.get("w") or 800)
     h = int(ctx.caps.get("h") or 480)
+    # Escaped: callsign, type and altitude come from a third-party feed, so
+    # without this the panel's markup is partly controlled by adsb.fi.
+    e = html.escape
+
+    def cell(value, fallback=""):
+        return e(str(value)) if value else fallback
+
+    def nm(a):
+        try:
+            return f"{float(a.get('dst', 0)):.1f} NM"
+        except (TypeError, ValueError):
+            return ""
+
     rows = "".join(
-        f'<tr><td>{a.get("cs") or "-"}</td>'
-        f'<td>{a.get("ty") or ""}</td>'
-        f'<td class="r">{a.get("alt") or ""}</td>'
-        f'<td class="r">{a.get("dst", 0):.1f} NM</td></tr>'
+        f'<tr><td>{cell(a.get("cs"), "-")}</td>'
+        f'<td>{cell(a.get("ty"))}</td>'
+        f'<td class="r">{cell(a.get("alt"))}</td>'
+        f'<td class="r">{nm(a)}</td></tr>'
         for a in items[: max(1, (h - 90) // 20)])
     stamp = datetime.fromtimestamp(ctx.now).strftime("%H:%M")
     state = "" if feed["ok"] else ' <span class="pill">sin señal</span>'

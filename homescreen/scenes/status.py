@@ -9,6 +9,7 @@ Serves three jobs, all of them "tell a human what to do next":
 
 from __future__ import annotations
 
+import html
 from datetime import datetime
 
 from homescreen.scenes import Scene, SceneContext
@@ -26,10 +27,16 @@ CSS = """
 def build(ctx: SceneContext, *, message: str | None = None) -> Scene:
     w = int(ctx.caps.get("w") or 800)
     h = int(ctx.caps.get("h") or 480)
-    hw = ctx.device.get("hw") or ctx.device.get("id") or "unknown"
+    # Escaped: a device name reaches this page, and `_check_name` only blocks
+    # `/`. A name of `<style>*{display:none}` renders a blank panel; one of
+    # `<div style="position:fixed;inset:0;background:#000">` renders a full
+    # black refresh, which is the worst case for e-paper ghosting.
+    e = html.escape
+    hw = e(str(ctx.device.get("hw") or ctx.device.get("id") or "unknown"))
     name = ctx.device.get("name")
+    name = e(str(name)) if name else None
     stamp = datetime.fromtimestamp(ctx.now).strftime("%H:%M")
-    text = message or "no scene assigned"
+    text = e(str(message)) if message else "no scene assigned"
     body = (f'<div class="wrap">'
             f'<div class="lab">{"sin asignar" if not name else name}</div>'
             f'<div class="hw">{hw}</div>'

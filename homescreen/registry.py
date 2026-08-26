@@ -23,6 +23,7 @@ those three differences turns an `overrides` pattern into a bug:
 
 from __future__ import annotations
 
+import collections.abc
 import contextlib
 import fcntl
 import json
@@ -46,28 +47,36 @@ def _assignable() -> tuple[str, ...]:
     return scenes.names()
 
 
-class _Assignable(tuple):
-    """Behaves as a tuple but resolves lazily, so importing registry does not
-    import every scene (and scenes import cache, which would cycle)."""
+class _Assignable(collections.abc.Sequence):
+    """Resolves lazily, so importing registry does not import every scene
+    (scenes import cache, which would cycle).
 
-    def __new__(cls):
-        return super().__new__(cls)
+    NOT a tuple subclass: as one, every un-overridden operation still saw the
+    empty tuple it was constructed from -- `A == ()` was True, `A[0]` raised,
+    and `BUILTIN_SCENES + A` silently dropped every scene. A Sequence has no
+    inherited state to disagree with.
+    """
 
-    def __iter__(self):
-        return iter(_assignable())
+    def __getitem__(self, index):
+        return _assignable()[index]
+
+    def __len__(self):
+        return len(_assignable())
 
     def __contains__(self, item):
         return item in _assignable()
 
-    def __len__(self):
-        return len(_assignable())
+    def __eq__(self, other):
+        return tuple(_assignable()) == tuple(other)
+
+    def __hash__(self):
+        return hash(_assignable())
 
     def __repr__(self):
         return repr(_assignable())
 
 
 ASSIGNABLE_SCENES = _Assignable()
-KNOWN_SCENES = BUILTIN_SCENES + ("planes",)
 
 NAME_MAX = 64
 HW_MAX = 128
@@ -128,11 +137,13 @@ def _valid_record(rec) -> bool:
     return isinstance(poll, (int, float)) and not isinstance(poll, bool)
 
 
-def load(cache_dir: Path) -> dict:
-    """{hw_id: record}. Never raises. Drops records that fail validation.
+def load_raw(cache_dir: Path) -> dict:
+    """Everything on disk, valid or not. Never raises.
 
-    Does NOT rewrite the file -- see `_quarantine`. A read that repairs is a
-    read that can destroy.
+    Mutators write back what THIS returns, not what `load` returns. Writing
+    back the filtered view is read-repair-by-deletion: a single poll from any
+    device would silently and permanently erase another device's name and
+    scene. Measured before this split existed.
     """
     try:
         with open(registry_path(cache_dir), encoding="utf-8") as fh:
@@ -144,8 +155,22 @@ def load(cache_dir: Path) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {k: v for k, v in data.items()
-            if isinstance(k, str) and _valid_record(v)}
+    return {k: v for k, v in data.items() if isinstance(k, str)}
+
+
+def load(cache_dir: Path) -> dict:
+    """Only the records safe to serve. Never raises.
+
+    Invalid records are hidden from consumers -- they would 500 the serve path
+    -- but are NOT removed from disk. Hiding is recoverable; deleting is not.
+    """
+    out = {}
+    for key, rec in load_raw(cache_dir).items():
+        if _valid_record(rec):
+            out[key] = rec
+        else:
+            log.warning("registry record %r is malformed; hidden, not deleted", key)
+    return out
 
 
 def _quarantine(cache_dir: Path) -> None:
@@ -235,9 +260,14 @@ def clean_caps(raw) -> dict:
     out = {}
     lo, hi = CAP_INT_RANGE
     for key in ("w", "h", "depth"):
+        value = raw.get(key)
+        if isinstance(value, bool):
+            # int(True) is 1, which is a plausible-looking width. adsb_map._num
+            # rejects bool for the same reason.
+            continue
         try:
-            n = int(raw[key])
-        except (KeyError, TypeError, ValueError):
+            n = int(value)
+        except (TypeError, ValueError):
             continue
         if lo <= n <= hi:
             out[key] = n
@@ -263,15 +293,29 @@ def touch(cache_dir: Path, hw_id, *, fw=None, caps=None, telemetry=None,
 
 
 def _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now) -> dict:
-    data = load(cache_dir)
+    data = load_raw(cache_dir)          # raw: never write back a filtered view
     stamp = _stamp(now)
     rec = data.get(hw_id)
     fresh = rec is None
 
     if fresh:
         if len(data) >= MAX_DEVICES:
-            raise ValueError(f"registry is full ({MAX_DEVICES} devices); "
-                             f"forget one before adding another")
+            # Registration is unauthenticated, so a device churning its id
+            # would otherwise permanently lock out real hardware. Evict the
+            # least useful record first: offline, never named, never assigned.
+            evictable = sorted(
+                (k for k, r in data.items()
+                 if _valid_record(r) and not r.get("name")
+                 and r.get("scene") in (None, "unassigned")
+                 and not is_online(r, now if now is not None else _epoch(stamp))),
+                key=lambda k: data[k].get("last_seen") or "")
+            if not evictable:
+                raise ValueError(
+                    f"registry is full ({MAX_DEVICES} devices) and every one is "
+                    f"named, assigned or online; forget one before adding another")
+            log.warning("registry full; evicting stale unassigned device %s",
+                        evictable[0])
+            del data[evictable[0]]
         rec = {"name": None, "scene": "unassigned", "first_seen": stamp,
                "poll_seconds": DEFAULT_POLL_SECONDS, "fw": None,
                "caps": {}, "telemetry": {}}
@@ -319,9 +363,12 @@ def assign(cache_dir: Path, hw_id: str, *, name=None, scene=None,
 
 
 def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds) -> dict:
-    data = load(cache_dir)
+    data = load_raw(cache_dir)
     if hw_id not in data:
         raise ValueError(f"unknown device: {hw_id}")
+    if not _valid_record(data[hw_id]):
+        raise ValueError(f"device {hw_id} has a malformed record; "
+                         f"delete it or repair devices.json")
     rec = dict(data[hw_id])
 
     if name is not None:
@@ -348,7 +395,7 @@ def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds) -> dict:
 
 def forget(cache_dir: Path, hw_id: str) -> bool:
     with _locked(cache_dir):
-        data = load(cache_dir)
+        data = load_raw(cache_dir)
         if hw_id not in data:
             return False
         del data[hw_id]
@@ -413,7 +460,7 @@ def seed_from_config(cfg: dict, cache_dir: Path, *, now: float | None = None) ->
     if marker.exists():
         return 0
     _quarantine(cache_dir)
-    data = load(cache_dir)
+    data = load_raw(cache_dir)
 
     stamp = _stamp(now)
     seeded = 0
@@ -429,13 +476,30 @@ def seed_from_config(cfg: dict, cache_dir: Path, *, now: float | None = None) ->
             log.warning("seeding %s unnamed: %s", hw_id, exc)
             name = None
         scene = dev.get("scene")
-        data[hw_id] = {
+        try:
+            poll = float(dev.get("poll_seconds") or DEFAULT_POLL_SECONDS)
+            if not 1.0 <= poll <= 3600.0:
+                raise ValueError
+        except (TypeError, ValueError):
+            log.warning("seeding %s: poll_seconds %r unusable, using default",
+                        hw_id, dev.get("poll_seconds"))
+            poll = DEFAULT_POLL_SECONDS
+        if scene is not None and scene not in ASSIGNABLE_SCENES:
+            log.warning("seeding %s: config names unknown scene %r; unassigned",
+                        hw_id, scene)
+        record = {
             "name": name,
             "scene": scene if scene in ASSIGNABLE_SCENES else "unassigned",
             "first_seen": stamp, "last_seen": stamp,
-            "poll_seconds": dev.get("poll_seconds") or DEFAULT_POLL_SECONDS,
+            "poll_seconds": poll,
             "fw": "config", "caps": {}, "telemetry": {},
         }
+        if not _valid_record(record):
+            # Writing a record our own validator rejects means it vanishes on
+            # the next read AND the marker stops us retrying. Refuse instead.
+            log.error("seeding %s produced an invalid record; skipped", hw_id)
+            continue
+        data[hw_id] = record
         seeded += 1
 
     save(cache_dir, data)

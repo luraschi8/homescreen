@@ -15,7 +15,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request
 
 from homescreen import overrides, registry, scenes, web
-from homescreen.render import (RenderError, check_geometry as
+from homescreen.render import (RenderBusy, RenderError, check_geometry as
                                render_check_geometry, render_frame)
 from homescreen.cache import read_cache
 from homescreen.config import (check_device, device, feed_cache_path,
@@ -319,7 +319,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        overrides.save(cache_dir, candidate)
+        try:
+            overrides.save(cache_dir, candidate)
+        except OSError as exc:
+            log.error("override write failed for %s: %s", device_id, exc)
+            return jsonify({"error": "config store unavailable"}), 503
         log.info("config patched: %s %s", device_id, body)
         return jsonify({"id": device_id,
                         "overridden": candidate[device_id],
@@ -329,9 +333,18 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
 
     @app.delete("/api/config/devices/<device_id>")
     def reset_config(device_id: str):
+        if device(_live(), device_id) is None:
+            return jsonify({"error": "unknown device"}), 404
         data = overrides.load(cache_dir)
-        data.pop(device_id, None)
-        overrides.save(cache_dir, data)
+        if data.pop(device_id, None) is None:
+            # Nothing to revert: do not write to a wear-limited card for it.
+            return jsonify({"id": device_id, "overridden": {},
+                            "note": "nothing was overridden"})
+        try:
+            overrides.save(cache_dir, data)
+        except OSError as exc:
+            log.error("override write failed for %s: %s", device_id, exc)
+            return jsonify({"error": "config store unavailable"}), 503
         return jsonify({"id": device_id, "overridden": {},
                         "note": "reverted to config.yaml"})
 
@@ -383,12 +396,21 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             rec = registry.assign(cache_dir, hw, **body)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        except OSError as exc:
+            # ext4 remounts read-only on error and CLAUDE.md flags SD wear as
+            # live. The device path already 503s here; the admin path must too.
+            log.error("registry write failed for %s: %s", hw, exc)
+            return jsonify({"error": "registry unavailable"}), 503
         return jsonify(_fleet_entry(hw, rec, clock()))
 
     @app.delete("/api/devices/<hw>")
     def delete_device(hw: str):
-        if not registry.forget(cache_dir, hw):
-            return jsonify({"error": "unknown device"}), 404
+        try:
+            if not registry.forget(cache_dir, hw):
+                return jsonify({"error": "unknown device"}), 404
+        except OSError as exc:
+            log.error("registry write failed for %s: %s", hw, exc)
+            return jsonify({"error": "registry unavailable"}), 503
         return jsonify({"hw": hw, "forgotten": True})
 
     def _caps_from_query(args) -> dict:
@@ -438,7 +460,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         a human what to do, never an error and never a blank."""
         name = rec.get("scene") or "unassigned"
         ctx = scenes.SceneContext(
-            cfg=_live(), cache_dir=cache_dir, caps=rec.get("caps") or {},
+            cfg=_live(), cache_dir=cache_dir,
+            # Sanitised once here: a hand-edited devices.json could otherwise
+            # put a string in `w`, and every scene does int(caps["w"]).
+            caps=registry.clean_caps(rec.get("caps") or {}),
             now=clock(),
             device={"hw": hw, "id": rec.get("name") or hw,
                     "name": rec.get("name"), "feed": "adsb",
@@ -473,7 +498,15 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         rec, err = _register(hw)
         if err:
             return err
-        caps = rec.get("caps") or {}
+        # Render at the geometry declared in THIS request, falling back to
+        # the stored record. Trusting stored caps lets any LAN host re-geometry
+        # someone else's panel with one unauthenticated GET, after which the
+        # panel gets a wrong-length body at HTTP 200 -- which it streams
+        # straight at hardware and cannot detect.
+        # BOTH sides sanitised: a hand-edited devices.json can put a string in
+        # `w`, and int() on it 500s a route that must never raise.
+        caps = {**registry.clean_caps(rec.get("caps") or {}),
+                **registry.clean_caps(_caps_from_query(request.args.to_dict()))}
         w, h = int(caps.get("w") or 800), int(caps.get("h") or 480)
         try:
             # Reject before building or rendering: a device declares its own
@@ -486,6 +519,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return jsonify({"error": f"scene {name!r} has no pixel rendering"}), 409
         try:
             packed = render_frame(scene.html, w, h)
+        except RenderBusy as exc:
+            resp = jsonify({"error": str(exc)})
+            resp.headers["Retry-After"] = "5"
+            return resp, 503
         except RenderError as exc:
             # Chromium missing or a render timeout must not look like a frame.
             log.error("frame render failed for %s: %s", hw, exc)

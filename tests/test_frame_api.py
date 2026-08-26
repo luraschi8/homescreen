@@ -60,11 +60,37 @@ def test_a_changed_scene_changes_the_etag(client):
     assert client.get(f"/api/device/{HW}/frame{EPAPER_Q}").headers["ETag"] != first
 
 
-def test_a_geometry_that_is_not_byte_aligned_is_refused(client):
-    # w*h/8 would truncate and the device would render garbage it cannot detect.
-    r = client.get(f"/api/device/{HW}/frame?w=101&h=101&depth=1")
-    assert r.status_code == 400
-    assert "byte-aligned" in r.get_json()["error"]
+@pytest.mark.parametrize("w,h,why", [
+    (101, 101, "odd width"),
+    (12, 8, "(w*h)%8 is 0 but w%8 is 4 -- rows pad, so this truncates"),
+    (4, 2, "same trap, smaller"),
+    (4096, 4096, "a 2 MB frame from one unauthenticated GET"),
+])
+def test_an_unrenderable_geometry_is_refused_before_any_work(client, w, h, why):
+    # Rejected with a 400 rather than forking a browser for ~3s and then
+    # failing to pack -- which returned a retryable 503 that was never cached,
+    # so one misconfigured device could occupy both render slots forever.
+    r = client.get(f"/api/device/{HW}/frame?w={w}&h={h}&depth=1")
+    assert r.status_code == 400, why
+
+
+@pytest.mark.parametrize("w", [0, -8, "abc", 99999999999])
+def test_an_out_of_range_dimension_falls_back_rather_than_failing(client, w):
+    # clean_caps drops nonsense before the geometry check ever sees it, so the
+    # device gets the default panel size rather than an error it cannot act on.
+    r = client.get(f"/api/device/{HW}/frame?w={w}&h=480&depth=1")
+    assert r.status_code == 200
+    assert len(r.get_data()) == 800 * 480 // 8
+
+
+def test_the_frame_is_rendered_at_the_geometry_of_this_request(client):
+    # Not the stored one: registration is unauthenticated, so trusting stored
+    # caps lets any LAN host re-geometry someone else's panel, after which it
+    # gets a wrong-length body at HTTP 200 and streams it straight at hardware.
+    client.get(f"/api/device/{HW}/frame?w=800&h=480&depth=1")
+    client.get(f"/api/device/{HW}/scene?w=1024&h=256")      # the poisoning call
+    r = client.get(f"/api/device/{HW}/frame?w=800&h=480&depth=1")
+    assert len(r.get_data()) == 800 * 480 // 8, "the panel gets what it asked for"
 
 
 def test_a_render_failure_is_503_not_a_short_frame(client, monkeypatch):
