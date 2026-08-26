@@ -40,6 +40,12 @@ tr+tr td{border-top:1px dotted #000}
 """
 
 
+#: Reported when the cache stamp cannot be read. Large enough that every
+#: consumer treats the feed as dead, because a feed whose age is unknowable is
+#: not a feed you should draw.
+_UNKNOWN_DWELL = 86400.0
+
+
 def _aircraft(ctx: SceneContext) -> tuple[list, dict]:
     """The cached list plus feed state. Never raises: a scene that throws
     reaches the fallback, and a blank screen is worse than a stale one.
@@ -71,8 +77,26 @@ def _aircraft(ctx: SceneContext) -> tuple[list, dict]:
             continue
         if not math.isfinite(age):
             continue
-        items.append({**a, "age": age + dwell})
+        items.append(_wire(a, age + dwell))
     return items, {"ok": bool(env.get("ok")), "age_s": round(dwell, 1)}
+
+
+#: Decimal places for each wire field. The device parses into float32, so
+#: anything past ~7 significant digits is noise -- and `"ve":
+#: -0.13970290959420342` is 21 bytes of it, per aircraft, per poll. Rounding
+#: roughly halves the body, which is the difference between a scene the device
+#: can parse and one it refuses.
+_WIRE_ROUNDING = {"lat": 5, "lon": 5, "ve": 5, "vn": 5, "age": 1,
+                  "dst": 2, "gs": 1, "trk": 1, "nose": 1}
+
+
+def _wire(a: dict, age: float) -> dict:
+    out = {**a, "age": age}
+    for key, places in _WIRE_ROUNDING.items():
+        value = out.get(key)
+        if isinstance(value, float):
+            out[key] = round(value, places)
+    return out
 
 
 def _dwell(env: dict, now: float) -> float:
@@ -82,9 +106,13 @@ def _dwell(env: dict, now: float) -> float:
     try:
         fetched = datetime.fromisoformat(str(env.get("fetched_at")))
     except (TypeError, ValueError):
-        return 0.0
+        return _UNKNOWN_DWELL
     if fetched.tzinfo is None:
-        return 0.0
+        # Naive means we cannot know the offset, so we cannot know the age.
+        # Returning 0.0 here said "brand new", which pins feed_age_s at zero
+        # forever and makes the device's staleness test permanently blind --
+        # the one number it has for "the server's feed died" would never move.
+        return _UNKNOWN_DWELL
     return max(0.0, now - fetched.timestamp())
 
 

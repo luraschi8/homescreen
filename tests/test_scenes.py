@@ -422,3 +422,83 @@ def test_a_device_that_declares_no_limit_gets_the_operators(tmp_path):
     dev = {"hw": "aa", "id": "d", "feed": "adsb", "max_aircraft": 30}
     items = scenes.build("planes", ctx(tmp_path, device=dev)).components[0]["items"]
     assert len(items) == 30
+
+
+def test_wire_floats_are_rounded_to_what_a_float32_can_hold(tmp_path):
+    # `"ve": -0.13970290959420342` is 21 bytes of noise per aircraft per poll
+    # into a device that parses float32. Rounding roughly halves the body, and
+    # the body size decides whether the device parses the scene or refuses it.
+    _feed_at(tmp_path, NOW, [{"lat": 40.512345678, "lon": -3.698765432,
+                              "ve": -0.13970290959420342,
+                              "vn": 0.20871234567890123, "age": 3.14159265,
+                              "dst": 7.43219876, "gs": 400.123456,
+                              "trk": 91.98765, "nose": 90.55555, "cs": "IBE1"}])
+    item = scenes.build("planes", ctx(tmp_path)).components[0]["items"][0]
+    assert item["ve"] == -0.1397 and item["vn"] == 0.20871
+    assert item["lat"] == 40.51235 and item["lon"] == -3.69877
+    assert item["dst"] == 7.43 and item["gs"] == 400.1
+    assert len(repr(item["ve"])) <= 8, "no 17-digit floats on the wire"
+
+
+def test_rounding_does_not_shift_a_position_enough_to_matter(tmp_path):
+    # 5 decimal places of latitude is ~1.1 m. The panel is 240 px across 60 km.
+    _feed_at(tmp_path, NOW, [{"lat": 40.5123456789, "lon": -3.6987654321,
+                              "age": 1.0, "cs": "IBE1"}])
+    item = scenes.build("planes", ctx(tmp_path)).components[0]["items"][0]
+    assert abs(item["lat"] - 40.5123456789) < 1e-5
+    assert abs(item["lon"] - -3.6987654321) < 1e-5
+
+
+def test_a_cache_stamp_we_cannot_read_reports_the_feed_as_dead(tmp_path):
+    # Returning 0.0 said "brand new", which pinned feed_age_s at zero forever
+    # and left the device permanently blind to a dead feed -- the one number it
+    # has for that failure would never move.
+    import json as _json
+    p = tmp_path / "feed" / "adsb.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    def comp_for(stamp):
+        p.write_text(_json.dumps({"fetched_at": stamp, "ok": True,
+                                  "error": None, "data": {"aircraft": [
+                                      {"lat": 1.0, "lon": 2.0, "age": 1.0,
+                                       "cs": "X"}]}}))
+        return scenes.build("planes", ctx(tmp_path)).components[0]
+
+    # A STRING that will not parse, or parses without an offset, reaches
+    # _dwell. Naive is the dangerous one: it looks like a timestamp.
+    for stamp in ("2026-08-26T19:00:00", "not-a-date", ""):
+        assert comp_for(stamp)["feed_age_s"] >= 3600, f"{stamp!r} read as fresh"
+
+    # A NON-string is rejected by read_cache before we ever see it, so the
+    # scene reports no feed at all rather than a stale one -- also safe, but
+    # for a different reason, and the device sees an empty sky.
+    for stamp in (None, 12345, [], {}):
+        c = comp_for(stamp)
+        assert c["feed_age_s"] is None and c["feed_ok"] is False
+        assert c["items"] == []
+
+
+# --- the body has to fit in a device that has ~55 KB of heap ------------------
+# ArduinoJson 7 peaks around 4.6x the body for this shape. The device declares
+# max_items and refuses anything over its own byte cap, so if this grows past
+# what it will accept the panel goes blank at exactly the busiest time of day --
+# and the server is the half that can change without anyone reflashing.
+
+@pytest.mark.parametrize("cap, max_bytes", [(20, 4096), (30, 6144), (40, 8192)])
+def test_a_full_scene_fits_the_devices_byte_budget(tmp_path, cap, max_bytes):
+    import json as _json
+    _feed_at(tmp_path, NOW, [
+        {"lat": 40.5 + i / 1000, "lon": -3.6 - i / 1000, "nose": 90.0,
+         "trk": 91.0, "gs": 400.0, "ve": -0.13970290959420342,
+         "vn": 0.20871234567890123, "age": 3.1416, "dst": 7.4321,
+         "cs": "ABCDEFGH", "ty": "A388", "alt": "FL120 ft"}   # worst-case widths
+        for i in range(cap + 50)])
+    dev = {"hw": "aa", "id": "d", "feed": "adsb", "max_aircraft": 1000,
+           "max_items": cap}
+    scene = scenes.build("planes", ctx(tmp_path, device=dev))
+    assert len(scene.components[0]["items"]) == cap
+    body = _json.dumps({"components": list(scene.components)},
+                       separators=(",", ":"))
+    assert len(body) <= max_bytes, (
+        f"{cap} items serialise to {len(body)} bytes; the device refuses "
+        f"anything over its cap and shows nothing at all")
