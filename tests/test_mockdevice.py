@@ -187,10 +187,22 @@ def wired(tmp_path, monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     monkeypatch.setattr(mockdevice.time, "sleep", lambda s: None)
+    if render.find_chromium() is None:
+        # Stub rather than skip: the poll loop, the 304 path and the cycle
+        # counter have nothing to do with a browser, and skipping them meant
+        # the tool that proves the device contract was unproven on the box
+        # that runs it.
+        from PIL import Image
+        monkeypatch.setattr(
+            "homescreen.render.html_to_png",
+            lambda html, w, h, out, binary=None:
+            Image.new("1", (w, h), 1).save(out))
     return client, tmp_path
 
 
 def test_main_runs_a_full_epaper_cycle(wired, capsys, tmp_path):
+    # Keeps the real browser: this one asserts the ink percentage, which is
+    # how the tool tells a rendered panel from a blank one.
     client, _ = wired
     if render.find_chromium() is None:
         pytest.skip("no chromium/chrome on this machine")
@@ -227,16 +239,12 @@ def test_main_says_so_when_a_scene_is_pixel_push_only(wired, capsys):
 
 
 def test_main_runs_the_requested_number_of_cycles(wired, capsys):
-    if render.find_chromium() is None:
-        pytest.skip("no chromium/chrome on this machine")
     mockdevice.main(["--hw", "e2", "--kind", "epaper", "--cycles", "3"])
     printed = capsys.readouterr().out
     assert "[1]" in printed and "[3]" in printed and "[4]" not in printed
 
 
 def test_main_leaves_the_panel_alone_on_a_304(wired, capsys):
-    if render.find_chromium() is None:
-        pytest.skip("no chromium/chrome on this machine")
     mockdevice.main(["--hw", "e3", "--kind", "epaper", "--cycles", "2"])
     assert "frame unchanged (304)" in capsys.readouterr().out, \
         "the second cycle must reuse the etag from the first"

@@ -178,11 +178,11 @@ def test_the_frame_route_cannot_declare_anything_at_all(client, monkeypatch):
     {"w": "abc", "h": 480}, {"w": ["x"], "h": 480}, {"w": None},
     "not a dict", {"h": {"n": 1}}, {"w": True},
 ])
-def test_a_hand_edited_capability_never_500s_a_route(tmp_path, caps):
+def test_a_hand_edited_capability_never_500s_a_route(tmp_path, caps, monkeypatch):
     # `w` as a string reached int() in both routes. clean_caps prevents it over
     # HTTP; a hand-edited devices.json does not go through clean_caps, and the
     # "registry is full" message invites exactly that edit.
-    _needs_chromium()
+    _stub_browser(monkeypatch)
     client = create_app(CFG, tmp_path, version="t", clock=FrozenClock()).test_client()
     client.get("/api/device/P/scene")
     raw = json.loads(registry.registry_path(tmp_path).read_text())

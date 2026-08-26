@@ -18,13 +18,43 @@ def client(tmp_path):
 
 
 @pytest.fixture
-def needs_chromium():
-    """Opt-in, NOT autouse.
+def needs_chromium(monkeypatch):
+    """A frame, by whatever means. Opt-in, NOT autouse.
 
-    As an autouse fixture this skipped 14 tests on any machine without a
-    browser -- including five that never render anything. A route's error
-    handling must be verifiable on the box that runs it.
+    Most of this file asserts on lengths, ETags, status codes and headers --
+    none of which need a real browser, only a real framebuffer. Skipping them
+    meant the deploy target, which has no Chromium (CLAUDE.md §2), reported
+    green with the entire frame route untested. So we stub when there is no
+    browser and skip nothing.
+
+    Tests whose subject IS the browser's output -- polarity, ink coverage,
+    antialiasing -- use `real_chromium` instead and genuinely skip.
     """
+    if render.find_chromium() is not None:
+        return
+    from PIL import Image
+
+    def stub(html, w, h, out_png, binary=None):
+        # The ink pattern is derived from the HTML, because a browser's
+        # defining property here is that different content makes different
+        # pixels -- a fixed pattern would make every scene share an ETag and
+        # quietly disarm the tests that check a scene change reaches the glass.
+        import hashlib
+        seed = hashlib.sha256(html.encode()).digest()
+        img = Image.new("1", (w, h), 1)
+        for i, byte in enumerate(seed[:32]):
+            for bit in range(8):
+                if byte >> bit & 1:
+                    x, y = (i * 8 + bit) % w, (i * 3) % h
+                    img.putpixel((x, y), 0)
+        img.save(out_png)
+
+    monkeypatch.setattr("homescreen.render.html_to_png", stub)
+
+
+@pytest.fixture
+def real_chromium():
+    """For the handful of tests that check what the BROWSER produced."""
     if render.find_chromium() is None:
         pytest.skip("no chromium/chrome on this machine")
 
@@ -146,7 +176,8 @@ def test_the_frame_length_header_matches_the_body(client, needs_chromium):
     assert int(r.headers["X-Frame-Bytes"]) == len(r.get_data())
 
 
-def test_the_frame_decodes_back_to_a_readable_image(client, needs_chromium, tmp_path):
+def test_the_frame_decodes_back_to_a_readable_image(client, real_chromium,
+                                                    tmp_path):
     # 1 = black on the wire. If this comes out inverted the server is wrong,
     # and a real panel would show a photographic negative.
     from PIL import Image
