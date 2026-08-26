@@ -193,10 +193,12 @@ def test_fetch_targets_is_one_entry_per_feed_not_per_device(tmp_path: Path):
         {"id": "radar", "render": "device", "feed": "adsb"},
         {"id": "radar2", "render": "device", "feed": "adsb"},    # same feed
         {"id": "kitchen", "render": "server", "feed": "adsb"},   # pixel push
-        {"id": "other", "render": "device", "feed": "weather"},  # other feed
+        {"id": "other", "render": "device", "feed": "weather"},  # not ours
     ]}
     got = [(d["id"], p.name) for d, p in fetch_targets(cfg, tmp_path)]
-    assert got == [("radar", "adsb.json"), ("other", "weather.json")]
+    # One entry: both adsb devices share a feed, and `weather` belongs to a
+    # fetcher that does not exist yet -- this module only knows adsb.
+    assert got == [("radar", "adsb.json")]
 
 
 # Every shape a hand-edited config.yaml realistically takes. `feeds:` with its
@@ -534,7 +536,12 @@ def test_device_lookup_and_feed_path(tmp_path: Path):
     assert dev["id"] == "radar"
     assert device(CFG, "nope") is None
     assert feed_cache_path(tmp_path, dev) == tmp_path / "feed" / "adsb.json"
-    # Per DEVICE, not a literal and not per feed: two radars with different
-    # centres must not collide on one file.
+    # Per FEED, not per device: a self-registered device declares a screen
+    # size, not a location, so two screens on one feed share the data.
     assert (feed_cache_path(tmp_path, {"id": "radar2", "feed": "adsb"})
-            == tmp_path / "feed" / "radar2.json")
+            == tmp_path / "feed" / "adsb.json")
+    assert (feed_cache_path(tmp_path, {"id": "x", "feed": "weather"})
+            == tmp_path / "feed" / "weather.json")
+    # A device naming no feed falls back rather than raising KeyError.
+    assert feed_cache_path(tmp_path, {}) == tmp_path / "feed" / "adsb.json"
+    assert feed_cache_path(tmp_path, None) == tmp_path / "feed" / "adsb.json"
