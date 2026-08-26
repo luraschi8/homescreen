@@ -181,11 +181,30 @@ def test_one_request_cannot_write_an_unbounded_file(tmp_path: Path):
     assert os.path.getsize(registry.registry_path(tmp_path)) < 8000
 
 
-def test_the_device_count_is_bounded(tmp_path: Path):
+def test_a_fleet_of_configured_devices_is_bounded(tmp_path: Path):
+    # The bound exists so unauthenticated registration cannot fill the microSD.
     for i in range(registry.MAX_DEVICES):
-        registry.touch(tmp_path, f"{i:012x}", now=1000.0)
+        hw = f"{i:012x}"
+        registry.touch(tmp_path, hw, now=1000.0)
+        registry.assign(tmp_path, hw, name=f"d{i}", scene="clock")
     with pytest.raises(ValueError, match="full"):
         registry.touch(tmp_path, "ffffffffffff", now=1000.0)
+
+
+def test_junk_registrations_never_lock_out_real_hardware(tmp_path: Path):
+    # 64 invented ids, kept fresh by one GET each, held the registry full and
+    # kept new hardware out indefinitely: eviction required the victim to be
+    # OFFLINE, so the attacker simply kept polling. What protects a record is
+    # an operator having named or assigned it -- not that it answered recently.
+    for i in range(registry.MAX_DEVICES):
+        registry.touch(tmp_path, f"bot{i:09x}", now=1000.0 + i)
+    registry.assign(tmp_path, "bot000000000", name="real", scene="clock")
+
+    registry.touch(tmp_path, "newpanel", now=1000.0)         # real hardware
+    data = registry.load(tmp_path)
+    assert "newpanel" in data, "a new panel must be able to register"
+    assert "real" == data["bot000000000"]["name"], "a named device is protected"
+    assert len(data) <= registry.MAX_DEVICES
 
 
 def test_repeat_polls_do_not_rewrite_the_card(tmp_path: Path):
@@ -197,13 +216,60 @@ def test_repeat_polls_do_not_rewrite_the_card(tmp_path: Path):
         registry.touch(tmp_path, HW, telemetry={"rssi": "-64"}, now=1000.0 + i)
     assert os.stat(registry.registry_path(tmp_path)).st_mtime_ns == before
 
+    # Telemetry churns on every single poll -- the reference client sends
+    # `uptime` -- so counting it as a change defeated the guard entirely and
+    # measured at 5x write amplification. It is not lost, only deferred to a
+    # write we were going to make anyway.
     registry.touch(tmp_path, HW, telemetry={"rssi": "-70"}, now=1001.0)
-    changed = os.stat(registry.registry_path(tmp_path)).st_mtime_ns
-    assert changed != before, "a real change must still persist"
+    assert os.stat(registry.registry_path(tmp_path)).st_mtime_ns == before, \
+        "telemetry alone must not spend an SD write"
 
-    registry.touch(tmp_path, HW, telemetry={"rssi": "-70"}, now=1200.0)
+    registry.touch(tmp_path, HW, fw="2.0", telemetry={"rssi": "-70"}, now=1002.0)
+    changed = os.stat(registry.registry_path(tmp_path)).st_mtime_ns
+    assert changed != before, "a firmware change is identity; persist it now"
+    assert registry.load(tmp_path)[HW]["telemetry"] == {"rssi": "-70"}, \
+        "and the deferred telemetry rides along with it"
+
+    registry.touch(tmp_path, HW, telemetry={"rssi": "-80"}, now=1200.0)
     assert os.stat(registry.registry_path(tmp_path)).st_mtime_ns != changed, \
         "and a stale stamp must eventually refresh"
+    assert registry.load(tmp_path)[HW]["telemetry"] == {"rssi": "-80"}
+
+
+def test_a_device_polling_on_cadence_never_reads_offline(tmp_path: Path):
+    # MIN_LAST_SEEN_DELTA_S=30 vs a 3 x 5s liveness window: as stated these
+    # were mutually unsatisfiable, and a device polling exactly on cadence read
+    # offline on 47% of checks. An offline unnamed device is also evictable, so
+    # this was not merely cosmetic.
+    registry.forget_contacts()
+    now = 1000.0
+    registry.touch(tmp_path, HW, now=now)
+    for i in range(1, 20):
+        now += 5.0
+        registry.touch(tmp_path, HW, now=now)
+        rec = registry.load(tmp_path)[HW]
+        assert registry.is_online(rec, now), f"offline at poll {i}"
+
+
+def test_after_a_restart_liveness_falls_back_to_the_disk(tmp_path: Path):
+    # The in-memory contact map is precise but not durable, and pretending
+    # otherwise would report a fleet online that we have not heard from.
+    registry.touch(tmp_path, HW, now=1000.0)
+    registry.forget_contacts()                     # the process restarted
+    assert registry.is_online(registry.load(tmp_path)[HW], 1000.0)
+    assert not registry.is_online(registry.load(tmp_path)[HW], 1000.0 + 3600)
+
+
+def test_a_clock_that_jumps_backwards_still_refreshes_last_seen(tmp_path: Path):
+    # _stamp ahead of us was never refreshed by a positive staleness test, so a
+    # Pi that boots at a saved time ahead of true time -- it has no RTC -- showed
+    # every quiet device offline for the whole skew and never healed.
+    registry.touch(tmp_path, HW, now=1_000_000.0)
+    registry.forget_contacts()
+    registry.touch(tmp_path, HW, now=1_000_000.0 - 3600)       # NTP pulled back
+    seen = registry.load_raw(tmp_path)[HW]["last_seen"]
+    assert seen.startswith(registry._stamp(1_000_000.0 - 3600)[:16]), \
+        f"last_seen still reads {seen}"
 
 
 def test_a_poll_and_a_patch_do_not_lose_each_other(tmp_path: Path):

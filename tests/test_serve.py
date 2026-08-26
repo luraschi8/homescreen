@@ -430,3 +430,56 @@ def test_a_negative_feed_age_is_never_reported(ctx):
 def test_the_staleness_horizon_is_the_firmware_constant(ctx):
     from homescreen.serve import STALE_HORIZON_S
     assert STALE_HORIZON_S == 12.0, "kExtrapolationHorizonSec in adsb_client.h"
+
+
+# --- a 304 must not freeze the ages it declined to send -----------------------
+
+def _write_feed(path, now, aircraft):
+    from datetime import datetime, timezone
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "fetched_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
+        "ok": True, "error": None, "data": {"aircraft": aircraft}}))
+
+
+def test_a_stalled_feed_stops_304ing_before_the_ages_go_stale(ctx):
+    # VALIDATION F4 through the one door it did not cover. A body-less 304
+    # leaves the device holding the ages from the last body it received; a
+    # device that 304'd for 11.9s still believed its fix was 1.0s old. The fix
+    # was 12.9s old -- ~3 km at 250 m/s -- and because pos_age_s stayed frozen
+    # the firmware's own dimming test never fired either.
+    client, path, clock = ctx
+    _write_feed(path, clock.t, [{"cs": "IBE1", "age": 1.0}])
+    etag = client.get("/api/display/radar/data").headers["ETag"]
+    seen = []
+    for _ in range(5):
+        clock.t += 2.5                      # the fetcher is dead; nothing rewrites
+        r = client.get("/api/display/radar/data", headers={"If-None-Match": etag})
+        etag = r.headers["ETag"]
+        if r.status_code == 200:
+            seen.append(r.get_json()["aircraft"][0]["age"])
+    assert seen == sorted(seen) and len(seen) >= 5, \
+        "every poll during a stall must carry a fresh, growing age"
+    assert seen[-1] >= 12.0, "the device must see its fix cross the horizon"
+
+
+def test_a_healthy_feed_still_304s_for_free(ctx):
+    # The bound must not cost the normal case. While the fetcher is alive the
+    # dwell resets on every write and never leaves the first bucket, so an
+    # unchanged sky is still answered with an empty 304.
+    client, path, clock = ctx
+    _write_feed(path, clock.t, [{"cs": "IBE1", "age": 1.0}])
+    etag = client.get("/api/display/radar/data").headers["ETag"]
+    for _ in range(4):
+        clock.t += 5.0
+        _write_feed(path, clock.t, [{"cs": "IBE1", "age": 1.0}])   # a real fetch
+        r = client.get("/api/display/radar/data", headers={"If-None-Match": etag})
+        etag = r.headers["ETag"]
+        assert r.status_code == 304, "an unchanged sky costs a device nothing"
+
+
+def test_the_hidden_age_error_is_bounded_by_one_bucket(ctx):
+    from homescreen.serve import AGE_BUCKET_S, STALE_HORIZON_S
+    assert AGE_BUCKET_S == 2.0
+    assert AGE_BUCKET_S < STALE_HORIZON_S / 4, \
+        "a 304 must not be able to hide a meaningful slice of the horizon"

@@ -29,6 +29,12 @@ log = logging.getLogger(__name__)
 # data-push device class then declares itself instead of needing a Python edit.
 DATA_RENDER = "device"
 
+#: How much age error a 304 is allowed to hide, in seconds. The device
+#: extrapolates against a 12s horizon (`kExtrapolationHorizonSec`), so this is
+#: a sixth of it: small enough that the dead-reckoned position stays honest,
+#: large enough that a healthy feed still 304s most of the time.
+AGE_BUCKET_S = 2.0
+
 # ADDENDUM §6's `source` is an acquisition MODE (api | dump1090); PLAN.md §3's
 # `feed.source` is the PROVIDER name in a diagnostic response. Map, don't pipe:
 # "api" is never a provider, and tells a debugger nothing.
@@ -231,11 +237,25 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # 304), and not `fetched_at` (write_cache restamps on every fetch, so
         # that ALSO never 304s while healthy -- and worse, goes stable exactly
         # when the fetcher dies, blinding the device to the stall).
+        #
+        # ...but the content alone is not the whole identity. Every aircraft
+        # age carries the dwell term, and a body-less 304 leaves the device
+        # holding the ages from the LAST body it received. Measured: a device
+        # that 304s for 11.9s still believed its fix was 1.0s old -- the fix
+        # was 12.9s old, ~3 km at 250 m/s, and because `pos_age_s` stayed
+        # frozen the firmware's own dimming test never fired either. That is
+        # VALIDATION F4 returning through the one door it did not cover.
+        #
+        # So the dwell BUCKET is part of the identity. A 304 can now hide at
+        # most AGE_BUCKET_S of age error rather than the whole horizon, while
+        # a feed that is genuinely updating still 304s for free -- its dwell
+        # resets on every fetch and never leaves the first bucket.
         if env is None:
             ident = "empty"
         else:
             ident = (json.dumps(env["data"], sort_keys=True, separators=(",", ":"))
-                     + "|" + str(env["ok"]))
+                     + "|" + str(env["ok"])
+                     + "|" + str(int(dwell // AGE_BUCKET_S)))
         etag = '"%s"' % hashlib.sha256(ident.encode()).hexdigest()[:16]
 
         # Never 304 a stale feed: a 304 has no body, so feed.age_s could not

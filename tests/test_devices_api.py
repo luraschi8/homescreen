@@ -226,10 +226,32 @@ def test_one_call_cannot_write_an_unbounded_registry(ctx, tmp_path):
     assert all(len(v) <= registry.MAX_VALUE_LEN for v in rec["telemetry"].values())
 
 
-def test_the_fleet_is_bounded_against_a_registration_flood(ctx):
+def test_a_registration_flood_is_bounded_on_disk(ctx):
+    client, cache, _ = ctx
+    for i in range(registry.MAX_DEVICES * 3):
+        client.get(f"/api/device/{i:012x}/scene")
+    assert len(registry.load(cache)) <= registry.MAX_DEVICES
+
+
+def test_a_registration_flood_does_not_lock_out_real_hardware(ctx):
+    # Eviction used to require the victim to be offline, so 64 ids kept fresh
+    # by one GET each held the door shut against new hardware indefinitely.
     client, cache, _ = ctx
     for i in range(registry.MAX_DEVICES):
         client.get(f"/api/device/{i:012x}/scene")
+    r = client.get("/api/device/realpanel/scene?w=800&h=480&depth=1")
+    assert r.status_code == 200, r.get_data()
+    assert "realpanel" in registry.load(cache)
+
+
+def test_a_fully_configured_fleet_refuses_a_new_registration(ctx):
+    # With nothing left to evict, refusing is right: the alternative is
+    # dropping a panel somebody configured.
+    client, cache, _ = ctx
+    for i in range(registry.MAX_DEVICES):
+        hw = f"{i:012x}"
+        client.get(f"/api/device/{hw}/scene")
+        client.patch(f"/api/devices/{hw}", json={"name": f"d{i}", "scene": "clock"})
     r = client.get("/api/device/ffffffffffff/scene")
     assert r.status_code == 400
     assert "full" in r.get_json()["error"]

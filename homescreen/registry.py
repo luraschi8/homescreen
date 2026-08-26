@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -104,6 +105,37 @@ CAP_INT_RANGE = (1, 4096)
 # pattern write_failure already refuses; only persist once the stamp is stale
 # enough to be worth recording.
 MIN_LAST_SEEN_DELTA_S = 30.0
+
+#: Contact times this process has observed, keyed by (registry path, hw id).
+#: The wear guard above and the liveness window below were mutually
+#: unsatisfiable as stated: `last_seen` reaches the disk at most every 30s,
+#: while `is_online` calls a device offline after 3 x poll = 15s. Measured: a
+#: device polling exactly on cadence read offline on 47% of checks -- and an
+#: offline, unnamed device is EVICTABLE, so healthy hardware could be dropped
+#: from a full registry. Memory is precise and free; the disk stays durable and
+#: coarse. After a restart this is empty and we fall back to the disk, which is
+#: honest: we genuinely have not heard from anyone yet.
+_contact: dict[tuple, float] = {}
+_contact_lock = threading.Lock()
+
+
+def _note_contact(cache_dir: Path, hw_id: str, when: float) -> None:
+    with _contact_lock:
+        _contact[(str(registry_path(cache_dir)), hw_id)] = when
+        if len(_contact) > MAX_DEVICES * 4:
+            for key in sorted(_contact, key=_contact.get)[:MAX_DEVICES * 2]:
+                _contact.pop(key, None)
+
+
+def _contact_time(cache_dir: Path, hw_id: str):
+    with _contact_lock:
+        return _contact.get((str(registry_path(cache_dir)), hw_id))
+
+
+def forget_contacts() -> None:
+    """Drop the in-process contact map. For tests and for a fresh start."""
+    with _contact_lock:
+        _contact.clear()
 
 
 def registry_path(cache_dir: Path) -> Path:
@@ -200,10 +232,16 @@ def load(cache_dir: Path) -> dict:
     """
     out = {}
     for key, rec in load_raw(cache_dir).items():
-        if _valid_record(rec):
-            out[key] = rec
-        else:
+        if not _valid_record(rec):
             log.warning("registry record %r is malformed; hidden, not deleted", key)
+            continue
+        seen = _contact_time(cache_dir, key)
+        disk = _epoch(rec.get("last_seen"))
+        if seen is not None and (disk is None or seen > disk):
+            # A view, never written back: `load_raw` stays the thing mutators
+            # persist, so this cannot defeat the wear guard it exists beside.
+            rec = {**rec, "last_seen": _stamp(seen)}
+        out[key] = rec
     return out
 
 
@@ -212,6 +250,12 @@ def _quarantine(cache_dir: Path) -> None:
 
     `load` degrading to {} plus a later `save` is data loss, not degradation:
     every real assignment disappears on the next restart.
+
+    MUST be called inside `_locked`. It was not, and the parse-check and the
+    rename were therefore not atomic against a concurrent writer: a poll would
+    read a corrupt file, another writer would repair it, and the first would
+    then file the now-VALID registry as corrupt -- taking a real panel's name
+    and scene with it. Reproduced; the panel came back as "sin asignar".
     """
     path = registry_path(cache_dir)
     if not path.exists():
@@ -222,17 +266,38 @@ def _quarantine(cache_dir: Path) -> None:
         return                       # parses fine; nothing to quarantine
     except (OSError, json.JSONDecodeError, ValueError):
         pass
-    dest = path.with_suffix(f".corrupt-{int(datetime.now().timestamp())}")
-    try:
-        path.rename(dest)
+    # os.link + unlink rather than rename: rename overwrites silently, and at
+    # one-second resolution two quarantines in the same second targeted the
+    # same name -- the second destroyed the first's evidence, which is the
+    # whole point of quarantining.
+    base = int(datetime.now(timezone.utc).timestamp())
+    for suffix in range(100):
+        dest = path.with_suffix(".corrupt-%d%s" % (base, f".{suffix}" if suffix else ""))
+        try:
+            os.link(path, dest)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            log.error("registry corrupt and could not be moved aside: %s", exc)
+            return
+        path.unlink(missing_ok=True)
         log.error("registry was corrupt; moved to %s", dest.name)
-    except OSError as exc:
-        log.error("registry corrupt and could not be moved aside: %s", exc)
+        return
+    log.error("registry corrupt and 100 quarantine names were taken; left in place")
+
+
+#: Depth per (thread, cache_dir). flock is per-fd, so a second acquisition in
+#: the same thread blocked on itself -- and that hang is unrecoverable: the
+#: worker stops without the process dying, so systemd's Restart=always never
+#: fires. Nothing nests today, but `_touch_locked`/`_assign_locked` exist
+#: precisely so mutators can be composed, and the first composition would have
+#: wedged the daemon.
+_depth = threading.local()
 
 
 @contextlib.contextmanager
 def _locked(cache_dir: Path):
-    """Hold an exclusive lock across a whole read-modify-write.
+    """Hold an exclusive lock across a whole read-modify-write. Reentrant.
 
     Locking only the write is not enough and was a real bug here: a device poll
     and a human PATCH each load, each modify their own copy, and the second
@@ -240,11 +305,26 @@ def _locked(cache_dir: Path):
     update vanished. Every mutating function below wraps load->modify->save in
     this, and calls _save_unlocked inside it.
     """
+    key = str(registry_path(cache_dir))
+    held = getattr(_depth, "held", None)
+    if held is None:
+        held = _depth.held = {}
+    if held.get(key):
+        held[key] += 1
+        try:
+            yield
+        finally:
+            held[key] -= 1
+        return
     path = registry_path(cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path.with_suffix(".lock"), "w") as lockfh:
         fcntl.flock(lockfh, fcntl.LOCK_EX)
-        yield
+        held[key] = 1
+        try:
+            yield
+        finally:
+            held[key] = 0
 
 
 def _save_unlocked(cache_dir: Path, data: dict) -> None:
@@ -321,8 +401,8 @@ def touch(cache_dir: Path, hw_id, *, fw=None, caps=None, telemetry=None,
     version from the same board and must not orphan its assignment.
     """
     hw_id = _check_hw(hw_id)
-    _quarantine(cache_dir)
     with _locked(cache_dir):
+        _quarantine(cache_dir)
         return _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now)
 
 
@@ -337,11 +417,16 @@ def _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now) -> dict:
             # Registration is unauthenticated, so a device churning its id
             # would otherwise permanently lock out real hardware. Evict the
             # least useful record first: offline, never named, never assigned.
+            # Liveness is NOT part of the test. Requiring the victim to be
+            # offline meant 64 invented ids, kept fresh by one GET each, locked
+            # out real hardware indefinitely -- the eviction rule protected
+            # exactly the records with no value. What protects a record is an
+            # operator having touched it: a name or a scene. Everything else is
+            # a guess the server made, and the oldest guess goes first.
             evictable = sorted(
                 (k for k, r in data.items()
                  if _valid_record(r) and not r.get("name")
-                 and r.get("scene") in (None, "unassigned")
-                 and not is_online(r, now if now is not None else _epoch(stamp))),
+                 and r.get("scene") in (None, "unassigned")),
                 key=lambda k: data[k].get("last_seen") or "")
             if not evictable:
                 raise ValueError(
@@ -355,7 +440,14 @@ def _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now) -> dict:
                "caps": {}, "telemetry": {}}
         log.info("new device registered: %s", hw_id)
 
-    before = {k: rec.get(k) for k in ("fw", "caps", "telemetry")}
+    _note_contact(cache_dir, hw_id, _epoch(stamp) or 0.0)
+    # Telemetry is deliberately NOT in here. `uptime` and `errors` ride on
+    # every poll, so including them made `changed` true every time and the
+    # guard below never fired: measured at 5x write amplification, 17,280
+    # full-file rewrites and fsyncs per device per day onto the microSD.
+    # Telemetry still reaches the disk -- it just waits for a write we were
+    # going to make anyway.
+    before = {k: rec.get(k) for k in ("fw", "caps")}
     if fw is not None:
         rec["fw"] = str(fw)[:64]
     if caps:
@@ -367,7 +459,11 @@ def _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now) -> dict:
 
     changed = fresh or any(rec.get(k) != v for k, v in before.items())
     prev = _epoch(rec.get("last_seen"))
-    stale = prev is None or (_epoch(stamp) or 0) - prev >= MIN_LAST_SEEN_DELTA_S
+    # abs(): a stamp AHEAD of us is never refreshed by a positive test, so a
+    # Pi that boots at a saved time ahead of true time (no RTC) shows every
+    # quiet device offline for the whole skew and never heals. cache.py:_write
+    # restamps unconditionally for the same reason; the registry now matches.
+    stale = prev is None or abs((_epoch(stamp) or 0) - prev) >= MIN_LAST_SEEN_DELTA_S
     rec["last_seen"] = stamp
 
     if changed or stale:
@@ -391,8 +487,8 @@ def _check_name(data: dict, hw_id: str, name) -> str:
 def assign(cache_dir: Path, hw_id: str, *, name=None, scene=None,
            poll_seconds=None) -> dict:
     """Set name/scene/poll_seconds. Validates everything BEFORE persisting."""
-    _quarantine(cache_dir)
     with _locked(cache_dir):
+        _quarantine(cache_dir)
         return _assign_locked(cache_dir, hw_id, name, scene, poll_seconds)
 
 
@@ -493,7 +589,17 @@ def seed_from_config(cfg: dict, cache_dir: Path, *, now: float | None = None) ->
     marker = seeded_marker_path(cache_dir)
     if marker.exists():
         return 0
-    _quarantine(cache_dir)
+    # The one load-modify-save that sat outside the lock. It runs before the
+    # listener binds, so nothing raced it in practice -- but it is a violation
+    # of this module's own stated discipline, and it stops being theoretical
+    # the moment a second writer exists. Reproduced with an injected delay: a
+    # concurrent poll's brand-new device vanished.
+    with _locked(cache_dir):
+        _quarantine(cache_dir)
+        return _seed_locked(cache_dir, devices, marker, now)
+
+
+def _seed_locked(cache_dir: Path, devices: list, marker: Path, now) -> int:
     data = load_raw(cache_dir)
 
     stamp = _stamp(now)
@@ -536,7 +642,7 @@ def seed_from_config(cfg: dict, cache_dir: Path, *, now: float | None = None) ->
         data[hw_id] = record
         seeded += 1
 
-    save(cache_dir, data)
+    _save_unlocked(cache_dir, data)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(stamp)
     log.info("seeded %d device(s) from config.yaml", seeded)
