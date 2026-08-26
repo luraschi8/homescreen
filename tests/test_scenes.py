@@ -118,7 +118,10 @@ def test_pixel_push_html_declares_the_exact_viewport(tmp_path, name):
 def test_clock_shows_both_cities(tmp_path):
     html = scenes.build("clock", ctx(tmp_path)).html
     assert "Madrid" in html and "BS AS" in html
-    assert len(re.findall(r"\d\d:\d\d", html)) >= 2
+    # `>= 2` passed with ONE city: the footer stamp is `%Y-%m-%d %H:%M`, which
+    # supplies the second match for free. Count the clock faces themselves.
+    assert re.findall(r'class="(big|sub)">(\d\d:\d\d)', html) \
+        and len(re.findall(r'class="(?:big|sub)">\d\d:\d\d', html)) == 2
 
 
 def test_clock_survives_a_broken_timezone(tmp_path):
@@ -274,3 +277,44 @@ def test_a_scene_cannot_ship_a_layout_no_device_can_draw(tmp_path):
 @pytest.mark.parametrize("name", ["clock", "status", "planes"])
 def test_every_built_scene_declares_a_carried_layout(tmp_path, name):
     assert scenes.build(name, ctx(tmp_path)).layout in scenes.LAYOUTS
+
+
+# --- the device-facing wire shape --------------------------------------------
+# The firmware parses these names. Nothing pinned them in either direction, so
+# a rename or a dropped field would have shipped silently and shown up as a
+# blank radar on hardware.
+
+RADAR_ITEM_KEYS = {"lat", "lon", "nose", "trk", "gs", "ve", "vn",
+                   "age", "dst", "cs", "ty", "alt"}
+
+
+def test_the_radar_component_carries_exactly_the_agreed_fields(tmp_path):
+    write_cache(tmp_path / "feed" / "adsb.json", {"aircraft": [
+        {"lat": 40.5, "lon": -3.6, "nose": 90.0, "trk": 91.0, "gs": 400.0,
+         "ve": 0.2, "vn": 0.0, "age": 3.1, "dst": 7.4,
+         "cs": "IBE3221", "ty": "A320", "alt": "3675 ft"}]})
+    comp, = scenes.build("planes", ctx(tmp_path)).components
+    assert set(comp) == {"c", "items", "feed_ok", "radius_km"}
+    assert comp["c"] == "radar"
+    assert set(comp["items"][0]) == RADAR_ITEM_KEYS
+
+
+def test_the_radar_component_states_the_range_it_covers(tmp_path):
+    # The device scales its rings from this. Without it, a 30 km feed drawn on
+    # a 60 km dial is wrong in a way nothing on either side can detect.
+    dev = {"hw": "aabb00112233", "id": "desk", "name": "desk", "feed": "adsb",
+           "max_aircraft": 20, "radius_km": 30}
+    assert scenes.build("planes", ctx(tmp_path, device=dev)).components[0][
+        "radius_km"] == 30.0
+    bad = {**dev, "radius_km": "sixty"}
+    assert scenes.build("planes", ctx(tmp_path, device=bad)).components[0][
+        "radius_km"] == 60.0, "an unusable value must not reach the device"
+
+
+def test_the_dead_reckoning_fields_are_never_dropped(tmp_path):
+    # ve/vn/age are the whole reason this device is on data push (ADDENDUM §2).
+    write_cache(tmp_path / "feed" / "adsb.json", {"aircraft": [
+        {"lat": 40.5, "lon": -3.6, "trk": 90.0, "gs": 400.0,
+         "ve": 0.13, "vn": -0.17, "age": 3.1, "dst": 7.4, "cs": "IBE1"}]})
+    item = scenes.build("planes", ctx(tmp_path)).components[0]["items"][0]
+    assert (item["ve"], item["vn"], item["age"]) == (0.13, -0.17, 3.1)

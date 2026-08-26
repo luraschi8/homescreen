@@ -180,3 +180,33 @@ def test_the_page_renders_with_everything_missing():
     assert web.render_home({"version": "v", "uptime_s": 0,
                             "feed": {"source": None, "endpoint": None,
                                      "fetch_seconds": None}})
+
+
+def test_the_fleet_page_shows_what_the_server_substituted():
+    # A green card for a panel the server is quietly serving something else is
+    # worse than no card: the operator stops looking.
+    html = web.render_home(_status(fleet=[{
+        "hw": "aabb", "name": "radar", "scene": "planes", "online": True,
+        "fw": "1.0", "poll_seconds": 5, "caps": {"w": 240, "h": 240},
+        "last_seen": "x", "first_seen": "y",
+        "unsupported": ["radar"], "scene_error": "fallo en planes: KeyError"}]))
+    assert "dropped" in html and "radar" in html
+    assert "not declared by this device" in html
+    assert "fallo en planes: KeyError" in html
+
+
+def test_a_healthy_device_carries_no_substitution_rows():
+    html = web.render_home(_status(fleet=[{
+        "hw": "aabb", "name": "radar", "scene": "planes", "online": True,
+        "fw": "1.0", "poll_seconds": 5, "caps": {}, "last_seen": "x",
+        "first_seen": "y"}]))
+    assert "dropped" not in html and "scene_error" not in html
+
+
+def test_a_substitution_message_is_escaped():
+    html = web.render_home(_status(fleet=[{
+        "hw": "aabb", "name": "d", "scene": "clock", "online": True,
+        "fw": "1", "poll_seconds": 5, "caps": {}, "last_seen": "x",
+        "first_seen": "y", "scene_error": "<script>alert(1)</script>"}]))
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html

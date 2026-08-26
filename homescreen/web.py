@@ -96,6 +96,16 @@ def render_home(st: dict) -> str:
         tel_row = ("<dt>telemetry</dt><dd>"
                    + e(", ".join(f"{k}={v}" for k, v in sorted(tel.items())))
                    + "</dd>") if tel else ""
+        # Spec §5.5 / §6.2. Without these two rows the operator sees a healthy
+        # green card for a panel the server is quietly serving something else.
+        notes = ""
+        if d.get("unsupported"):
+            notes += ('<dt>dropped</dt><dd class="bad">'
+                      + e(", ".join(str(c) for c in d["unsupported"]))
+                      + " &mdash; not declared by this device</dd>")
+        if d.get("scene_error"):
+            notes += ('<dt>scene</dt><dd class="bad">'
+                      + e(str(d["scene_error"])) + "</dd>")
         fleet_rows.append(f"""<div class="card">
   <div class="row"><span class="name">{name}</span>
     <span class="tag">{esc(d.get("hw"))}</span>
@@ -105,7 +115,7 @@ def render_home(st: dict) -> str:
     <span class="tag">poll {esc(d.get("poll_seconds"))}s</span>
     {state}</div>
   <dl><dt>last seen</dt><dd>{esc(d.get("last_seen"))}</dd>
-      <dt>first seen</dt><dd>{esc(d.get("first_seen"))}</dd>{tel_row}</dl>
+      <dt>first seen</dt><dd>{esc(d.get("first_seen"))}</dd>{tel_row}{notes}</dl>
 </div>""")
     fleet_html = ("<h2>Fleet</h2>" + ("".join(fleet_rows)
                   or '<div class="card">no devices have called in yet</div>'))

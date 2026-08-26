@@ -213,7 +213,8 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return jsonify({"error": "unknown device"}), 404
 
         if request.args:
-            telemetry[device_id] = {**request.args.to_dict(),
+            telemetry[device_id] = {**registry.bound_strings(
+                request.args.to_dict(), registry.MAX_TELEMETRY_KEYS),
                                     "at": int(clock())}
             log.debug("telemetry %s %s", device_id, telemetry[device_id])
 
@@ -419,14 +420,35 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     _CAP_INTS = ("w", "h", "depth")
     _CAP_LISTS = ("layouts", "components")
 
+    #: What the last serve to each device actually did, in memory only. Spec
+    #: §5.5 and §6.2 both say the substitution is "recorded in the fleet view";
+    #: it reached the DEVICE's own response and nowhere an operator looks. An
+    #: operator seeing a panel showing the wrong thing needs to be told the
+    #: server dropped something, not left to diff two JSON payloads by hand.
+    #: Not persisted: it describes this process's behaviour, not the device.
+    _serve_notes: dict[str, dict] = {}
+
+    def _note(hw: str, **fields) -> None:
+        if fields:
+            _serve_notes[hw] = fields
+        else:
+            _serve_notes.pop(hw, None)
+        if len(_serve_notes) > registry.MAX_DEVICES * 2:
+            _serve_notes.clear()
+
     def _fleet_entry(hw: str, rec: dict, now: float) -> dict:
-        return {"hw": hw, "name": rec.get("name"), "scene": rec.get("scene"),
-                "fw": rec.get("fw"), "poll_seconds": rec.get("poll_seconds"),
-                "online": registry.is_online(rec, now),
-                "last_seen": rec.get("last_seen"),
-                "first_seen": rec.get("first_seen"),
-                "caps": rec.get("caps", {}) or {},
-                "telemetry": rec.get("telemetry", {}) or {}}
+        entry = {"hw": hw, "name": rec.get("name"), "scene": rec.get("scene"),
+                 "fw": rec.get("fw"),
+                 "poll_seconds": registry.poll_seconds(rec),
+                 "online": registry.is_online(rec, now),
+                 "last_seen": rec.get("last_seen"),
+                 "first_seen": rec.get("first_seen"),
+                 "caps": rec.get("caps", {}) or {},
+                 "telemetry": rec.get("telemetry", {}) or {}}
+        note = _serve_notes.get(hw)
+        if note:
+            entry.update(note)
+        return entry
 
     @app.get("/api/devices")
     def list_devices():
@@ -564,6 +586,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         if err:
             return err
         name, scene = _scene_for(hw, rec)
+        scene_error = scene.error
         assigned = name not in ("unassigned", "error")
         # ADDENDUM §5.5: a device never receives a component it did not
         # declare, so it needs no error path for one. The substitution is
@@ -580,9 +603,28 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 "components": kept}
         if dropped:
             body["unsupported"] = sorted(set(dropped))
+        _note(hw, **({"unsupported": sorted(set(dropped))} if dropped else {}),
+              **({"scene_error": scene_error} if scene_error else {}))
         if not assigned:
             body["message"] = "sin asignar · elige una escena en el panel"
-        return _poll_header(jsonify(body), rec)
+        # Spec §6.3/§7.1: a device holds its last good scene, and sends
+        # If-None-Match here. /frame carried an ETag and this did not, so the
+        # firmware's conditional GET was answered with a full body every time
+        # and a holding device had to reconcile a payload it already had.
+        #
+        # Hashed on the BODY, unlike /data: this payload carries no clock, so
+        # unchanged content really does mean an unchanged response -- and the
+        # component values ARE the state the device is holding, so a 304 here
+        # hides nothing (see AGE_BUCKET_S for the case where it would).
+        etag = '"%s"' % hashlib.sha256(
+            json.dumps(body, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False).encode()).hexdigest()[:16]
+        if request.headers.get("If-None-Match") == etag:
+            resp = Response(status=304)
+        else:
+            resp = jsonify(body)
+        resp.headers["ETag"] = etag
+        return _poll_header(resp, rec)
 
     def _agreed_geometry(rec: dict, args: dict):
         """(w, h, error_response). The one number a device cannot check.
@@ -635,6 +677,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         except RenderError as exc:
             return jsonify({"error": str(exc)}), 400
         name, scene = _scene_for(hw, rec)
+        _note(hw, **({"scene_error": scene.error} if scene.error else {}))
         if not scene.html:
             return jsonify({"error": f"scene {name!r} has no pixel rendering"}), 409
         if not render.is_cached(scene.html, w, h) \

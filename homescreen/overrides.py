@@ -15,6 +15,7 @@ cache files and re-route endpoints under a live device.
 from __future__ import annotations
 
 import json
+import os
 import logging
 from pathlib import Path
 
@@ -47,6 +48,20 @@ def load(cache_dir: Path) -> dict:
             if isinstance(k, str) and isinstance(v, dict)}
 
 
+def _fsync_dir(path: Path) -> None:
+    """A rename is only durable once the DIRECTORY entry is synced."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def save(cache_dir: Path, data: dict) -> None:
     """Atomic, so a reader never sees a half-written overlay."""
     path = overrides_path(cache_dir)
@@ -55,10 +70,19 @@ def save(cache_dir: Path, data: dict) -> None:
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, sort_keys=True, allow_nan=False)
+            # registry.py and cache.py both fsync here and this did not, though
+            # it is written from the same unauthenticated network and re-read
+            # by the fetch daemon. rename-without-fsync on ext4 after an
+            # unclean power cut (mains Pi, microSD, no UPS) classically yields
+            # a zero-length file: `load` degrades to {} and every override the
+            # operator set silently reverts.
+            fh.flush()
+            os.fsync(fh.fileno())
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
     tmp.replace(path)
+    _fsync_dir(path.parent)
 
 
 def _set_dotted(target: dict, dotted: str, value) -> None:

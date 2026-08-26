@@ -340,6 +340,21 @@ def _save_unlocked(cache_dir: Path, data: dict) -> None:
         tmp.unlink(missing_ok=True)
         raise
     tmp.replace(path)
+    _fsync_dir(path.parent)
+
+
+def _fsync_dir(path: Path) -> None:
+    """A rename is only durable once the DIRECTORY entry is synced too."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def save(cache_dir: Path, data: dict) -> None:
@@ -354,7 +369,7 @@ def _check_hw(hw_id) -> str:
     return hw_id.strip()
 
 
-def _bound_strings(raw, limit: int) -> dict:
+def bound_strings(raw, limit: int) -> dict:
     """Cap what the network can persist: key count, and value length."""
     out = {}
     for key, value in list(raw.items())[:limit]:
@@ -455,7 +470,7 @@ def _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now) -> dict:
         # erase the component list Phase 2 builds its scene from.
         rec["caps"] = {**rec.get("caps", {}), **clean_caps(caps)}
     if telemetry:
-        rec["telemetry"] = _bound_strings(telemetry, MAX_TELEMETRY_KEYS)
+        rec["telemetry"] = bound_strings(telemetry, MAX_TELEMETRY_KEYS)
 
     changed = fresh or any(rec.get(k) != v for k, v in before.items())
     prev = _epoch(rec.get("last_seen"))

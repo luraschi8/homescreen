@@ -189,7 +189,7 @@ the one component that is genuinely irreducible — see the correction above.
 | Component | Fields | Covers |
 |---|---|---|
 | `text` | `slot`, `text`, `size`, `tone` | labels, prices, clock digits, deltas |
-| `radar` | `items[{brg,dist,rot,ve,vn,age,label}]`, `radius_km` | the radar, whole — **implemented** |
+| `radar` | `items[{lat,lon,dst,trk,nose,gs,ve,vn,age,cs,ty,alt}]`, `radius_km`, `feed_ok` | the radar, whole — **implemented** |
 | ~~`rings`~~ | ~~`radii`, `labels`~~ | withdrawn; see the correction above |
 | ~~`markers`~~ | ~~`items[...]`~~ | withdrawn; folded into `radar` |
 | `hand` | `angle`, `rate`, `length` | clock hands, compass needle |
@@ -220,11 +220,21 @@ The radar scene is then (as `planes.py` actually emits it):
 
 ```json
 {"layout":"fill","components":[
-  {"c":"radar","radius_km":30,"items":[{"brg":143.0,"dist":7.4,"rot":143,
-                                        "ve":0.13,"vn":-0.17,"age":3.1,
-                                        "label":"IBE3221"}]}
+  {"c":"radar","radius_km":30,"feed_ok":true,
+   "items":[{"lat":40.5,"lon":-3.6,"dst":7.4,"trk":91.0,"nose":90.0,"gs":400.0,
+             "ve":0.13,"vn":-0.17,"age":3.1,"cs":"IBE3221","ty":"A320",
+             "alt":"3675 ft"}]}
 ]}
 ```
+
+**The item field names are the feed's, not this section's original `brg`/`dist`/`rot`/
+`label`.** Two reasons, recorded 2026-08-26. The running firmware already parses these
+names, and renaming them for a firmware that does not exist yet would break the one that
+does. And `brg` does not exist server-side at all: the device computes bearing from
+`lat`/`lon` itself, which is what keeps the BOOT-button range presets an instant local
+action rather than a network round-trip (ADDENDUM §2). `radius_km` was added because the
+device cannot derive it — a 30 km feed drawn on a 60 km dial is wrong in a way neither
+side can detect. The shape is pinned in `tests/test_scenes.py` in both directions.
 
 A "ships" or "buses" screen is the same two components with different numbers — a
 server-side change only.
@@ -249,6 +259,12 @@ is honest: at 240×240 there is no room for more.
 If a scene requests a component the device did not declare, **the server drops it** and
 records the substitution in the fleet view. The device never receives something it
 cannot draw and therefore needs no error path for it.
+
+The fleet-view half was missing until 2026-08-26: the substitution reached the device's
+own response and nowhere an operator looks, so a panel showing the wrong thing presented
+as a healthy green card. `/api/devices` entries and the `/home` cards now carry
+`unsupported` and `scene_error`, cleared as soon as the device serves cleanly — a stale
+error sends someone hunting a fault that fixed itself.
 
 ### 5.6 The e-paper path reuses all of this
 
@@ -275,6 +291,12 @@ Extends SPEC §11 rather than replacing it.
    endpoint is idempotent, never emits a partial component list (§6.2 substitutes a whole
    fallback scene rather than truncating a good one), and 304s an unchanged scene so a
    holding device is never handed a body it must reconcile.
+
+   > The 304 was claimed here before it existed — `/frame` carried an ETag and `/scene`
+   > carried none, so a firmware sending `If-None-Match` per §7.1 got a full body every
+   > poll. Implemented 2026-08-26; hashed on the response body, which is safe here
+   > because this payload carries no clock (contrast `/api/display/<id>/data`, where the
+   > ages move every second — see `AGE_BUCKET_S`).
 4. **The registry is written from the network**, so a corrupt `devices.json` degrades to
    an empty registry rather than stopping the daemon — the rule already applied to
    `overrides.json`.

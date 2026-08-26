@@ -75,7 +75,9 @@ def test_a_future_stamp_is_clock_skew_not_freshness(tmp_path: Path):
     {"last_seen": "2026-01-01T00:00:00+00:00", "poll_seconds": "x"},
 ])
 def test_liveness_never_raises_on_a_damaged_record(rec):
-    assert registry.is_online(rec, 1000.0) in (True, False)
+    # `in (True, False)` is every value the function can return. A record we
+    # cannot read is not a device we have heard from -- say so.
+    assert registry.is_online(rec, 1000.0) is False
 
 
 # --- assignment -------------------------------------------------------------

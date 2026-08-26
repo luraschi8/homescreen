@@ -239,3 +239,67 @@ def test_an_abusive_geometry_is_refused_before_any_work(w, h, why):
 @pytest.mark.parametrize("w,h", [(800, 480), (240, 240), (400, 300), (8, 8)])
 def test_real_geometries_are_accepted(w, h):
     render.check_geometry(w, h)
+
+
+# --- resource bounds ----------------------------------------------------------
+# Every one of these survived mutation before: MAX_DIMENSION x10, MAX_FRAME_BYTES
+# x1000, Semaphore(2)->Semaphore(64), _CACHE_MAX 16->4096 (up to 2 GB of cached
+# frames on a 1.8 GB Pi), and the packed-length guard deleted outright. The old
+# tests compared each constant to itself, so they moved with the mutation.
+
+def test_the_render_bounds_are_the_numbers_we_reasoned_about():
+    assert render.MAX_DIMENSION == 2048
+    assert render.MAX_FRAME_BYTES == 512_000
+    assert render._CACHE_MAX == 16
+    assert render._RENDER_SLOTS._value <= 2
+    assert render.RENDER_QUEUE_TIMEOUT_S == 20
+    assert render.THRESHOLD == 160
+
+
+def test_a_side_over_the_limit_is_refused_by_the_side_limit_alone():
+    # 4096x8: byte-aligned, only 4,096 bytes packed, well under the byte cap.
+    # Nothing in the suite isolated MAX_DIMENSION -- every "too big" case was
+    # already caught by the mod-8 or byte rules, so raising it x10 changed
+    # no test.
+    assert 4096 * 8 // 8 < render.MAX_FRAME_BYTES and 4096 % 8 == 0
+    with pytest.raises(render.RenderError, match="2048"):
+        render.check_geometry(4096, 8)
+
+
+def test_a_frame_over_the_byte_cap_is_refused_by_the_byte_cap_alone():
+    # 2048x2048 = 524,288 B: both sides legal, byte-aligned, over the cap.
+    # render.py's byte-cap raise never executed in the whole suite.
+    assert 2048 <= render.MAX_DIMENSION and 2048 * 2048 // 8 > render.MAX_FRAME_BYTES
+    with pytest.raises(render.RenderError, match="bytes"):
+        render.check_geometry(2048, 2048)
+
+
+def test_a_browser_that_returns_a_short_frame_is_never_served(monkeypatch):
+    # The last thing standing between a device and a corrupt screen, and it
+    # never executed: deleting it changed no test.
+    monkeypatch.setattr(render, "html_to_png", lambda *a, **k: None)
+    monkeypatch.setattr(render, "png_to_packed", lambda *a, **k: b"\x00" * 10)
+    render.clear_cache()
+    with pytest.raises(render.RenderError, match="expected"):
+        render.render_frame("<p>x</p>", 800, 480)
+
+
+def test_a_busy_queue_raises_rather_than_waiting_forever(monkeypatch):
+    # The shedding path was entirely dead in tests.
+    monkeypatch.setattr(render._RENDER_SLOTS, "acquire", lambda timeout=None: False)
+    render.clear_cache()
+    with pytest.raises(render.RenderBusy, match="busy"):
+        render.render_frame("<p>unique-for-this-test</p>", 800, 480)
+
+
+def test_the_cache_holds_exactly_the_stated_number_of_frames(monkeypatch):
+    from PIL import Image
+
+    def stub(html, w, h, out_png, binary=None):
+        Image.new("1", (w, h), 1).save(out_png)
+
+    monkeypatch.setattr(render, "html_to_png", stub)
+    render.clear_cache()
+    for i in range(render._CACHE_MAX + 5):
+        render.render_frame(f"<p>{i}</p>", 800, 480)
+    assert render.cache_stats()["size"] == 16, "a literal, not the constant"

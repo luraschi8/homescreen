@@ -186,13 +186,15 @@ def test_feed_liveness_headers_are_set_on_both_branches(ctx):
     _seed(path)
     r200 = client.get("/api/display/radar/data")
     assert r200.headers["X-Feed-Ok"] == "1"
-    clock.t += 2.0
-    _seed(path)
+    _seed(path)                    # a real fetch: the dwell clock restarts
+    clock.t += 1.5                 # ...and the record then sits here this long
     r304 = client.get("/api/display/radar/data",
                       headers={"If-None-Match": r200.headers["ETag"]})
     assert r304.status_code == 304
     assert r304.headers["X-Feed-Ok"] == "1"
-    assert float(r304.headers["X-Feed-Age"]) >= 0.0, "liveness must survive a 304"
+    # `>= 0.0` was inert: _feed_state returns max(0.0, delta), so no emittable
+    # value could fail it. Assert the number the device would actually act on.
+    assert float(r304.headers["X-Feed-Age"]) == pytest.approx(1.5, abs=0.05)
 
 
 def test_etag_changes_when_the_cache_changes(ctx):
@@ -247,11 +249,17 @@ def test_server_block_shapes_are_resolved_or_rejected_not_crashed(srv):
     # "just use the defaults" -- is a present-but-null key.
     from homescreen.config import server_config
     resolved = server_config({"server": srv})
-    assert isinstance(resolved, dict)
-    try:
-        int(resolved.get("port", 8080))
-    except ValueError:
-        pass          # caught by main()'s handler and reported as EX_CONFIG
+    # `isinstance(..., dict)` is unconditionally true and the port assertion
+    # below it was swallowed by a bare `except ValueError: pass`, so this
+    # tested nothing at all. Either we resolve a usable port or we raise --
+    # there is no third outcome, and silence is not one of them.
+    assert set(resolved) <= {"host", "port"}
+    if srv == {"port": "eighty"}:
+        with pytest.raises(ValueError):
+            int(resolved["port"])
+    else:
+        assert int(resolved.get("port", 8080)) == 8080
+        assert resolved.get("host", "0.0.0.0") in ("0.0.0.0", "127.0.0.1")
 
 
 SERVE_CONFIG = """

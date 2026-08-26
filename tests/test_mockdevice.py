@@ -2,10 +2,13 @@
 """The mock device is a test client: its job is to catch the server breaking
 the device contract. These tests check that it actually would."""
 import json
+import re
 from pathlib import Path
 
+import io
 import pytest
 
+from homescreen import mockdevice, render
 from homescreen.mockdevice import KINDS, MockDevice
 
 
@@ -64,9 +67,14 @@ def test_a_correctly_sized_frame_is_accepted(dev, monkeypatch):
 
 
 def test_a_304_is_not_length_checked(dev, monkeypatch):
+    # Asserting the stub's own return tuple tested the stub. The real
+    # postcondition is that a 304 leaves the remembered etag alone -- clearing
+    # it would make the next poll unconditional and refetch every frame.
+    dev.etag = '"kept"'
     monkeypatch.setattr(dev, "_get", lambda p, conditional=False: (304, {}, b""))
     status, _, body = dev.frame()
     assert status == 304 and body == b""
+    assert dev.etag == '"kept"', "a 304 must not disturb the cached identity"
 
 
 def test_the_conditional_header_is_sent_once_an_etag_is_known(dev, monkeypatch):
@@ -134,3 +142,116 @@ def test_the_frame_decodes_to_the_declared_geometry(dev, tmp_path):
 def test_every_declared_kind_has_a_byte_aligned_geometry():
     for name, caps in KINDS.items():
         assert (caps["w"] * caps["h"]) % 8 == 0, name
+
+
+# --- main(), the half that was never executed ---------------------------------
+# mockdevice exists to be the executable contract check between this server and
+# a real device. Its whole poll loop -- the round-vs-epaper branch, 304
+# handling, --out, the cycle counter -- had no coverage at all, so the tool that
+# proves the contract was itself unproven.
+
+@pytest.fixture
+def wired(tmp_path, monkeypatch):
+    """Route the mock device's urllib calls into a real Flask app."""
+    from homescreen.serve import create_app
+    cfg = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
+           "feeds": {"adsb": {"source": "api", "endpoint": "https://x"}},
+           "devices": []}
+    client = create_app(cfg, tmp_path, version="t").test_client()
+
+    class FakeResp:
+        def __init__(self, r):
+            self.status, self.headers, self._b = r.status_code, dict(r.headers), r.get_data()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        path = req.full_url.split("8080", 1)[-1] if "8080" in req.full_url \
+            else req.full_url.split("://", 1)[-1].split("/", 1)[-1]
+        if not path.startswith("/"):
+            path = "/" + path
+        r = client.get(path, headers=dict(req.header_items()))
+        if r.status_code >= 300:
+            import urllib.error
+            raise urllib.error.HTTPError(req.full_url, r.status_code, "",
+                                         r.headers, io.BytesIO(r.get_data()))
+        return FakeResp(r)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(mockdevice.time, "sleep", lambda s: None)
+    return client, tmp_path
+
+
+def test_main_runs_a_full_epaper_cycle(wired, capsys, tmp_path):
+    client, _ = wired
+    if render.find_chromium() is None:
+        pytest.skip("no chromium/chrome on this machine")
+    out = tmp_path / "frame.png"
+    rc = mockdevice.main(["--server", "http://127.0.0.1:8080", "--hw", "e1",
+                          "--kind", "epaper", "--once", "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0
+    assert "scene=unassigned assigned=False" in printed
+    assert "48,000B" in printed, "an 800x480 1-bit panel is 48,000 bytes"
+    # `"ink=" in printed` passed with a hardcoded 0%. The number is the whole
+    # point: it is how this tool tells a rendered panel from a blank one and
+    # from the full-black refresh that is worst case for e-paper ghosting.
+    ink = float(re.search(r"ink=([\d.]+)%", printed).group(1))
+    assert 0.05 < ink < 20.0, f"a text panel that is {ink}% ink is not a text panel"
+    assert out.exists(), "--out must actually write the decoded frame"
+
+
+def test_main_reports_components_for_a_round_device(wired, capsys):
+    client, _ = wired
+    client.get("/api/device/r1/scene?w=240&h=240&depth=16&components=radar")
+    client.patch("/api/devices/r1", json={"name": "r1", "scene": "planes"})
+    rc = mockdevice.main(["--hw", "r1", "--kind", "round", "--once"])
+    printed = capsys.readouterr().out
+    assert rc == 0 and "component radar" in printed
+
+
+def test_main_says_so_when_a_scene_is_pixel_push_only(wired, capsys):
+    client, _ = wired
+    client.get("/api/device/r2/scene?w=240&h=240&depth=16&components=radar")
+    client.patch("/api/devices/r2", json={"name": "r2", "scene": "clock"})
+    mockdevice.main(["--hw", "r2", "--kind", "round", "--once"])
+    assert "no components" in capsys.readouterr().out
+
+
+def test_main_runs_the_requested_number_of_cycles(wired, capsys):
+    if render.find_chromium() is None:
+        pytest.skip("no chromium/chrome on this machine")
+    mockdevice.main(["--hw", "e2", "--kind", "epaper", "--cycles", "3"])
+    printed = capsys.readouterr().out
+    assert "[1]" in printed and "[3]" in printed and "[4]" not in printed
+
+
+def test_main_leaves_the_panel_alone_on_a_304(wired, capsys):
+    if render.find_chromium() is None:
+        pytest.skip("no chromium/chrome on this machine")
+    mockdevice.main(["--hw", "e3", "--kind", "epaper", "--cycles", "2"])
+    assert "frame unchanged (304)" in capsys.readouterr().out, \
+        "the second cycle must reuse the etag from the first"
+
+
+def test_main_reports_an_http_error_without_pretending_it_is_a_frame(
+        wired, capsys, monkeypatch):
+    # The else-branch: anything that is not 200 or 304 must be printed as the
+    # failure it is. Printing a byte count for an error body would make the
+    # contract check report success on a broken server.
+    def boom(*a, **k):
+        raise render.RenderError("chromium exploded")
+
+    monkeypatch.setattr("homescreen.serve.render_frame", boom)
+    mockdevice.main(["--hw", "e4", "--kind", "epaper", "--once"])
+    printed = capsys.readouterr().out
+    assert "frame -> HTTP 503" in printed
+    assert "render failed" in printed
+    assert "B scene=" not in printed, "an error body is not a framebuffer"

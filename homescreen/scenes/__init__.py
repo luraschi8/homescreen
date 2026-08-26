@@ -61,6 +61,10 @@ class Scene:
     layout: str = "fill"
     components: tuple = ()
     html: str | None = None
+    #: Set only by `safe_build`'s fallback. Spec §6.2 requires the failure to
+    #: be recorded in the fleet view, and a swallowed exception cannot be:
+    #: the caller had no way to tell a fallback from a real scene.
+    error: str | None = None
 
     def __post_init__(self):
         check_layout(self.layout)
@@ -100,4 +104,5 @@ def safe_build(name: str, ctx: SceneContext) -> Scene:
 
 def _fallback(ctx: SceneContext, message: str) -> Scene:
     from homescreen.scenes import status
-    return status.build(ctx, message=message)
+    return dataclasses.replace(status.build(ctx, message=message),
+                               error=message)

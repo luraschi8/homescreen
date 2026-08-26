@@ -209,11 +209,17 @@ def test_malformed_capability_query_strings_never_500(ctx, qs):
             assert 1 <= caps[key] <= 4096, f"{key} out of range survived: {caps}"
 
 
-@pytest.mark.parametrize("hw", ["", "   ", "has%2Fslash", "x" * 200])
-def test_an_unusable_hardware_id_is_rejected_not_registered(ctx, hw):
+@pytest.mark.parametrize("hw, status", [
+    ("", 404),                # never reaches the view: Werkzeug routing
+    ("has%2Fslash", 404),     # ditto -- a slash is a path separator
+    ("   ", 400),             # reaches _check_hw
+    ("x" * 200, 400),
+])
+def test_an_unusable_hardware_id_is_rejected_not_registered(ctx, hw, status):
+    # `in (400, 404)` hid which ids the server actually validates and which
+    # never arrive at all -- so _check_hw could have stopped running entirely.
     client, cache, _ = ctx
-    r = client.get(f"/api/device/{hw}/scene")
-    assert r.status_code in (400, 404)
+    assert client.get(f"/api/device/{hw}/scene").status_code == status
     assert registry.load(cache) == {}
 
 
@@ -285,3 +291,106 @@ def test_get_one_device_reports_online_state(ctx):
     assert client.get(f"/api/devices/{HW}").get_json()["online"] is True
     clock.t += 3600
     assert client.get(f"/api/devices/{HW}").get_json()["online"] is False
+
+
+# --- the scene endpoint is conditional too ------------------------------------
+
+def test_an_unchanged_scene_is_a_304(ctx):
+    # Spec §6.3 asserts the server-side half of "a device holds its last good
+    # scene" is implemented: /frame had an ETag and this route had none, so a
+    # firmware sending If-None-Match here got a full body every poll.
+    client, cache, _ = ctx
+    first = client.get(f"/api/device/{HW}/scene?w=240&h=240&components=text")
+    etag = first.headers["ETag"]
+    again = client.get(f"/api/device/{HW}/scene?w=240&h=240&components=text",
+                       headers={"If-None-Match": etag})
+    assert again.status_code == 304
+    assert again.get_data() == b""
+    assert again.headers["X-Poll-Seconds"], "cadence still reaches the device"
+    assert again.headers["ETag"] == etag
+
+
+def test_assigning_a_scene_changes_the_etag(ctx):
+    client, cache, _ = ctx
+    q = f"/api/device/{HW}/scene?w=240&h=240&components=radar"
+    before = client.get(q).headers["ETag"]
+    client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
+    after = client.get(q).headers["ETag"]
+    assert before != after, "a device must not 304 past the scene it was given"
+
+
+def test_a_renamed_device_changes_the_etag(ctx):
+    # The name is in the body, so a device that 304'd would keep showing the
+    # old one on the status panel.
+    client, cache, _ = ctx
+    q = f"/api/device/{HW}/scene?w=800&h=480&depth=1"
+    before = client.get(q).headers["ETag"]
+    client.patch(f"/api/devices/{HW}", json={"name": "escritorio"})
+    assert client.get(q).headers["ETag"] != before
+
+
+@pytest.mark.parametrize("field", ["fw", "caps", "last_seen", "first_seen",
+                                   "telemetry"])
+def test_a_device_reported_field_is_refused_by_name(ctx, field):
+    # Replacing `readonly = sorted(...)` with `[]` survived: the same requests
+    # still 400'd via the `unknown` branch, only the message changed, and no
+    # test read messages. _DEVICE_READONLY could have been deleted outright.
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    r = client.patch(f"/api/devices/{HW}", json={field: "x"})
+    assert r.status_code == 400
+    assert "device-reported" in r.get_json()["error"], \
+        "a field the DEVICE owns must say so, not read as a typo"
+    assert field in r.get_json()["error"]
+
+
+def test_an_unknown_field_is_refused_with_the_settable_list(ctx):
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    r = client.patch(f"/api/devices/{HW}", json={"colour": "red"})
+    assert r.status_code == 400
+    body = r.get_json()
+    assert body["error"] == "not settable: ['colour']"
+    assert set(body["settable"]) == {"name", "scene", "poll_seconds"}
+
+
+# --- spec §5.5 / §6.2: the fleet view records what the server substituted -----
+
+def test_a_dropped_component_shows_up_where_an_operator_looks(ctx):
+    # It reached the DEVICE's own response and nowhere else, so an operator
+    # staring at a panel showing the wrong thing had to diff two JSON payloads
+    # by hand to learn the server had dropped something.
+    client, cache, _ = ctx
+    client.get("/api/device/rd/scene?w=240&h=240&components=text")
+    client.patch("/api/devices/rd", json={"name": "rd", "scene": "planes"})
+    client.get("/api/device/rd/scene?w=240&h=240&components=text")
+    entry, = [d for d in client.get("/api/devices").get_json()["devices"]
+              if d["hw"] == "rd"]
+    assert entry["unsupported"] == ["radar"]
+
+
+def test_a_scene_that_raises_is_recorded_against_the_device(ctx, monkeypatch):
+    client, cache, _ = ctx
+    from homescreen.scenes import clock as clock_mod
+    client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "clock"})
+    monkeypatch.setattr(clock_mod, "build",
+                        lambda c: (_ for _ in ()).throw(RuntimeError("boom")))
+    client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    entry, = [d for d in client.get("/api/devices").get_json()["devices"]
+              if d["hw"] == HW]
+    assert "fallo en clock" in entry["scene_error"]
+    assert "RuntimeError" in entry["scene_error"]
+
+
+def test_a_recovered_scene_clears_the_note(ctx, monkeypatch):
+    # A stale error is worse than none: it sends an operator looking for a
+    # fault that fixed itself.
+    client, cache, _ = ctx
+    client.get("/api/device/rd2/scene?w=240&h=240&components=text")
+    client.patch("/api/devices/rd2", json={"name": "rd2", "scene": "planes"})
+    client.get("/api/device/rd2/scene?w=240&h=240&components=text")
+    client.get("/api/device/rd2/scene?w=240&h=240&components=radar")
+    entry, = [d for d in client.get("/api/devices").get_json()["devices"]
+              if d["hw"] == "rd2"]
+    assert "unsupported" not in entry

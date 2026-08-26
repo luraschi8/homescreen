@@ -56,7 +56,22 @@ def build(ctx: SceneContext) -> Scene:
     items = items[:cap]
 
     # Data push: one coarse component. See the module note.
-    components = ({"c": "radar", "items": items, "feed_ok": feed["ok"]},)
+    #
+    # `radius_km` rides along because the device cannot derive it: it scales
+    # the rings and decides what "off the edge" means, and without it a device
+    # showing a 30 km feed on a 60 km dial is wrong in a way nothing detects.
+    # Item field names are the FEED's (`dst`, `trk`, `nose`), not spec §5.3's
+    # (`dist`, `rot`, `brg`): the running firmware already parses these, and
+    # `brg` does not exist server-side at all -- the device computes bearing
+    # from lat/lon itself so that changing the range preset stays a local,
+    # instant action (ADDENDUM §2). Renaming them for a firmware that does not
+    # exist yet would break the one that does. Pinned by test_scenes.py.
+    try:
+        radius_km = float(ctx.device.get("radius_km") or 60.0)
+    except (TypeError, ValueError):
+        radius_km = 60.0
+    components = ({"c": "radar", "items": items, "feed_ok": feed["ok"],
+                   "radius_km": radius_km},)
 
     # Pixel push: the same data as a legible list.
     w = int(ctx.caps.get("w") or 800)

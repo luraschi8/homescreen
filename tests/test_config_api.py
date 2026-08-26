@@ -1,4 +1,5 @@
 # tests/test_config_api.py
+import json
 from pathlib import Path
 
 import pytest
@@ -134,3 +135,36 @@ def test_a_hand_written_overlay_cannot_change_structural_fields(tmp_path):
     assert dev["render"] == "device"
     assert dev["feed"] == "adsb"
     assert dev["id"] == "radar"
+
+
+# --- overrides.json is written from the network and read on every request -----
+
+def test_a_non_dict_override_value_cannot_500_every_route(tmp_path):
+    # `apply` is documented "never raises" and `_live()` calls it per request,
+    # so one bad value here is a 500 on every route, not a bad override.
+    # Removing the isinstance filter in `load` survived the whole suite.
+    from homescreen import overrides
+    overrides.overrides_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    overrides.overrides_path(tmp_path).write_text(
+        json.dumps({"radar": "not-a-dict", "desk": {"max_aircraft": 30}}))
+    loaded = overrides.load(tmp_path)
+    assert loaded == {"desk": {"max_aircraft": 30}}, "the good one survives"
+    cfg = overrides.apply({"devices": [{"id": "desk"}, {"id": "radar"}]}, tmp_path)
+    assert cfg["devices"][0]["max_aircraft"] == 30
+
+
+@pytest.mark.parametrize("root", ["[]", "null", '"a string"', "42", "{not json"])
+def test_a_damaged_overrides_root_degrades_to_no_overrides(tmp_path, root):
+    from homescreen import overrides
+    overrides.overrides_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    overrides.overrides_path(tmp_path).write_text(root)
+    assert overrides.load(tmp_path) == {}
+    base = {"devices": [{"id": "desk", "max_aircraft": 12}]}
+    assert overrides.apply(base, tmp_path)["devices"][0]["max_aircraft"] == 12
+
+
+def test_a_non_string_override_key_is_dropped(tmp_path):
+    from homescreen import overrides
+    overrides.overrides_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    overrides.overrides_path(tmp_path).write_text('{"5": {"max_aircraft": 3}}')
+    assert list(overrides.load(tmp_path)) == ["5"], "JSON keys are always strings"

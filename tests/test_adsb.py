@@ -515,8 +515,12 @@ def test_non_finite_payload_is_a_failure_not_a_crash(tmp_path: Path):
     s = FakeSession(FakeResponse(payload))
     assert fetch_radar(CFG, DEV, p, session=s) is True, "a finite-able record still maps"
     # And nothing non-finite can be persisted even if a future field skips _num.
-    env = read_cache(p)
-    assert "Infinity" not in json.dumps(env)
+    # Against the FILE, not the parsed value: read_cache returns None for a
+    # non-finite envelope, so `json.dumps(env)` was "null" and passed even when
+    # the bytes on disk genuinely said Infinity.
+    assert "Infinity" not in p.read_text()
+    assert "NaN" not in p.read_text()
+    assert read_cache(p) is not None, "and the file must still be readable"
 
 
 def test_http_error_is_a_failure_not_a_crash(tmp_path: Path):
