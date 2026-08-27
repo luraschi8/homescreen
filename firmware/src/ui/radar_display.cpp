@@ -1,0 +1,827 @@
+#include "ui/radar_display.h"
+
+#include "debug_log.h"
+
+#include <lgfx/v1/lgfx_fonts.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+
+#include "config.h"
+#include "hardware/display.h"
+#include "hardware/display_font.h"
+#include "services/scene_client.h"
+#include "services/radar_location.h"
+#include "ui/radar_geo.h"
+#include "ui/radar_range.h"
+#include "ui/radar_theme.h"
+#include "ui/runway_overlay.h"
+
+namespace ui {
+namespace radar {
+
+uint16_t kColorBackground = 0x0000;
+uint16_t kColorGrid = 0x0320;
+uint16_t kColorLabel = 0xFFFF;
+uint16_t kColorCenter = 0xFFFF;
+uint16_t kColorAircraft = 0x001F;
+uint16_t kColorAircraftStale = 0x000A;
+uint16_t kColorTrackVector = 0xFFFF;
+uint16_t kColorTagType = 0x5DFF;
+uint16_t kColorTagAltitude = 0xFFE0;
+uint16_t kColorRunway = 0x4D5F;
+uint16_t kColorRunwayLabel = 0x7DFF;
+
+}  // namespace radar
+
+namespace {
+
+bool s_label_metrics_ready = false;
+bool s_cardinal_use_vlw = false;
+bool s_scale_use_vlw = false;
+float s_cardinal_vlw_size = 0.56f;
+float s_scale_vlw_size = 0.50f;
+float s_tag_vlw_size = 0.56f;
+const lgfx::GFXfont* s_cardinal_gfx = &fonts::FreeSansBold12pt7b;
+const lgfx::GFXfont* s_scale_gfx = &fonts::FreeSansBold9pt7b;
+const lgfx::GFXfont* s_tag_gfx = &fonts::FreeSansBold12pt7b;
+
+bool s_tag_label_metrics_ready = false;
+bool s_tag_use_vlw = false;
+
+lgfx::LovyanGFX* s_draw = &tft;
+LGFX_Sprite s_frame(&tft);
+bool s_frame_ready = false;
+unsigned long s_frame_failed_ms = 0;
+constexpr unsigned long kSpriteRetryMs = 5000;
+
+class DrawScope {
+ public:
+  explicit DrawScope(lgfx::LovyanGFX& gfx) : prev_(s_draw) { s_draw = &gfx; }
+  ~DrawScope() { s_draw = prev_; }
+
+ private:
+  lgfx::LovyanGFX* prev_;
+};
+
+int absDiff(int a, int b) { return std::abs(a - b); }
+
+int measureGfxHeight(const lgfx::GFXfont& font) {
+  tft.setFont(&font);
+  tft.setTextSize(1);
+  return tft.fontHeight();
+}
+
+int measureVlwHeight(float size) {
+  tft.setTextSize(size);
+  return tft.fontHeight();
+}
+
+float findVlwSizeForHeight(int target_px) {
+  float lo = 0.25f;
+  float hi = 1.2f;
+  for (int i = 0; i < 16; ++i) {
+    const float mid = (lo + hi) * 0.5f;
+    if (measureVlwHeight(mid) < target_px) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return hi;
+}
+
+void applyScaleStyle();
+
+const lgfx::GFXfont* pickGfxFontClosest(
+    int target_px, const lgfx::GFXfont* const* candidates, size_t count) {
+  const lgfx::GFXfont* best = candidates[0];
+  int best_diff = absDiff(measureGfxHeight(*best), target_px);
+
+  for (size_t i = 1; i < count; ++i) {
+    const int diff = absDiff(measureGfxHeight(*candidates[i]), target_px);
+    if (diff < best_diff) {
+      best_diff = diff;
+      best = candidates[i];
+    }
+  }
+  return best;
+}
+
+void initLabelMetrics() {
+  if (s_label_metrics_ready) {
+    return;
+  }
+
+  const int cardinal_target = radar::kCardinalLabelHeightPx;
+
+  if (displayFontIsSmooth()) {
+    s_cardinal_use_vlw = true;
+    s_cardinal_vlw_size = findVlwSizeForHeight(cardinal_target);
+    const int cardinal_h = measureVlwHeight(s_cardinal_vlw_size);
+    const int scale_target = cardinal_h - radar::kScaleBelowCardinalPx;
+    s_scale_use_vlw = true;
+    s_scale_vlw_size = findVlwSizeForHeight(scale_target);
+  } else {
+    const lgfx::GFXfont* cardinal_candidates[] = {&fonts::FreeSansBold12pt7b,
+                                                  &fonts::FreeSansBold9pt7b};
+    s_cardinal_gfx =
+        pickGfxFontClosest(cardinal_target, cardinal_candidates, 2);
+    s_cardinal_use_vlw = false;
+
+    const int cardinal_h = measureGfxHeight(*s_cardinal_gfx);
+    const int scale_target = cardinal_h - radar::kScaleBelowCardinalPx;
+    const lgfx::GFXfont* scale_candidates[] = {&fonts::FreeSansBold9pt7b,
+                                               &fonts::FreeSansBold12pt7b};
+    s_scale_gfx = pickGfxFontClosest(scale_target, scale_candidates, 2);
+    s_scale_use_vlw = false;
+  }
+
+  // Leave the scale style selected: every draw site re-applies its own style,
+  // but this preserves the post-condition callers have always seen.
+  applyScaleStyle();
+
+  s_label_metrics_ready = true;
+}
+
+void initTagLabelMetrics() {
+  if (s_tag_label_metrics_ready) {
+    return;
+  }
+
+  const int target = radar::kAircraftTagLabelHeightPx;
+  if (displayFontIsSmooth()) {
+    s_tag_use_vlw = true;
+    s_tag_vlw_size = findVlwSizeForHeight(target);
+  } else {
+    const lgfx::GFXfont* tag_candidates[] = {&fonts::FreeSansBold12pt7b,
+                                               &fonts::FreeSansBold9pt7b};
+    s_tag_gfx = pickGfxFontClosest(target, tag_candidates, 2);
+    s_tag_use_vlw = false;
+  }
+
+  s_tag_label_metrics_ready = true;
+}
+
+void initPalette() {
+  radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
+  radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
+  radar::kColorLabel = tft.color565(255, 255, 255);
+  radar::kColorCenter = tft.color565(255, 255, 255);
+  // GC9A01 BGR panel: swap R/B in color565 so logical red renders red on screen.
+  if (config::kDisplayRgbOrder) {
+    radar::kColorAircraft =
+        tft.color565(radar::kAircraftB, radar::kAircraftG, radar::kAircraftR);
+  } else {
+    radar::kColorAircraft =
+        tft.color565(radar::kAircraftR, radar::kAircraftG, radar::kAircraftB);
+  }
+  // Same hue as a live target at ~35% brightness, so a stale contact reads as
+  // present-but-unreliable rather than as ordinary traffic.
+  if (config::kDisplayRgbOrder) {
+    radar::kColorAircraftStale = tft.color565(radar::kAircraftB / 3,
+                                              radar::kAircraftG / 3,
+                                              radar::kAircraftR / 3);
+  } else {
+    radar::kColorAircraftStale = tft.color565(radar::kAircraftR / 3,
+                                              radar::kAircraftG / 3,
+                                              radar::kAircraftB / 3);
+  }
+  radar::kColorTrackVector =
+      tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
+  radar::kColorTagType =
+      tft.color565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB);
+  radar::kColorTagAltitude =
+      tft.color565(radar::kTagAltR, radar::kTagAltG, radar::kTagAltB);
+  radar::kColorRunway =
+      tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB);
+  radar::kColorRunwayLabel = tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
+                                          radar::kRunwayLabelB);
+}
+
+/** Largest centre distance whose symbol still fits inside the outer ring. */
+float innerRingMaxKm() {
+  const float outer_km = radar::rangeCurrent().outer_km;
+  return outer_km * (static_cast<float>(radar::kGridOuterRadius -
+                                       radar::kAircraftInsideRingInsetPx) /
+                     static_cast<float>(radar::kGridOuterRadius));
+}
+
+bool isInsideOuterRingKm(float dist_km) { return dist_km <= innerRingMaxKm(); }
+
+/**
+ * Rim dot from true bearing; always on the screen edge (even if the target is
+ * 50+ km away). Scaling the offset vector by rim_r/dist gives the same point as
+ * atan2 followed by sin/cos of that angle, without three soft-float trig calls
+ * on a core with no FPU.
+ */
+bool beyondRingEdgeDotFromKm(float dx_km, float dy_km, float dist_km, int* out_x,
+                             int* out_y) {
+  if (dist_km < 0.01f || isInsideOuterRingKm(dist_km)) {
+    return false;
+  }
+
+  const int rim_r = radar::kCenterX - radar::kBeyondRingScreenMarginPx;
+  const float scale = static_cast<float>(rim_r) / dist_km;
+  *out_x = radar::kCenterX + static_cast<int>(lroundf(dx_km * scale));
+  *out_y = radar::kCenterY - static_cast<int>(lroundf(dy_km * scale));
+  return true;
+}
+
+void drawBeyondRingDot(int x, int y, uint16_t color) {
+  s_draw->fillSmoothCircle(x, y, radar::kBeyondRingDotRadiusPx, color);
+}
+
+int speedLineLengthPx(float gs_knots) {
+  if (gs_knots <= 0.0f) {
+    return 0;
+  }
+
+  // Fixed screen scale: 60 s horizon at gs, not tied to current range zoom.
+  constexpr float kKmPerKnotPerHorizon =
+      1.852f * radar::kAircraftTrackHorizonSec / 3600.0f;
+  const float px =
+      gs_knots * kKmPerKnotPerHorizon * radar::kGridOuterRadius /
+      radar::kAircraftTrackRefOuterKm * radar::kAircraftTrackLengthScale;
+
+  const int len = static_cast<int>(px + 0.5f);
+  if (len < radar::kAircraftSpeedLineMinPx) {
+    return radar::kAircraftSpeedLineMinPx;
+  }
+  return len;
+}
+
+/** Takes the heading already resolved into sin/cos: no FPU, so trig is dear. */
+void noseTip(int cx, int cy, float sin_h, float cos_h, int* tip_x, int* tip_y) {
+  *tip_x = cx + static_cast<int>(lroundf(sin_h * radar::kAircraftNoseLenPx));
+  *tip_y = cy - static_cast<int>(lroundf(cos_h * radar::kAircraftNoseLenPx));
+}
+
+void drawHeadingTriangle(int cx, int cy, float sin_h, float cos_h,
+                         uint16_t color) {
+  int tip_x = 0;
+  int tip_y = 0;
+  noseTip(cx, cy, sin_h, cos_h, &tip_x, &tip_y);
+
+  const int base_x =
+      cx - static_cast<int>(lroundf(sin_h * static_cast<float>(radar::kAircraftTailLenPx)));
+  const int base_y =
+      cy + static_cast<int>(lroundf(cos_h * static_cast<float>(radar::kAircraftTailLenPx)));
+
+  const int wing_x = static_cast<int>(lroundf(cos_h * radar::kAircraftTailHalfPx));
+  const int wing_y = static_cast<int>(lroundf(sin_h * radar::kAircraftTailHalfPx));
+
+  s_draw->fillTriangle(tip_x, tip_y, base_x + wing_x, base_y + wing_y,
+                       base_x - wing_x, base_y - wing_y, color);
+}
+
+void drawSpeedVector(int cx, int cy, float sin_h, float cos_h, float track_deg,
+                     float gs_knots, uint16_t color) {
+  const int len = speedLineLengthPx(gs_knots);
+  if (len <= 0) {
+    return;
+  }
+
+  int tip_x = 0;
+  int tip_y = 0;
+  noseTip(cx, cy, sin_h, cos_h, &tip_x, &tip_y);
+
+  constexpr float kDegToRad = 0.01745329252f;
+  const float rad = track_deg * kDegToRad;
+  int ex = tip_x + static_cast<int>(lroundf(sinf(rad) * len));
+  int ey = tip_y - static_cast<int>(lroundf(cosf(rad) * len));
+  radar::clipPointToOuterRing(tip_x, tip_y, &ex, &ey);
+  if (ex == tip_x && ey == tip_y) {
+    return;
+  }
+  s_draw->drawWideLine(tip_x, tip_y, ex, ey, radar::kAircraftTrackLineHalfWidth,
+                       color);
+}
+
+void applyTagStyle() {
+  if (s_tag_use_vlw) {
+    displayFontSetSmoothSize(*s_draw, s_tag_vlw_size);
+  } else {
+    displayFontSetBitmap(*s_draw, s_tag_gfx);
+  }
+}
+
+int measureTagBlockWidth(const services::scene::Aircraft& plane) {
+  applyTagStyle();
+  int max_w = 0;
+  if (plane.callsign[0] != '\0') {
+    const int w = s_draw->textWidth(plane.callsign);
+    if (w > max_w) {
+      max_w = w;
+    }
+  }
+  if (plane.type[0] != '\0') {
+    const int w = s_draw->textWidth(plane.type);
+    if (w > max_w) {
+      max_w = w;
+    }
+  }
+  if (plane.alt[0] != '\0') {
+    const int w = s_draw->textWidth(plane.alt);
+    if (w > max_w) {
+      max_w = w;
+    }
+  }
+  return max_w;
+}
+
+/** Placed tag blocks for the current frame; keeps labels from overprinting. */
+struct TagRect {
+  int16_t x, y, w, h;
+};
+TagRect s_tag_rects[services::scene::kMaxAircraft];
+size_t s_tag_rect_count = 0;
+
+/**
+ * Candidate tag slots, in preference order. Displacement is deliberately tiny:
+ * a tag more than one text line away from its symbol reads as belonging to a
+ * different aircraft, so we flip sides before moving vertically at all and give
+ * up entirely rather than place a label somewhere ambiguous.
+ */
+struct TagSlot {
+  bool flip_side;   // use the side away from the radar centre
+  int8_t line_dy;   // vertical offset in whole text lines
+};
+constexpr TagSlot kTagSlots[] = {
+    {false, 0}, {true, 0}, {false, -1}, {true, -1}, {false, 1}, {true, 1},
+};
+constexpr size_t kTagSlotCount = sizeof(kTagSlots) / sizeof(kTagSlots[0]);
+
+bool tagRectsOverlap(const TagRect& a, const TagRect& b) {
+  return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y ||
+           b.y + b.h <= a.y);
+}
+
+void drawAircraftTag(int x, int y, const services::scene::Aircraft& plane) {
+  initTagLabelMetrics();
+  applyTagStyle();
+
+  const int line_h = s_draw->fontHeight();
+  const int block_w = measureTagBlockWidth(plane);
+  const int block_h = line_h * 3;
+
+  const int symbol_half =
+      radar::kAircraftNoseLenPx + radar::kAircraftTailHalfPx;
+  // Default side faces the radar centre: west (left) of centre -> tag on the
+  // right of the symbol, east -> tag on the left.
+  const bool prefers_right = x < radar::kCenterX;
+
+  int anchor_x = 0;
+  int ly = 0;
+  bool on_right = prefers_right;
+  bool placed = false;
+
+  // Callers run nearest-first, so when no slot is free it is the more distant
+  // aircraft that loses its label.
+  for (size_t slot = 0; slot < kTagSlotCount && !placed; ++slot) {
+    on_right = kTagSlots[slot].flip_side ? !prefers_right : prefers_right;
+
+    int block_left = 0;
+    if (on_right) {
+      anchor_x = std::min(x + symbol_half + radar::kAircraftLabelGapPx,
+                          radar::kSize - block_w - 1);
+      block_left = anchor_x;
+    } else {
+      anchor_x =
+          std::max(x - symbol_half - radar::kAircraftLabelGapPx, block_w + 1);
+      block_left = anchor_x - block_w;
+    }
+
+    ly = std::max(1, std::min(y - block_h / 2 + kTagSlots[slot].line_dy * line_h,
+                              radar::kSize - block_h - 1));
+
+    const TagRect candidate{static_cast<int16_t>(block_left),
+                            static_cast<int16_t>(ly),
+                            static_cast<int16_t>(block_w),
+                            static_cast<int16_t>(block_h)};
+    bool clash = false;
+    for (size_t r = 0; r < s_tag_rect_count && !clash; ++r) {
+      clash = tagRectsOverlap(candidate, s_tag_rects[r]);
+    }
+    if (clash) {
+      continue;
+    }
+    if (s_tag_rect_count < services::scene::kMaxAircraft) {
+      s_tag_rects[s_tag_rect_count++] = candidate;
+    }
+    placed = true;
+  }
+  if (!placed) {
+    return;
+  }
+
+  s_draw->setTextDatum(on_right ? textdatum_t::top_left
+                                : textdatum_t::top_right);
+
+  if (plane.callsign[0] != '\0') {
+    s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
+    s_draw->drawString(plane.callsign, anchor_x, ly);
+  }
+  ly += line_h;
+
+  if (plane.type[0] != '\0') {
+    s_draw->setTextColor(radar::kColorTagType, radar::kColorBackground);
+    s_draw->drawString(plane.type, anchor_x, ly);
+  }
+  ly += line_h;
+
+  if (plane.alt[0] != '\0') {
+    s_draw->setTextColor(radar::kColorTagAltitude, radar::kColorBackground);
+    s_draw->drawString(plane.alt, anchor_x, ly);
+  }
+}
+
+struct AircraftDrawItem {
+  size_t index = 0;
+  int x = 0;
+  int y = 0;
+  int dist_sq = 0;
+  bool stale = false;
+};
+
+struct BeyondDotDrawItem {
+  int x = 0;
+  int y = 0;
+  // TRUE distance from the centre, not the drawn position: every rim dot is
+  // clipped onto the same circle, so sorting on the screen position compared
+  // identical values and the far-first order never actually happened.
+  float dist_km = 0.0f;
+  bool stale = false;
+};
+
+void sortDrawItemsFarFirst(AircraftDrawItem* items, size_t count) {
+  for (size_t i = 1; i < count; ++i) {
+    const AircraftDrawItem key = items[i];
+    size_t j = i;
+    while (j > 0 && items[j - 1].dist_sq < key.dist_sq) {
+      items[j] = items[j - 1];
+      --j;
+    }
+    items[j] = key;
+  }
+}
+
+void sortBeyondDotsFarFirst(BeyondDotDrawItem* items, size_t count) {
+  for (size_t i = 1; i < count; ++i) {
+    const BeyondDotDrawItem key = items[i];
+    size_t j = i;
+    while (j > 0 && items[j - 1].dist_km < key.dist_km) {
+      items[j] = items[j - 1];
+      --j;
+    }
+    items[j] = key;
+  }
+}
+
+/** Skip the traffic layer rather than stall the frame if the fetch task holds the lock. */
+constexpr uint32_t kAircraftLockWaitMs = 20;
+
+/** False when the aircraft list could not be locked; caller must not blit. */
+bool drawAircraft() {
+  initLabelMetrics();
+
+  if (!services::scene::aircraftLock(kAircraftLockWaitMs)) {
+    return false;
+  }
+
+  const size_t n = services::scene::aircraftCount();
+  const services::scene::Aircraft* planes = services::scene::aircraftList();
+
+  AircraftDrawItem items[services::scene::kMaxAircraft];
+  BeyondDotDrawItem dots[services::scene::kMaxAircraft];
+  size_t draw_count = 0;
+  size_t dot_count = 0;
+
+  // Dead reckoning: advance each target along its own ground velocity since the
+  // last fetch, so the picture moves between the (~3.5 s) network updates.
+  const float fetch_age_s = services::scene::secondsSinceContent();
+  // Unclamped, so a stalled feed is detectable: the clamped value pins at the
+  // horizon and would make dead data look as fresh as live data forever.
+  const float fetch_age_raw = services::scene::secondsSinceContentRaw();
+
+  if (services::scene::contentExpired()) {
+    services::scene::aircraftUnlock();
+    return true;  // grid only: the list is too old to show
+  }
+
+  for (size_t i = 0; i < n; ++i) {
+    float dx_km = 0.0f;
+    float dy_km = 0.0f;
+    float dist_km = 0.0f;
+    radar::offsetKmFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km,
+                              nullptr);  // dist recomputed after dead reckoning
+    // Positions arrive stale by their own seen_pos, so advance from when the
+    // fix was taken. This also makes a repeated stale position continuous
+    // instead of snapping the target backwards.
+    // Dim on either cause of staleness, tested separately rather than on the
+    // sum. Summing them made *every* target whose fix age sat within one fetch
+    // cycle of the horizon blink once per cycle, because fetch_age_raw resets
+    // on each fetch. Tested apart, pos_age_s is constant for a whole cycle and
+    // fetch_age_raw only crosses the horizon when the feed genuinely stalls.
+    // This reduces the flicker rather than eliminating it: an aircraft whose
+    // source updates near the horizon still reports a seen_pos that straddles
+    // it from fetch to fetch. Removing that needs per-target hysteresis keyed
+    // on hex across fetches. The drawn position uses the clamped sum, so the
+    // symbol never moves when the colour changes.
+    // THREE causes, tested separately and deliberately -- see the note above
+    // about summing them making targets blink once per cycle. The third is new
+    // to the server-driven firmware: the device can be receiving perfectly
+    // fresh scenes from a server whose own feed has stalled, so both clocks
+    // above look healthy and only this term can dim the targets.
+    const bool stale = planes[i].pos_age_s >= services::scene::kExtrapolationHorizonSec ||
+                       fetch_age_raw >= services::scene::kExtrapolationHorizonSec ||
+                       services::scene::feedAgeS() >=
+                           services::scene::kExtrapolationHorizonSec;
+    const float age_s = std::min(planes[i].pos_age_s + fetch_age_s,
+                                 services::scene::kExtrapolationHorizonSec);
+    dx_km += planes[i].vel_e_km_s * age_s;
+    dy_km += planes[i].vel_n_km_s * age_s;
+    dist_km = sqrtf(dx_km * dx_km + dy_km * dy_km);
+
+    if (isInsideOuterRingKm(dist_km)) {
+      int x = 0;
+      int y = 0;
+      radar::kmOffsetToScreen(dx_km, dy_km, &x, &y);
+      items[draw_count].index = i;
+      items[draw_count].x = x;
+      items[draw_count].y = y;
+      items[draw_count].dist_sq = radar::distSqFromCenter(x, y);
+      items[draw_count].stale = stale;
+      ++draw_count;
+      continue;
+    }
+
+    int dot_x = 0;
+    int dot_y = 0;
+    if (!beyondRingEdgeDotFromKm(dx_km, dy_km, dist_km, &dot_x, &dot_y)) {
+      continue;
+    }
+    dots[dot_count].x = dot_x;
+    dots[dot_count].y = dot_y;
+    dots[dot_count].dist_km = dist_km;
+    dots[dot_count].stale = stale;
+    ++dot_count;
+  }
+
+  sortBeyondDotsFarFirst(dots, dot_count);
+  for (size_t d = 0; d < dot_count; ++d) {
+    drawBeyondRingDot(dots[d].x, dots[d].y,
+                      dots[d].stale ? radar::kColorAircraftStale
+                                    : radar::kColorAircraft);
+  }
+
+  sortDrawItemsFarFirst(items, draw_count);
+  for (size_t d = 0; d < draw_count; ++d) {
+    const size_t i = items[d].index;
+    const int x = items[d].x;
+    const int y = items[d].y;
+    // Resolve the nose heading once and share it: drawHeadingTriangle and
+    // drawSpeedVector both need it, and noseTip() used to recompute it again
+    // inside each of them -- 8 soft-float trig calls per aircraft per frame.
+    constexpr float kDegToRad = 0.01745329252f;
+    const float nose_rad = planes[i].nose_deg * kDegToRad;
+    const float sin_h = sinf(nose_rad);
+    const float cos_h = cosf(nose_rad);
+    drawSpeedVector(x, y, sin_h, cos_h, planes[i].track_deg,
+                    planes[i].gs_knots, radar::kColorTrackVector);
+    drawHeadingTriangle(x, y, sin_h, cos_h,
+                        items[d].stale ? radar::kColorAircraftStale
+                                       : radar::kColorAircraft);
+  }
+  // items[] is sorted far-first; walk it backwards so the closest aircraft
+  // claim their tag position before more distant ones.
+  s_tag_rect_count = 0;
+  for (size_t d = draw_count; d-- > 0;) {
+    const size_t i = items[d].index;
+    drawAircraftTag(items[d].x, items[d].y, planes[i]);
+  }
+
+  services::scene::aircraftUnlock();
+  return true;
+}
+
+void applyCardinalStyle() {
+  if (s_cardinal_use_vlw) {
+    displayFontSetSmoothSize(*s_draw, s_cardinal_vlw_size);
+  } else {
+    displayFontSetBitmap(*s_draw, s_cardinal_gfx);
+  }
+}
+
+void applyScaleStyle() {
+  if (s_scale_use_vlw) {
+    displayFontSetSmoothSize(*s_draw, s_scale_vlw_size);
+  } else {
+    displayFontSetBitmap(*s_draw, s_scale_gfx);
+  }
+}
+
+void drawCardinalLabel(const char* text, int x, int y, textdatum_t datum) {
+  applyCardinalStyle();
+  s_draw->setTextDatum(datum);
+  s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
+  s_draw->drawString(text, x, y);
+}
+
+void drawScaleLabelWithBackground(const char* text, int x, int y) {
+  applyScaleStyle();
+  s_draw->setTextDatum(textdatum_t::middle_right);
+
+  const int tw = s_draw->textWidth(text);
+  const int th = s_draw->fontHeight();
+  constexpr int kPadX = 3;
+  constexpr int kPadY = 2;
+
+  const int left = x - tw - kPadX;
+  const int top = y - th / 2 - kPadY;
+
+  s_draw->fillRect(left, top, tw + kPadX * 2, th + kPadY * 2,
+                   radar::kColorBackground);
+  s_draw->setTextColor(radar::kColorGrid, radar::kColorBackground);
+  s_draw->drawString(text, x, y);
+}
+
+void drawGridRing(int cx, int cy, int r, uint16_t color) {
+  if (r <= 0) {
+    return;
+  }
+  const int thickness =
+      std::max(1, static_cast<int>(radar::kGridStrokeHalfWidth * 2.0f));
+  for (int i = 0; i < thickness && r - i > 0; ++i) {
+    s_draw->drawCircle(cx, cy, r - i, color);
+  }
+}
+
+void drawRings(int cx, int cy, int outer_radius) {
+  for (int i = 1; i <= radar::kRingCount; ++i) {
+    const int r = (outer_radius * i) / radar::kRingCount;
+    drawGridRing(cx, cy, r, radar::kColorGrid);
+  }
+}
+
+// Both spokes are axis-aligned, so fillRect gives the same 2 px stroke as
+// drawWideLine without its per-pixel alpha blending, which measured 25.9 ms
+// per frame for these two lines alone (24% of the whole frame).
+void drawCrosshairs(int cx, int cy, int radius, uint16_t color) {
+  // An even-width bar cannot straddle a single pixel column, so a 2 px stroke
+  // is always 1 px off centre one way or the other; the anti-aliased line this
+  // replaced hid that with alpha across 3 px. Bias both spokes the same way so
+  // the asymmetry is consistent rather than mixed.
+  const int thickness =
+      std::max(1, static_cast<int>(radar::kGridStrokeHalfWidth * 2.0f));
+  const int offset = thickness / 2;
+  const int span = radius * 2 + 1;
+  s_draw->fillRect(cx - offset, cy - radius, thickness, span, color);
+  s_draw->fillRect(cx - radius, cy - offset, span, thickness, color);
+}
+
+void drawCenterDot(int cx, int cy) {
+  s_draw->fillSmoothCircle(cx, cy, radar::kCenterDotRadius, radar::kColorCenter);
+}
+
+void drawCardinalLabels() {
+  const int cx = radar::kCenterX;
+  const int cy = radar::kCenterY;
+  const int edge = radar::kSize - 1;
+
+  drawCardinalLabel("N", cx, radar::kCardinalNorthOffsetY, textdatum_t::top_center);
+  drawCardinalLabel("S", cx, edge + radar::kCardinalSouthOffsetY,
+                    textdatum_t::bottom_center);
+  drawCardinalLabel("W", 0, cy, textdatum_t::middle_left);
+  drawCardinalLabel("E", edge, cy, textdatum_t::middle_right);
+}
+
+int scaleLabelAnchorX(int cx, int outer_radius) {
+  return cx + outer_radius - radar::kScaleGapFromOuterRing;
+}
+
+void drawScaleLabel(int cx, int cy, int outer_radius) {
+  char scale_label[12];
+  radar::formatCurrentRing3Label(scale_label, sizeof(scale_label));
+  drawScaleLabelWithBackground(scale_label,
+                               scaleLabelAnchorX(cx, outer_radius), cy);
+}
+
+template <typename Gfx>
+void drawStaticGrid(Gfx& gfx) {
+  initLabelMetrics();
+  const DrawScope scope(gfx);
+  displayFontEnsureLoaded(gfx);
+  const int cx = radar::kCenterX;
+  const int cy = radar::kCenterY;
+  const int grid_r = radar::kGridOuterRadius;
+
+  gfx.fillScreen(radar::kColorBackground);
+  drawRings(cx, cy, grid_r);
+  drawCrosshairs(cx, cy, grid_r, radar::kColorGrid);
+  initPalette();
+  runway::drawLargeAirportRunways(gfx);
+  drawCenterDot(cx, cy);
+  drawCardinalLabels();
+  drawScaleLabel(cx, cy, grid_r);
+  gfx.setTextDatum(textdatum_t::top_left);
+}
+
+bool ensureFrameSprite() {
+  if (s_frame_ready) {
+    return true;
+  }
+  // The render loop runs at ~10 fps; retrying a 115 KB contiguous allocation
+  // on every frame just thrashes an already-starved heap.
+  if (s_frame_failed_ms != 0 &&
+      millis() - s_frame_failed_ms < kSpriteRetryMs) {
+    return false;
+  }
+  s_frame.setColorDepth(16);
+  if (!s_frame.createSprite(radar::kSize, radar::kSize)) {
+    Serial.println("radar: frame sprite alloc failed");
+    s_frame_failed_ms = millis();
+    return false;
+  }
+  s_frame_failed_ms = 0;
+  s_frame_ready = true;
+  return true;
+}
+
+// Double-buffered frame: composite the grid AND aircraft into the off-screen
+// sprite, then blit it to the panel in a single pushSprite. Because the panel
+// is updated in one pass, labels never show an erase/redraw gap — no flicker.
+bool renderFrame() {
+  [[maybe_unused]] const uint32_t t_grid = DEBUG_LOG_ENABLED ? micros() : 0;
+  drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
+  [[maybe_unused]] const uint32_t t_traffic = DEBUG_LOG_ENABLED ? micros() : 0;
+  bool traffic_drawn = false;
+  {
+    const DrawScope scope(s_frame);
+    traffic_drawn = drawAircraft();
+  }
+  [[maybe_unused]] const uint32_t t_blit = DEBUG_LOG_ENABLED ? micros() : 0;
+  // The sprite now holds a grid with no traffic on it. Blitting that would
+  // flash every target off for a frame, so leave the last complete frame on
+  // the panel and try again on the next tick.
+  if (!traffic_drawn) {
+    return false;
+  }
+  s_frame.pushSprite(0, 0);
+  tft.setTextDatum(textdatum_t::top_left);
+#if DEBUG_LOG_ENABLED
+  // Once a second at most: Serial here is USB CDC, whose write blocks for up
+  // to 100 ms when no host is draining the ring -- a whole render tick. uint32_t
+  // throughout so the wrap arithmetic matches the device's 32-bit millis()/
+  // micros() even if this is ever compiled for a 64-bit host.
+  static uint32_t s_last_frame_report_ms = 0;
+  const uint32_t now_ms = millis();
+  if (now_ms - s_last_frame_report_ms >= config::kDebugFrameReportMs) {
+    s_last_frame_report_ms = now_ms;
+    const uint32_t t_end = micros();
+    // Kept under 64 rendered chars: Print::printf formats into a 64-byte stack
+    // buffer and mallocs past it, and there is no heap in the draw path.
+    DEBUG_LOG("frame: %lu+%lu+%lu = %lu us",
+              (unsigned long)(t_traffic - t_grid), (unsigned long)(t_blit - t_traffic),
+              (unsigned long)(t_end - t_blit), (unsigned long)(t_end - t_grid));
+  }
+#endif
+  return true;
+}
+
+}  // namespace
+
+bool radarDisplayReserveFrame() { return ensureFrameSprite(); }
+
+bool radarDisplayDraw() {
+  initPalette();
+  initLabelMetrics();
+
+  if (ensureFrameSprite()) {
+    return renderFrame();
+  }
+
+  // Fallback when the sprite can't be allocated: draw straight to the panel.
+  // The grid always lands, but if drawAircraft() could not take the traffic
+  // lock the panel now shows a grid with the targets erased. Reporting that as
+  // painted would latch it until the next publish; report it as not-painted so
+  // the caller retries on the next tick.
+  const DrawScope scope(tft);
+  drawStaticGrid(tft);
+  const bool traffic_drawn = drawAircraft();
+  tft.setTextDatum(textdatum_t::top_left);
+  return traffic_drawn;
+}
+
+bool radarDisplayRefreshAircraft() {
+  initPalette();
+
+  if (ensureFrameSprite()) {
+    return renderFrame();
+  }
+
+  return radarDisplayDraw();
+}
+
+}  // namespace ui
