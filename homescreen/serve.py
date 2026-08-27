@@ -378,16 +378,55 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # component cannot be picked without its configuration being visible.
         schemas = {name: list(scenes.option_schema(name))
                    for name, ok, _ in opts if ok}
+        plan = rec.get("schedule") or {}
         return Response(
             web.render_device(_fleet_entry(hw, rec, now), options=opts,
                               schemas=schemas, name_max=registry.NAME_MAX,
-                              notice=request.args.get("m", "")),
+                              notice=request.args.get("m", ""),
+                              plan=plan, views=layout.view_names(rec), now=now),
             mimetype="text/html")
 
     @app.post("/device/<hw>")
     def device_page_apply(hw: str):
         message = _apply_device_form(hw, request.form)
         return redirect(url_for("device_page", hw=hw, m=message))
+
+    @app.post("/device/<hw>/schedule")
+    def device_page_schedule(hw: str):
+        """The week grid's form target.
+
+        Rebuilds the whole schedule from the posted fields and hands it to the
+        same validator the JSON route uses, so there is one place that decides
+        what a slot is. The views are untouched here -- this form edits WHEN,
+        not WHAT.
+        """
+        rec = registry.load(cache_dir).get(hw)
+        if rec is None:
+            return redirect(url_for("home", m=f"no existe ninguna pantalla {hw}"))
+        views = {name: layout.view_for(rec, name)
+                 for name in layout.view_names(rec)}
+        slots = []
+        for index in range(len(request.form) + 1):
+            view = request.form.get(f"slot{index}.view")
+            if view is None or request.form.get(f"slot{index}.remove"):
+                continue
+            days = [int(d) for d in request.form.getlist(f"slot{index}.day")
+                    if str(d).isdigit()]
+            if not days:
+                continue                 # a slot on no day is not a slot
+            slots.append({"view": view, "days": days,
+                          "from": request.form.get(f"slot{index}.from") or "",
+                          "to": request.form.get(f"slot{index}.to") or ""})
+        plan = scheduling.clean_schedule(
+            {"default": request.form.get("default"), "slots": slots,
+             "tz": (rec.get("schedule") or {}).get("tz")}, views)
+        try:
+            registry.set_layout(cache_dir, hw, views, plan)
+        except (ValueError, OSError) as exc:
+            return redirect(url_for("device_page", hw=hw, m=str(exc)))
+        _last_cold.pop(hw, None)
+        return redirect(url_for("device_page", hw=hw,
+                                m=f"horario guardado · {len(plan['slots'])} franja(s)"))
 
     @app.post("/device/<hw>/approval")
     def device_page_approval(hw: str):

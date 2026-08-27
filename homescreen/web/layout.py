@@ -125,6 +125,18 @@ footer{max-width:64rem;margin:0 auto;padding:0 1.1rem 2.5rem;
 """
 
 
+def _with(extra: str) -> None:
+    """Fold another module's styles into the one stylesheet the page ships.
+
+    One <style> for the whole document, because the dashboard serves its own
+    assets and a second request for a handful of rules is a request that can
+    fail on the network you are using the page to debug.
+    """
+    global CSS
+    if extra not in CSS:
+        CSS += extra
+
+
 def e(value) -> str:
     """Escape for HTML text and attributes. Everything here is operator- or
     device-supplied, and a device's name is whatever it POSTed."""

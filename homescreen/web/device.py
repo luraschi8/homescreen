@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from . import schedule_ui
 from .fields import datalist_markup, option_group
 from .layout import dash, e, page, pill, scene_label, when
+from . import layout as _layout
+
+_layout._with(schedule_ui.CSS)
 
 #: Picking a component swaps its settings in without a round trip.
 SCRIPT = """
@@ -41,7 +45,7 @@ def _notes(dev: dict) -> str:
 
 
 def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
-                  notice: str = "") -> str:
+                  notice: str = "", plan=None, views=(), now: float = 0.0) -> str:
     """`options` is [(scene, drawable, why)] for THIS device; `schemas` maps a
     scene to its option schema, so every component's settings travel with it."""
     hw = e(dev.get("hw"))
@@ -122,6 +126,7 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     <div class="actions"><button type="submit">Guardar</button></div>
   </form>
 </div></div>
+{schedule_ui.editor(dev.get("hw") or "", plan or {}, views, now) if views else ""}
 {f'<h2>Vista previa</h2><div class="panel"><div class="pad"><div class="pvs">{thumbs}</div></div></div>' if thumbs else ""}
 
 <h2>Detalles</h2>
