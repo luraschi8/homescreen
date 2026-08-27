@@ -108,6 +108,38 @@ class Scene:
                            clean_poll_s(self.poll_max_s) or self.poll_s)
 
 
+def needs(name: str, options: dict, cfg: dict) -> tuple:
+    """What this component needs fetched, given how it is configured.
+
+    A function of OPTIONS, because that is what makes a requirement specific:
+    weather needs a place, quotes need symbols, and which ones is the
+    assignment's business. A component that declares nothing needs nothing --
+    the clock, for instance, which is why it works with the network down.
+
+    Never raises: this runs inside job collection over every record in the
+    fleet, and one malformed assignment must not stop the daemon fetching for
+    all the others.
+    """
+    try:
+        build_fn = _registry()[name]
+    except KeyError:
+        return ()
+    module = sys.modules.get(build_fn.__module__)
+    declare = getattr(module, "needs", None)
+    if not callable(declare):
+        return ()
+    try:
+        return tuple(declare(options or {}, cfg or {}) or ())
+    except Exception:                                   # noqa: BLE001
+        # Logged, not swallowed. Returning "needs nothing" is indistinguishable
+        # from a component that genuinely needs nothing, so a typo here becomes
+        # a daemon that fetches nothing and looks idle -- which is exactly how
+        # an ImportError in this function went unnoticed while every job
+        # silently disappeared.
+        log.exception("component %s failed to declare what it needs", name)
+        return ()
+
+
 def surfaces(name: str) -> tuple:
     """What glass this component says it can draw on.
 

@@ -142,6 +142,25 @@ def _dwell(env: dict, now: float) -> float:
     return max(0.0, now - fetched.timestamp())
 
 
+def needs(options: dict, cfg: dict) -> tuple:
+    """One ADS-B fetch, centred where this deployment is, at this screen's
+    radius.
+
+    The endpoint is RESOLVED here rather than left blank: a job must be
+    self-describing, so two screens reading the same upstream share one fetch
+    and changing the upstream visibly becomes a different job.
+    """
+    from homescreen.config import feed_config, mapping
+    where = mapping((cfg or {}).get("location"))
+    lat, lon = where.get("lat"), where.get("lon")
+    if lat is None or lon is None:
+        return ()
+    radius = _positive((options or {}).get("radius_km")) or 60.0
+    return ({"provider": "adsb",
+             "params": {"lat": lat, "lon": lon, "radius_km": radius,
+                        "endpoint": feed_config(cfg).get("endpoint") or ""}},)
+
+
 def _positive(value):
     """A usable number, or None. Zero and nonsense both mean "not set" here,
     which is what lets one field carry both a value and "use the default"."""

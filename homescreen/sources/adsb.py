@@ -117,6 +117,34 @@ def _url(endpoint: str, lat: float, lon: float, radius_km: float) -> str:
             f"/lon/{lon:.6f}/dist/{dist_nm:.1f}")
 
 
+def fetch_payload(params: dict, *, session=None) -> dict:
+    """Fetch and map one sky. RAISES on any failure.
+
+    Split out of `fetch_radar` so the transport can be owned by a provider
+    while caching and failure recording are owned by the job runner. That split
+    is the point: `fetch_radar` had to swallow everything because it was also
+    the thing writing the cache, and a function that both fetches and decides
+    what a failure means cannot be reused by anything with different opinions.
+    """
+    if session is None:
+        import requests
+        session = requests.Session()
+    radius_km = float(params.get("radius_km") or 60.0)
+    url = _url(str(params.get("endpoint") or ""), float(params["lat"]),
+               float(params["lon"]), radius_km)
+    resp = session.get(url, timeout=REQUEST_TIMEOUT_S)
+    resp.raise_for_status()
+    payload = resp.json()
+    raw_list = payload.get("ac") if isinstance(payload, dict) else None
+    if not isinstance(raw_list, list):
+        # An empty sky is `[]` and nothing else. A missing/null/scalar `ac`, or
+        # an HTML captive-portal page, is not this API -- and treating it as "no
+        # traffic" wipes real aircraft off the panel.
+        raise ValueError("response is not the aircraft feed")
+    return {"aircraft": _map_all(raw_list, radius_km / KM_PER_NM,
+                                 bool(params.get("show_ground", False)))}
+
+
 def fetch_radar(cfg: dict, dev: dict, cache_path: Path, *, session=None) -> bool:
     """Fetch, map and cache for ONE device. True on success, False on any
     failure. Never raises -- every failure path, including recording the
