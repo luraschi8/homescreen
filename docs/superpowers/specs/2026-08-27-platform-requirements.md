@@ -15,6 +15,12 @@ this one decides it.
 - **Rotation is replaced by a schedule.** A component or a composed dashboard per calendar
   slot. There is no "cycle every N seconds".
 - **The API is REST.** One noun, correct verbs, sub-resources.
+- A **schedule applies to a whole screen**, not per region.
+- **Adapting to the surface is the component's job**, not the platform's: the same
+  configured data is a stacked list in a large region and a cycling single value on a small
+  one.
+- **Buttons become a declared capability** the dashboard binds. Until that ships the BOOT
+  short press does nothing. The long press opens the WiFi portal and is never bindable.
 
 This document specifies. It does not implement.
 
@@ -123,6 +129,24 @@ area this placement occupies — the whole 240×240 panel, or the 417×335 left 
 e-paper. A component that already composes for two panel sizes composes for a region with no
 new declaration. This is the whole reason regions cost almost nothing (§4.2).
 
+**And adapting to that geometry is the component's own obligation.** Declaring that you can
+draw on a surface is a promise to draw *well* on it, not merely to fit. The same configured
+data may need a different presentation on different glass, and choosing between them is the
+component's job — the platform has no opinion and offers no mechanism:
+
+> Five tickers are a **stacked list** in the 764×62 markets band and a **single ticker that
+> cycles** on a 240×240 round panel. One `symbols` option, one component, two presentations.
+
+This is the general rule, not a note about stocks. A calendar shows five rows in a column and
+the next event alone on a watch face. A weather component shows a five-day strip where there
+is room and a temperature where there is not. `ctx.caps` is what the decision is made from,
+and `supports()` is for the case where no honest presentation exists at all.
+
+**A component that chooses to cycle asks to be woken at its own rate**, which needs no new
+machinery: `poll_s` already lets it name its next change (§2.6), and `poll_floor` already
+stops that from turning the e-paper's two render slots into a busy loop. Cycling is therefore
+a component's private business, never a field in a schema and never a platform concept.
+
 Constraints a component inherits on each surface:
 
 - **240×240 round.** Slots narrow towards the rim; `rim_top`/`rim_bottom` sit at 0.12/0.88
@@ -192,6 +216,9 @@ geometry), `now`, `device` and this placement's validated `options`.
 - Precedence, unchanged: **operator setting > component > hardware floor.** `poll_floor`
   exists because a 1-bit panel's own refresh is ~3s and there are two Chromium render slots
   for the whole fleet.
+- A component that **cycles its own presentation** (§2.3) names the cycle here: it asks for
+  the next step and returns the next value when woken. That is the whole mechanism; there is
+  no rotation feature underneath it.
 - The server then folds in the **schedule boundary** (§4.5). A component never computes that
   itself and never needs to know a schedule exists.
 - SPEC §6's `refresh.quiet_hours` is a **platform** stretch applied over a component's
@@ -504,7 +531,9 @@ references is refused.
 - sunrise/sunset-relative times
 - one-off overrides or exceptions to a recurring slot
 - seconds precision
-- different schedules per region (see Q9)
+- **different schedules per region.** Settled: a schedule applies to a whole screen. A
+  per-region change is expressible today as two views differing by one placement — more
+  clicks, no new concept, no new failure mode, and "what is showing" keeps one answer.
 
 Anything on that list is a second scheduling language. The three examples the owner gave —
 radar during the day, clock at night, weather on weekend mornings — are all weekday-set plus
@@ -573,6 +602,72 @@ time.
 
 ---
 
+### 4.7 Inputs — a device declares its buttons, the dashboard binds them
+
+Settled: the BOOT short press gets **no fixed meaning**. Instead a device declares its inputs
+the way it already declares its screen, and an operator binds an action to each one.
+
+**Declaration rides the existing query string.** Capabilities already travel on every poll —
+`w`, `h`, `depth`, `max_items`, `components` — so inputs are one more list and need no
+handshake, no new endpoint, and no schema change: `registry.CAP_INTS` gains nothing and
+`_CAP_LISTS` gains `buttons`.
+
+```
+GET /api/devices/{hw}/scene?w=240&h=240&depth=16&max_items=40
+    &components=radar,draw_list&buttons=boot.short&fw=…
+```
+
+- One entry per **bindable gesture**, formatted `<input>.<gesture>` where gesture is `short`
+  or `long`. A board with two buttons declares `buttons=a.short,a.long,b.short`.
+- `<input>.<gesture>` and not `<input>:short+long`, because the list separator is already a
+  comma and `clean_caps` already truncates entries at 32 chars and the list at
+  `MAX_CAP_LIST`. This shape needs no parsing changes at all.
+- Validated as `^[a-z0-9_]{1,16}\.(short|long)$`; anything else is dropped rather than
+  guessed at, exactly as `clean_caps` drops a nonsense `depth`.
+- **`boot.long` is never declared.** A device does not offer for binding a gesture it does
+  not own, and the portal owns that one. Its absence from the list is the enforcement.
+
+**The action vocabulary is deliberately tiny.**
+
+| Action | Does | Needs |
+|---|---|---|
+| `nada` | nothing (default for every input) | — |
+| `refrescar` | drop the cached ETag and poll immediately | nothing new |
+| `identificar` | show this screen's hardware id large for ~5s, then resume | nothing new |
+
+Every v1 action is one the device performs **alone**. Devices only ever `GET` today, and
+keeping it that way is what makes this extension small. Deliberately excluded: anything that
+changes server state (reassigning, advancing a schedule, editing an option), anything that
+actuates outside the screen, chords, double-taps, and press-and-hold ramps. See Q12.
+
+`identificar` earns its place because three anonymous boards on a shelf is a real problem and
+the status scene already knows how to draw a hardware id.
+
+**Bindings are stored per DEVICE, not per view.** A button is a physical object a person
+reaches for with a fixed expectation, and one that means different things at different hours
+is worse than one that means one thing. Both v1 actions are device-level concerns anyway —
+neither belongs to whatever component happens to be showing. The binding sits on the device
+record next to `poll_seconds`, which is the other per-device operator setting. If a
+component-specific action ever exists, that is when per-view bindings earn their complexity —
+the same argument that settled Q9.
+
+**The device learns its bindings from the scene payload it already polls.** No new endpoint,
+no second request, and the existing ETag covers it, so a binding change reaches the glass on
+the next poll and a 304 means nothing changed:
+
+```json
+{"hw": "…", "scene": "planes", "assigned": true, "layout": "fill",
+ "components": [ … ],
+ "inputs": {"boot.short": "refrescar"}}
+```
+
+An absent key, an unknown action, or an input the device never declared is a **no-op** —
+never an error path on the device's only route. The server filters `inputs` down to what the
+device declared, exactly as it already filters `components` (design spec §5.5), and reports
+the drop in the fleet view rather than silently.
+
+---
+
 ## 5. The API
 
 The current surface has four names for one thing — `/api/device/<hw>/scene`,
@@ -588,26 +683,33 @@ split already exists everywhere in this codebase and is correct.
 
 ### 5.2 The map
 
-| Method | Path | Returns | Codes |
-|---|---|---|---|
-| GET | `/api/devices` | `{devices:[…]}`; `?state=pending\|approved` | 200 |
-| GET | `/api/devices/{hw}` | one device | 200, 404 |
-| PATCH | `/api/devices/{hw}` | name, `poll_seconds` only | 200, 400, 404, 503 |
-| DELETE | `/api/devices/{hw}` | — | 204, 404, 503 |
-| GET/PUT | `/api/devices/{hw}/membership` | `{"approved": bool}` | 200, 400, 404 |
-| GET/PUT | `/api/devices/{hw}/schedule` | the whole schedule (§4.3) | 200, 400, 404 |
-| GET | `/api/devices/{hw}/scene` | **device-facing**; caps in the query | 200, 304, 400, 404 |
-| GET | `/api/devices/{hw}/frame` | **device-facing**; `?w=&h=` required | 200, 304, 400, 404, 503 |
-| GET | `/api/devices/{hw}/preview.svg` | `?view=&region=&at=` | 200, 404 |
-| GET | `/api/components` | catalog: name, options schema, providers, surfaces | 200 |
-| GET | `/api/components/{name}` | one | 200, 404 |
-| GET | `/api/providers` | catalog: name, params schema, secret **names** | 200 |
-| GET/PUT | `/api/providers/{name}/settings` | endpoint, interval | 200, 400, 404 |
-| GET | `/api/providers/{name}/secrets/{s}` | `{name, set, updated_at}` — **no value** | 200, 404 |
-| PUT | `/api/providers/{name}/secrets/{s}` | `{"value": "…"}` | 204, 400, 404 |
-| DELETE | `/api/providers/{name}/secrets/{s}` | — | 204, 404 |
-| GET | `/api/jobs` | live fetch jobs and their health | 200 |
-| GET | `/api/status` | service status | 200 |
+**Much of this shipped in `462be45`.** The table marks what exists so nobody rebuilds it.
+
+| Method | Path | Returns | Codes | State |
+|---|---|---|---|---|
+| GET | `/api/devices` | `{devices:[…]}` | 200 | **exists** |
+| GET | `/api/devices/{hw}` | one device | 200, 404 | **exists** |
+| PATCH | `/api/devices/{hw}` | name, scene, `poll_seconds`, options | 200, 400, 404, 503 | **exists** |
+| DELETE | `/api/devices/{hw}` | — | 200, 404, 503 | **exists** |
+| GET/PUT | `/api/devices/{hw}/membership` | `{"approved": bool}` | 200, 400, 404 | **exists** |
+| GET | `/api/devices/{hw}/scene` | **device-facing**; caps in the query | 200, 304, 400, 404 | **exists** |
+| GET | `/api/devices/{hw}/frame` | **device-facing**; `?w=&h=` required | 200, 304, 400, 404, 503 | **exists** |
+| GET | `/api/devices/{hw}/preview.svg` | `?view=` | 200, 404 | **exists** |
+| GET | `/api/status` | service status | 200 | **exists** |
+| GET | `/api/devices` `?state=` | filter `pending\|approved` | 200 | designed |
+| GET/PUT | `/api/devices/{hw}/schedule` | the whole schedule (§4.3) | 200, 400, 404 | designed |
+| GET/PUT | `/api/devices/{hw}/inputs` | button bindings (§4.7) | 200, 400, 404 | designed |
+| GET | `/api/devices/{hw}/preview.svg` `?region=&at=` | region and instant | 200, 404 | designed |
+| GET | `/api/components`, `/api/components/{name}` | catalog: options schema, providers, surfaces | 200, 404 | designed |
+| GET | `/api/providers`, `/api/providers/{name}` | catalog: params schema, secret **names** | 200, 404 | designed |
+| GET/PUT | `/api/providers/{name}/settings` | endpoint, interval | 200, 400, 404 | designed |
+| GET | `/api/providers/{name}/secrets/{s}` | `{name, set, updated_at}` — **no value** | 200, 404 | designed |
+| PUT/DELETE | `/api/providers/{name}/secrets/{s}` | `{"value": "…"}` / — | 204, 400, 404 | designed |
+| GET | `/api/jobs` | live fetch jobs and their health | 200 | designed |
+
+Still to retire: `/api/config/*` (into `PATCH /api/devices/{hw}` and
+`PUT /api/providers/{n}/settings`), `/api/display/{name}/data` and `/health` (into
+`/api/jobs`), and `POST /home/device`.
 
 Headline decisions:
 
@@ -632,32 +734,48 @@ Headline decisions:
 
 ### 5.3 The HTML dashboard is not part of this
 
-`/`, `/device/<hw>` and `/settings` stay **GET plus form POST plus redirect**. Browsers
-cannot PUT or DELETE from a form; making them do so requires JavaScript, and the dashboard
-must render and function with scripting off — it is how you debug the network, and the one
-script it has (swapping option groups) already degrades to "the saved component's settings
-are the ones on the page".
+`/`, `/device/<hw>` and `/settings` stay **GET plus form POST plus redirect** — because a
+form is the least machinery that does the job. A browser posts a form and follows a redirect
+with no code at all; reaching the same page through `fetch` and PUT means writing, shipping
+and debugging a client to accomplish exactly what the browser already does. That is the whole
+argument, and it is enough.
 
 **Do not RESTify the dashboard.** Stated here so nobody does it in the name of consistency.
-The HTML pages and the JSON API are two interfaces to the same handlers, with different
+The HTML pages and the JSON API are two interfaces onto the same handlers with different
 constraints, and that is correct.
+
+**JavaScript is fine.** An earlier draft justified this section partly on the dashboard
+working with scripting off. That constraint was never the owner's — it was invented in an
+earlier session and asserted in a test as though it were given, and `462be45` retired both
+the test and the claim. What survives is smaller and true: **the dashboard ships its own
+assets.** No CDN, no bundler, no webfont fetched at boot, because it is the page you open
+when the network is the thing misbehaving. Scripts are welcome; fetching them from someone
+else's server is not.
+
+The **schedule editor is expected to use it.** A 7×24 week grid you paint by dragging is a far
+better input than four paired time fields and a weekday checkbox row, and §4.6 already asks
+for that grid as the way overlap precedence is seen rather than reasoned about. "Keep it
+simple" is the constraint — inline, dependency-free, in the file it belongs to, like the
+existing option-group swap.
 
 ### 5.4 Migration — one flash, two changes
 
 Two things need a reflash: the `draw_list` capability (item 1) and the scene path. **They
 ship as one firmware release**, so the fleet is flashed once.
 
-The server serves both surfaces during the window:
+The server serves both surfaces during the window. **The first half shipped in `462be45`:**
 
-- Legacy paths are registered as **aliases on the same handler**, not copies — the codebase
-  already does this (`@app.get("/")` + `@app.get("/home")`). One handler, one behaviour, no
-  drift.
-- Legacy responses carry `Deprecation: true` and `Sunset: <date>` (RFC 8594).
-- A legacy hit is logged **once per device per day**, not per poll — 17k requests/device/day
+- ✅ Legacy paths are registered as **aliases on the same handler**, not copies — the codebase
+  already did this (`@app.get("/")` + `@app.get("/home")`). One handler, one behaviour, no
+  drift. `LEGACY_RULES` names them and an `after_request` hook marks them, so the rule cannot
+  fall out of step with the routes.
+- ✅ Legacy responses carry `Deprecation: true`, `Sunset: Wed, 31 Dec 2026 23:59:59 GMT`
+  (RFC 8594) and `Link: </api/devices>; rel="successor-version"`.
+- ⬜ A legacy hit is logged **once per device per day**, not per poll — 17k requests/device/day
   onto a microSD journal is the wear this project already refused a systemd timer to avoid.
-- Each device record gains `api: "legacy" | "current"`, derived from the path it last used,
-  and the fleet page shows **who still needs flashing**. The evidence is already arriving:
-  every device sends `fw=` on every poll and the registry stores it.
+- ⬜ Each device record gains `api: "legacy" | "current"`, derived from the path it last used,
+  and the fleet page shows **who still needs flashing**. Half the evidence is already
+  arriving: every device sends `fw=` on every poll and the registry stores it.
 
 **Removal criteria — all three, not any:**
 
@@ -683,8 +801,9 @@ Sizes: **S** one focused session, **M** a few, **L** a week or more.
 
 | Change | Reason |
 |---|---|
-| Item 1 absorbs the API path change | Both need a reflash; one release, one flash |
-| **NEW** item 2 — the REST surface | The owner asked for it, and item 1's firmware must have a path to point at |
+| Item 1 absorbs the API path change and the inert BOOT press | Three edits to one binary; batching them is bookkeeping, not scheduling |
+| Item 2 — the REST surface | Largely **shipped** in `462be45`; item 2 is now the remainder |
+| **NEW** item 13 — the input extension | Q11: buttons become a declared capability, bound from the dashboard |
 | **NEW** item 3 — the record becomes a layout | Q6 settled composed dashboards; shaping the record now is what avoids a migration later, and schedules cannot be built on `scene` + `options` |
 | Old item 4 "settings that save" → **item 7, shrunk** | `POST /settings`, `set_feed()` and `@feeds` shipped in `634de6a`. Only the secret store remains |
 | Old item 6 "rotation" → **deleted** | Replaced by item 6, schedules |
@@ -718,34 +837,51 @@ name that ships an instruction list. The declaration is the only thing between u
   contains no English.
 - `componentKindFromName("weather")` returns `kDrawList` with a draw list present and
   `kUnknown` without one; an empty list shows a status screen, not a hole.
-- The firmware version constant is bumped and reaches the registry, because item 2's removal
+- **The BOOT short press becomes a no-op** — `onRangeTap` unbound, range served from the
+  placement (item 10), bindings arriving later (item 13). Long press still opens the WiFi
+  portal, unchanged and untouched.
+- The firmware version constant is bumped and reaches the registry, because §5.4's removal
   criteria depend on it.
 
-**Dependencies.** Item 2 must have defined the path, but can land in the same session.
+**Dependencies.** The canonical path exists already (`462be45`).
 
-**Why first.** It is the smallest item on the list, it unblocks five others, and it is the
-only one requiring physically reflashing hardware — the longest lead time on the board. It
-should start while the server work that needs it is still being written.
+**Why first — on merit, not on logistics.** An earlier draft argued this from reflashing lead
+time. That argument is void: the board is on a USB cable and flashing is one command. The
+real case is simpler and stronger.
+
+1. **It unblocks five items.** Weather, quotes, calendar, sport and Claude usage are each one
+   Python file *and one firmware release* until this lands. That is the difference between
+   "add a component" being an afternoon and being a release.
+2. **It is the smallest item here.** One constant, one filter rule, and the tests that pin
+   both.
+3. **Three changes, one binary.** The capability, the canonical path and the inert button all
+   touch the same firmware. Shipping them together is bookkeeping — it is not a schedule
+   argument and does not need to be one.
+
+The honest counter-argument is that nothing visible changes when it lands. True, and it is
+still right to go first: every subsequent item is smaller because of it.
 
 ---
 
-### 2. The REST surface and the deprecation window — **M**
+### 2. The REST surface — the remainder — **S/M** — MOSTLY DONE (`462be45`)
 
 **Goal.** One noun, correct verbs, and old devices keep working until they are flashed.
 
-**Acceptance criteria**
-- Every path in §5.2 exists and returns the stated codes; one test per row.
-- Legacy paths are **aliases on the same handler** — a test asserts the legacy and canonical
-  responses are byte-identical apart from the deprecation headers.
-- `Deprecation: true` and `Sunset:` on every legacy response.
-- A legacy hit is logged at most once per device per day; assert with an injected clock that
-  1,000 polls produce one log line.
-- `/api/devices/{hw}` carries `api: "legacy"|"current"` and the fleet page lists devices
-  needing a flash.
-- `PUT /membership` with a body missing `approved` returns **400**, not an approval.
-- `/api/status` continues to expose named keys only, never the whole feed dict.
-- The HTML pages are untouched — a test asserts `/`, `/device/<hw>` and `/settings` still
-  work with forms only, and that no dashboard page requires scripting to save.
+**Shipped in `462be45`** — the canonical `/api/devices/{hw}` noun with `scene`, `frame`,
+`membership` and `preview.svg` sub-resources; every old path kept alive as an alias on the
+same handler; `Deprecation`, `Sunset` and `Link: rel="successor-version"` on all four legacy
+rules; `approved` still mandatory with no default. 921 tests.
+
+**Remaining**
+- A legacy hit is logged at most **once per device per day**; assert with an injected clock
+  that 1,000 polls produce one log line.
+- `/api/devices/{hw}` carries `api: "legacy"|"current"` from the path last used, and the
+  fleet page lists which screens still need flashing.
+- `?state=pending|approved` on the collection.
+- Retire `/api/config/*`, `/api/display/*` and `POST /home/device` — the first two fold into
+  items 4 and 10, so they retire with those rather than on their own.
+- The HTML pages stay forms and redirects (§5.3); a test asserts `/`, `/device/<hw>` and
+  `/settings` still save through a form POST and a redirect.
 
 **Dependencies.** None.
 
@@ -940,9 +1076,19 @@ shows up to five.
   twelvedata | stooq | coingecko), `currency` (`choice`).
 - One job per (provider, symbol set); two screens with the same symbols dedupe to one, a
   different set is a second. Batch into one upstream call where supported.
+- **The component adapts to the surface** (§2.3), which is the point of this item as much as
+  the prices are. One `symbols` option, two presentations, asserted separately:
+  - a region ≥ 400px wide renders a **stacked list** of every configured symbol;
+  - a 240×240 round panel renders **one symbol at a time and cycles**, asking for its own
+    next step through `poll_s`. No `rotate_s` option, no platform rotation feature.
+  - a test builds the same placement against both geometries and asserts one list and one
+    cycling value, from one set of options.
 - **Five is the hard ceiling on the pixel path** (SPEC §9: 764px band, ~117px cells, six
-  truncates). The sixth is refused with a Spanish notice, never a truncated row.
-- Round 240×240 shows **one** symbol per placement (see Q10).
+  truncates). The sixth is refused with a Spanish notice, never a truncated row. The cycling
+  presentation has no such cap — it shows them in turn.
+- The cycle rate is a component constant, not an option, until someone asks otherwise; on a
+  `depth: 1` surface `poll_floor` clamps it and the component must still be correct when
+  woken slower than it asked.
 - Outside market hours an equity renders `cerrado`, not a 0,0% arrow (SPEC §7.4); crypto
   exempt.
 - FX arrows compare against the **previous cached value persisted in the envelope** (SPEC
@@ -974,8 +1120,8 @@ shows up to five.
 - `overrides.py`'s device-scoped `SETTABLE_KEYS`, `config.yaml devices:` and `/api/config`
   are retired for the radar — two places holding the same fact is the bug that produced the
   empty-sky mismatch.
-- The BOOT button's short press does whatever Q11 settles; whatever that is, it is **one
-  meaning fleet-wide** and documented on the device page.
+- The BOOT short press is already inert (item 1) and stays inert here: range is a placement
+  setting, not a gesture. It becomes bindable in item 13, and never to the range.
 
 **Accepted trade.** The design spec chose polar coordinates specifically so changing range
 stayed "instant and local" rather than a network round-trip. Moving it to the dashboard makes
@@ -1022,7 +1168,39 @@ untouched either way.
 
 ---
 
-### 13. The e-paper compositor — **L**
+### 13. Inputs — a device declares its buttons, the dashboard binds them — **S/M**
+
+**Goal.** The button on the back does something you chose, and the choice is made on the
+screen's own page.
+
+**Acceptance criteria**
+- A device declaring `buttons=boot.short` has that input listed on its page with an action
+  picker; a device declaring none shows no picker at all rather than a disabled one.
+- `clean_caps` accepts `^[a-z0-9_]{1,16}\.(short|long)$`, drops anything else, and still
+  honours `MAX_CAP_LIST` and the 32-char entry truncation — assert `buttons=../..;rm` is
+  dropped, not stored.
+- A capability list is only read when the same request also declares geometry, like every
+  other cap — a bare `?buttons=` fragment cannot redefine a device.
+- Bindings are stored **per device**, next to `poll_seconds`; changing the assignment does not
+  change them.
+- `GET/PUT /api/devices/{hw}/inputs`, plus the form on the device page.
+- The scene payload carries `inputs` filtered to what the device declared; a binding for an
+  undeclared input is dropped and **reported in the fleet view**, exactly as an undeclared
+  component already is.
+- Changing a binding changes the scene ETag, so it reaches the device on the next poll and an
+  unchanged binding still answers 304.
+- Firmware: `refrescar` drops the cached ETag and polls immediately; `identificar` draws the
+  hardware id for ~5s and then restores the scene without waiting for new content — assert
+  through `loop()`, not `renderScene()` (item 5).
+- An unknown or absent action is a **no-op**, never an error screen.
+- **`boot.long` is not in the declared list, has no picker, and cannot be bound.** A test
+  asserts a `PUT` naming it is a 400.
+
+**Dependencies.** Items 1 and 5.
+
+---
+
+### 14. The e-paper compositor — **L**
 
 **Goal.** The 800×480 panel shows the composed dashboard SPEC §9 designs.
 
@@ -1047,7 +1225,7 @@ which changes what a region is worth.
 
 ---
 
-### 14. Claude usage — **S/M**
+### 15. Claude usage — **S/M**
 
 Contingent on Q5's earlier answer, which is still open.
 

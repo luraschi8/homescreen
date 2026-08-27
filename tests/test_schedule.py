@@ -1,0 +1,194 @@
+"""Which view is showing, and when it next changes.
+
+The DST tests are the point of this file. A scheduler that edge-triggers is
+correct for 363 days a year and wrong on the two that involve an argument with
+a customer, so these pin the behaviour at both Madrid transitions rather than
+trusting that membership testing works out.
+"""
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from homescreen import schedule
+
+MADRID = ZoneInfo("Europe/Madrid")
+
+DAY = {"view": "dia", "days": [1, 2, 3, 4, 5, 6, 7], "from": "09:00", "to": "23:00"}
+NIGHT = {"view": "noche", "days": [1, 2, 3, 4, 5, 6, 7], "from": "23:00", "to": "07:00"}
+WEEKEND = {"view": "finde", "days": [6, 7], "from": "08:00", "to": "12:00"}
+S = {"tz": "Europe/Madrid", "default": "reposo",
+     "slots": [DAY, NIGHT, WEEKEND]}
+
+
+def at(stamp: str) -> float:
+    return datetime.fromisoformat(stamp).replace(tzinfo=MADRID).timestamp()
+
+
+# --- membership -------------------------------------------------------------
+
+@pytest.mark.parametrize("when,expected", [
+    ("2026-08-27T10:00", "dia"),        # Thursday mid-morning
+    ("2026-08-27T22:59", "dia"),        # the last minute before the flip
+    ("2026-08-27T23:00", "noche"),      # the flip itself
+    ("2026-08-28T03:00", "noche"),      # the wrapped tail, on the NEXT day
+    ("2026-08-28T06:59", "noche"),
+    ("2026-08-28T07:00", "reposo"),     # the gap
+    ("2026-08-28T08:30", "reposo"),     # weekday: no weekend slot
+    ("2026-08-29T08:30", "finde"),      # Saturday: there is one
+])
+def test_the_showing_view(when, expected):
+    assert schedule.active_view(S, at(when)) == expected
+
+
+def test_a_wrapped_slot_belongs_to_the_day_it_started_on():
+    # A night slot listed for Monday only must cover Tuesday's small hours --
+    # getting this backwards ends the slot at midnight and the panel changes
+    # while nobody is watching.
+    monday_night = {"view": "noche", "days": [1], "from": "23:00", "to": "07:00"}
+    s = {"default": "d", "slots": [monday_night], "tz": "Europe/Madrid"}
+    assert schedule.active_view(s, at("2026-08-31T23:30")) == "noche"   # Mon
+    assert schedule.active_view(s, at("2026-09-01T03:00")) == "noche"   # Tue am
+    assert schedule.active_view(s, at("2026-09-01T23:30")) == "d", "not Tue pm"
+
+
+def test_the_last_matching_slot_wins():
+    # Saturday 08:30 matches nothing else; Saturday 09:30 matches both `dia`
+    # and `finde`, and `finde` is later in the list.
+    assert schedule.active_view(S, at("2026-08-29T09:30")) == "finde"
+    reordered = {**S, "slots": [WEEKEND, DAY, NIGHT]}
+    assert schedule.active_view(reordered, at("2026-08-29T09:30")) == "dia"
+
+
+def test_no_match_falls_back_to_the_default_never_to_blank():
+    # A screen showing nothing looks broken and cannot be told from a dead one.
+    assert schedule.active_view(S, at("2026-08-28T07:30")) == "reposo"
+    assert schedule.active_view({"default": "x", "slots": []}, at("2026-08-28T07:30")) == "x"
+
+
+def test_a_window_that_starts_where_it_ends_is_a_whole_day():
+    s = {"default": "d", "slots": [{"view": "todo", "days": [4],
+                                    "from": "12:00", "to": "12:00"}]}
+    assert schedule.active_view(s, at("2026-08-27T03:00")) == "todo"
+    assert schedule.active_view(s, at("2026-08-27T18:00")) == "todo"
+
+
+# --- daylight saving --------------------------------------------------------
+
+def test_spring_forward_does_not_strand_a_slot_in_the_hour_that_never_happens():
+    # Madrid 2026-03-29: 02:00 -> 03:00. A slot boundary at 02:30 is inside an
+    # hour that does not exist. Edge triggering would wait for a moment that
+    # never arrives; membership testing simply finds the slot already over.
+    s = {"tz": "Europe/Madrid", "default": "noche",
+         "slots": [{"view": "madrugada", "days": [1, 2, 3, 4, 5, 6, 7],
+                    "from": "01:00", "to": "02:30"}]}
+    before = datetime(2026, 3, 29, 1, 30, tzinfo=MADRID).timestamp()
+    after = datetime(2026, 3, 29, 3, 30, tzinfo=MADRID).timestamp()
+    assert schedule.active_view(s, before) == "madrugada"
+    assert schedule.active_view(s, after) == "noche", "already over, not stuck"
+
+
+def test_fall_back_lets_a_slot_be_active_twice_which_is_harmless():
+    # Madrid 2026-10-25: 03:00 -> 02:00, so 02:30 happens twice.
+    s = {"tz": "Europe/Madrid", "default": "d",
+         "slots": [{"view": "repetida", "days": [1, 2, 3, 4, 5, 6, 7],
+                    "from": "02:00", "to": "03:00"}]}
+    first = datetime(2026, 10, 25, 2, 30, tzinfo=MADRID, fold=0).timestamp()
+    second = datetime(2026, 10, 25, 2, 30, tzinfo=MADRID, fold=1).timestamp()
+    assert first != second, "the two 02:30s are distinct instants"
+    assert schedule.active_view(s, first) == "repetida"
+    assert schedule.active_view(s, second) == "repetida"
+
+
+def test_a_device_that_slept_through_a_transition_still_gets_a_straight_answer():
+    # The property that matters for a panel polling every ten minutes.
+    s = {"tz": "Europe/Madrid", "default": "noche",
+         "slots": [{"view": "dia", "days": [1, 2, 3, 4, 5, 6, 7],
+                    "from": "07:00", "to": "23:00"}]}
+    assert schedule.active_view(s, datetime(2026, 3, 29, 9, 0,
+                                            tzinfo=MADRID).timestamp()) == "dia"
+
+
+# --- when does it next change ----------------------------------------------
+
+@pytest.mark.parametrize("when,hours", [
+    ("2026-08-27T10:00", 13.0),         # -> 23:00
+    ("2026-08-27T23:30", 7.5),          # -> 07:00
+    ("2026-08-28T07:30", 1.5),          # -> 09:00
+])
+def test_the_next_change_is_the_next_time_the_answer_differs(when, hours):
+    got = schedule.seconds_to_next_change(S, at(when))
+    assert got == pytest.approx(hours * 3600, abs=1.0)
+
+
+def test_a_schedule_with_no_slots_never_changes():
+    assert schedule.seconds_to_next_change({"default": "d", "slots": []},
+                                           at("2026-08-27T10:00")) is None
+
+
+def test_a_boundary_that_does_not_change_the_answer_is_not_a_change():
+    # Two back-to-back slots on the same view: the seam is not a change, and
+    # waking a panel for it would be a frame nobody can see.
+    s = {"tz": "Europe/Madrid", "default": "d", "slots": [
+        {"view": "x", "days": [4], "from": "09:00", "to": "12:00"},
+        {"view": "x", "days": [4], "from": "12:00", "to": "15:00"}]}
+    got = schedule.seconds_to_next_change(s, at("2026-08-27T10:00"))
+    assert got == pytest.approx(5 * 3600, abs=1.0), "15:00, not 12:00"
+
+
+def test_the_next_change_is_found_across_a_day_boundary():
+    s = {"tz": "Europe/Madrid", "default": "d", "slots": [
+        {"view": "finde", "days": [6], "from": "08:00", "to": "12:00"}]}
+    got = schedule.seconds_to_next_change(s, at("2026-08-28T20:00"))  # Friday
+    assert got == pytest.approx(12 * 3600, abs=1.0)                   # Sat 08:00
+
+
+# --- nothing here may raise -------------------------------------------------
+
+@pytest.mark.parametrize("bad", [
+    None, {}, [], "nonsense", 5,
+    {"slots": "not a list"},
+    {"slots": [None, 5, "x"]},
+    {"slots": [{"view": "v", "days": "17", "from": "09:00", "to": "10:00"}]},
+    {"slots": [{"view": "v", "days": [1], "from": "25:00", "to": "10:00"}]},
+    {"slots": [{"view": "v", "days": [1], "from": "9", "to": "10:00"}]},
+    {"slots": [{"view": "v", "days": [99], "from": "09:00", "to": "10:00"}]},
+    {"tz": "Mars/Olympus", "slots": [DAY]},
+])
+def test_a_malformed_schedule_answers_rather_than_exploding(bad):
+    # This runs on the route a panel depends on, and the file behind it is
+    # written from an unauthenticated page.
+    assert isinstance(schedule.active_view(bad, at("2026-08-27T10:00")), str)
+    schedule.seconds_to_next_change(bad, at("2026-08-27T10:00"))
+
+
+def test_an_unknown_timezone_falls_back_rather_than_failing():
+    s = {"tz": "Mars/Olympus", "default": "d",
+         "slots": [{"view": "v", "days": [1, 2, 3, 4, 5, 6, 7],
+                    "from": "00:00", "to": "23:59"}]}
+    assert schedule.active_view(s, at("2026-08-27T10:00")) == "v"
+
+
+# --- validation -------------------------------------------------------------
+
+def test_a_slot_pointing_at_a_view_that_does_not_exist_is_dropped():
+    # Kept, it would silently fall through to the default -- which looks
+    # exactly like the slot not matching, and is an hour of debugging.
+    cleaned = schedule.clean_schedule(
+        {"default": "a", "slots": [DAY, {"view": "ghost", "days": [1],
+                                         "from": "01:00", "to": "02:00"}]},
+        known_views={"a", "dia"})
+    assert [s["view"] for s in cleaned["slots"]] == ["dia"]
+
+
+def test_a_default_naming_nothing_is_replaced_rather_than_left_dangling():
+    cleaned = schedule.clean_schedule({"default": "ghost", "slots": []},
+                                      known_views={"a", "b"})
+    assert cleaned["default"] in {"a", "b"}
+
+
+def test_the_slot_list_is_bounded():
+    many = [dict(DAY) for _ in range(500)]
+    cleaned = schedule.clean_schedule({"default": "dia", "slots": many},
+                                      known_views={"dia"})
+    assert len(cleaned["slots"]) <= schedule.MAX_SLOTS
