@@ -52,11 +52,11 @@ class MockDevice:
                  "uptime": str(int(time.time() - self.started)), "rssi": "-58"}
         return f"{self.server}{path}?{urllib.parse.urlencode(query)}"
 
-    def _post(self, path: str, payload: dict):
+    def _write(self, path: str, payload: dict, method: str = "PUT"):
         """Operator-side call. No capability query string -- this is not the
         device speaking."""
         req = urllib.request.Request(
-            f"{self.server}{path}", method="POST",
+            f"{self.server}{path}", method=method,
             data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"})
         try:
@@ -90,14 +90,14 @@ class MockDevice:
         the mock wearing the operator's hat so one command exercises the whole
         contract.
         """
-        status, _, body = self._post(f"/api/devices/{self.hw}/approval",
-                                     {"approved": True})
-        if status != 200:
+        status, _, body = self._write(f"/api/devices/{self.hw}/membership",
+                                      {"approved": True})
+        if status not in (200, 204):
             raise SystemExit(f"approve -> HTTP {status}: "
                              f"{body[:200].decode(errors='replace')}")
 
     def scene(self) -> dict:
-        status, headers, body = self._get(f"/api/device/{self.hw}/scene")
+        status, headers, body = self._get(f"/api/devices/{self.hw}/scene")
         if status != 200:
             raise SystemExit(f"scene -> HTTP {status}: {body[:200].decode(errors='replace')}")
         out = json.loads(body)
@@ -105,7 +105,7 @@ class MockDevice:
         return out
 
     def frame(self) -> tuple[int, dict, bytes]:
-        status, headers, body = self._get(f"/api/device/{self.hw}/frame",
+        status, headers, body = self._get(f"/api/devices/{self.hw}/frame",
                                           conditional=True)
         if status == 200:
             self.etag = headers.get("ETag")

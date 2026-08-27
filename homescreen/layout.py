@@ -1,102 +1,144 @@
-"""Where a component goes on a screen.
+"""Where components go on a screen, at whatever size the screen is.
 
-A screen shows a VIEW: an ordered list of PLACEMENTS, each one component in one
-region with its own options. A 240x240 round panel is the degenerate case all
-the way down -- one region, one placement, one view -- and nothing about it is
-special-cased. That is the whole reason for shaping the record this way now
-rather than migrating it later: the small screen and the composed e-paper
-dashboard are the same structure with different numbers.
+A view is an ordered list of PLACEMENTS -- one component, in one region, with
+its own options. A region comes from a TEMPLATE: a way of dividing glass,
+expressed in fractions so it resolves against any geometry.
 
-A region is a rectangle with a capacity. Components never learn that regions
-exist; a placement's region is resolved to a rect and handed over as the
-geometry, exactly as a component already receives 240x240 or 800x480 today.
+The earlier version of this file listed two panels and their pixel rectangles.
+That is the wrong shape for a fleet that can grow a screen nobody has bought
+yet: it makes "support a new size" a code edit, and it makes the small screen
+look like an exception when it is just a screen where only one template fits.
+
+So templates declare what they REQUIRE of the glass, and every template that
+fits is offered. A 240x240 round panel fits `single`. A 7.5" e-paper fits
+`single`, `split` and `dashboard`. A 1024x600 nobody has tried fits the same
+three, with no edit here, because the question asked of it is about its
+measurements and not its name.
 """
 
 from __future__ import annotations
 
-#: The glass we know about, and how SPEC §9 divides it.
-#:
-#: Capacities are hard caps with a stated reason, not taste. `markets` holds 6
-#: because the band is 764px and a seventh entry truncates symbols -- the
-#: dashboard refuses it with a notice rather than rendering a row that lies.
-SURFACES = {
-    "round_240": {
-        "match": {"w": 240, "h": 240},
-        "regions": {
-            "full": {"rect": (0, 0, 240, 240), "holds": 1, "stack": None},
-        },
-    },
-    "epaper_800x480": {
-        "match": {"w": 800, "h": 480, "depth": 1},
-        "regions": {
-            "masthead":   {"rect": (0, 0, 800, 53),     "holds": 1, "stack": None},
-            "main_left":  {"rect": (18, 63, 417, 335),  "holds": 4, "stack": "v"},
-            "main_right": {"rect": (461, 63, 321, 335), "holds": 3, "stack": "v"},
-            "markets":    {"rect": (18, 406, 764, 62),  "holds": 6, "stack": "h"},
-        },
-    },
-}
-
-#: What any unrecognised panel gets: one region covering it.
-#:
-#: A new screen size must not need a table edit to work at all. It gets the
-#: degenerate surface -- one component, full bleed -- which is exactly what
-#: every device does today.
-FALLBACK_SURFACE = "single"
+from homescreen import surface
 
 MAX_PLACEMENTS = 16
 MAX_VIEWS = 32
 
+#: Ways of dividing a screen.
+#:
+#: Rects are FRACTIONS of the screen: (x, y, w, h) in 0..1. `holds` is a hard
+#: cap with a reason, and `requires` is what the glass must satisfy for the
+#: template to be offered at all.
+#:
+#: `dashboard`'s proportions are SPEC §9's measured 800x480 layout expressed as
+#: fractions -- masthead 53/480, margin 18/800 -- so the design that was drawn
+#: for that panel is preserved there and still resolves on a larger one.
+TEMPLATES = {
+    "single": {
+        "label": "una sola cosa",
+        "requires": {},                  # anything with pixels
+        "regions": {
+            "full": {"rect": (0.0, 0.0, 1.0, 1.0), "holds": 1, "stack": None},
+        },
+    },
+    "split": {
+        "label": "dos mitades",
+        # Round glass loses its corners, and a horizontal seam across a circle
+        # leaves two lens shapes that nothing lays out well.
+        "requires": {"shape": "rect", "min_short": 200},
+        "regions": {
+            "top":    {"rect": (0.0, 0.0, 1.0, 0.5), "holds": 3, "stack": "v"},
+            "bottom": {"rect": (0.0, 0.5, 1.0, 0.5), "holds": 3, "stack": "v"},
+        },
+    },
+    "dashboard": {
+        "label": "panel compuesto",
+        # Four regions on glass under this size gives bands too short for
+        # legible text; the smallest is the masthead at 11% of height.
+        "requires": {"shape": "rect", "min_w": 600, "min_h": 380,
+                     "min_aspect": 1.2},
+        "regions": {
+            "masthead":   {"rect": (0.0,    0.0,   1.0,   0.110),
+                           "holds": 1, "stack": None},
+            "main_left":  {"rect": (0.0225, 0.131, 0.521, 0.698),
+                           "holds": 4, "stack": "v"},
+            "main_right": {"rect": (0.576,  0.131, 0.401, 0.698),
+                           "holds": 3, "stack": "v"},
+            "markets":    {"rect": (0.0225, 0.846, 0.955, 0.129),
+                           "holds": 6, "stack": "h"},
+        },
+    },
+}
 
-def surface_name(caps) -> str:
-    """Which surface this device's glass is."""
-    caps = caps if isinstance(caps, dict) else {}
-    for name, surface in SURFACES.items():
-        if all(caps.get(k) == v for k, v in surface["match"].items()):
-            return name
-    return FALLBACK_SURFACE
+DEFAULT_TEMPLATE = "single"
 
 
-def regions(caps) -> dict:
-    """{region_name: {rect, holds, stack}} for this device."""
-    name = surface_name(caps)
-    if name in SURFACES:
-        return dict(SURFACES[name]["regions"])
-    caps = caps if isinstance(caps, dict) else {}
-    w = int(caps.get("w") or 240)
-    h = int(caps.get("h") or 240)
-    return {"full": {"rect": (0, 0, w, h), "holds": 1, "stack": None}}
+def _resolve(rect, screen) -> tuple[int, int, int, int]:
+    fx, fy, fw, fh = rect
+    w, h = screen.get("w", 0), screen.get("h", 0)
+    return (round(fx * w), round(fy * h), round(fw * w), round(fh * h))
 
 
-def region_caps(caps, region: str) -> dict:
+def templates_for(caps) -> tuple[str, ...]:
+    """Every template this glass can carry, smallest first.
+
+    `single` always qualifies: whatever the screen is, showing one thing on all
+    of it is possible, so no device can end up with nothing to choose.
+    """
+    screen = surface.describe(caps)
+    out = []
+    for name, template in TEMPLATES.items():
+        if not surface.fits(screen, **template["requires"]):
+            continue
+        # A template whose smallest region cannot hold legible text is not
+        # offered, however well it fits on paper.
+        rects = [_resolve(r["rect"], screen) for r in template["regions"].values()]
+        if any(min(w, h) < surface.MIN_REGION_PX for _, _, w, h in rects):
+            continue
+        out.append(name)
+    return tuple(out) or (DEFAULT_TEMPLATE,)
+
+
+def template_of(view) -> str:
+    name = (view or {}).get("template")
+    return name if name in TEMPLATES else DEFAULT_TEMPLATE
+
+
+def regions(caps, template: str = DEFAULT_TEMPLATE) -> dict:
+    """{region: {rect, holds, stack}} in PIXELS for this glass."""
+    screen = surface.describe(caps)
+    spec = TEMPLATES.get(template) or TEMPLATES[DEFAULT_TEMPLATE]
+    return {name: {**region, "rect": _resolve(region["rect"], screen)}
+            for name, region in spec["regions"].items()}
+
+
+def region_caps(caps, region: str, template: str = DEFAULT_TEMPLATE) -> dict:
     """The capabilities a component is handed for one placement.
 
-    Its geometry is the REGION's, not the panel's -- that is the only thing a
-    component needs to know, and it already knows how to use it. Depth and the
-    device's item ceiling carry through unchanged; they are properties of the
-    hardware, not of the rectangle.
+    Its geometry is the REGION's, not the panel's. Everything else -- depth,
+    shape, the device's item ceiling -- carries through, because those are
+    properties of the hardware rather than of the rectangle. A component asked
+    to draw in a 764x62 band on 1-bit glass needs to know both facts.
     """
     base = dict(caps) if isinstance(caps, dict) else {}
-    rect = regions(base).get(region, {}).get("rect")
-    if rect is None:
+    found = regions(base, template).get(region)
+    if found is None:
         return base
-    _, _, w, h = rect
+    _, _, w, h = found["rect"]
     return {**base, "w": w, "h": h}
 
 
-def clean_placement(raw, caps, known_components) -> dict | None:
-    """One placement, or None if it is not usable. Never raises."""
+def clean_placement(raw, caps, known_components, template=DEFAULT_TEMPLATE):
+    """One placement, or None if unusable. Never raises."""
     if not isinstance(raw, dict):
         return None
     component = raw.get("component")
     if component not in set(known_components or ()):
         return None
     region = raw.get("region")
-    available = regions(caps)
-    if region not in available:
-        # Not silently relocated: a placement in a region this glass does not
-        # have is a statement about a different screen, and moving it would
-        # invent a layout nobody chose.
+    if region not in regions(caps, template):
+        # Not relocated. A placement naming a region this template does not
+        # have is a statement about a different layout, and moving it would
+        # invent an arrangement nobody chose.
         return None
     options = raw.get("options")
     return {"id": str(raw.get("id") or f"{region}-{component}"),
@@ -105,42 +147,38 @@ def clean_placement(raw, caps, known_components) -> dict | None:
 
 
 def clean_view(raw, caps, known_components) -> dict:
-    """One view: its placements, in order, within every region's capacity."""
+    """One view: a template plus its placements, within every capacity."""
+    raw = raw if isinstance(raw, dict) else {}
+    template = template_of(raw)
+    if template not in templates_for(caps):
+        template = DEFAULT_TEMPLATE
+    available = regions(caps, template)
     placements, used = [], {}
-    for item in (raw or {}).get("placements", [])[:MAX_PLACEMENTS]:
-        placement = clean_placement(item, caps, known_components)
+    for item in (raw.get("placements") or [])[:MAX_PLACEMENTS]:
+        placement = clean_placement(item, caps, known_components, template)
         if placement is None:
             continue
         region = placement["region"]
-        holds = regions(caps)[region]["holds"]
-        if used.get(region, 0) >= holds:
-            continue                     # the cap is the cap
+        if used.get(region, 0) >= available[region]["holds"]:
+            continue
         used[region] = used.get(region, 0) + 1
         placements.append(placement)
-    return {"placements": placements}
+    return {"template": template, "placements": placements}
 
 
 def single(component: str, options=None, region: str = "full") -> dict:
-    """The one-component view every screen has today."""
-    return {"placements": [{"id": f"{region}-{component}", "region": region,
+    """The one-component view every screen can show."""
+    return {"template": DEFAULT_TEMPLATE,
+            "placements": [{"id": f"{region}-{component}", "region": region,
                             "component": str(component),
                             "options": dict(options or {})}]}
 
 
 def view_for(rec: dict, name: str | None = None) -> dict:
-    """The view a record is showing, whatever shape the record is in.
-
-    Records predate views: they carry `scene` and `options`. Rather than
-    migrating every file on deploy -- a write across the whole registry to
-    change nothing observable -- a legacy record is READ as the view it always
-    meant. It grows the new shape the next time someone edits it.
-    """
+    """The view a record is showing, whatever shape the record is in."""
     rec = rec if isinstance(rec, dict) else {}
     views = rec.get("views")
     if isinstance(views, dict):
-        # Only usable views count. A view stored as null -- reachable through a
-        # hand-edited file -- was handed straight back, so the caller got None
-        # where it had asked for a mapping.
         usable = {k: v for k, v in views.items() if isinstance(v, dict)}
         if usable:
             if name and name in usable:
@@ -150,8 +188,9 @@ def view_for(rec: dict, name: str | None = None) -> dict:
             if default in usable:
                 return usable[default]
             return usable[sorted(usable)[0]]
-    scene = rec.get("scene") or "unassigned"
-    return single(scene, rec.get("options"))
+    # Records predate views: they carry `scene` and `options`, and are read as
+    # the view they always meant rather than rewritten on deploy.
+    return single(rec.get("scene") or "unassigned", rec.get("options"))
 
 
 def view_names(rec: dict) -> tuple[str, ...]:

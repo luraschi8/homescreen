@@ -71,10 +71,16 @@ void onRangeTap() {
 }
 
 void handleBootButton() {
+  // Long press still opens the WiFi portal. That is the only way back for a
+  // board on the wrong network, so it is not configurable and never will be.
   bootButtonPollLongPress();
-  if (bootButtonConsumeTap()) {
-    onRangeTap();
-  }
+  // A short press does NOTHING, on purpose. It used to cycle the radar range,
+  // which is moving into the assignment where the server can show and preview
+  // it. Rather than invent a replacement meaning, the press is inert until
+  // devices declare their inputs and the dashboard binds actions to them --
+  // then it does whatever this screen was configured to do, and one guess made
+  // today does not have to be undone.
+  bootButtonConsumeTap();
 }
 
 }  // namespace

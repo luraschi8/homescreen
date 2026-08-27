@@ -32,13 +32,13 @@ def dev():
 
 
 def test_capabilities_are_declared_on_every_call(dev):
-    url = dev._url("/api/device/x/scene")
+    url = dev._url("/api/devices/x/scene")
     for expected in ("w=800", "h=480", "depth=1", "layouts=fill", "fw=mock-0.1"):
         assert expected in url, f"{expected} missing from {url}"
 
 
 def test_telemetry_rides_along_so_the_fleet_view_is_populated(dev):
-    url = dev._url("/api/device/x/scene")
+    url = dev._url("/api/devices/x/scene")
     assert "rssi=" in url and "uptime=" in url and "errors=0" in url
 
 
@@ -231,7 +231,7 @@ def test_main_runs_a_full_epaper_cycle(wired, capsys, tmp_path):
 
 def test_main_reports_components_for_a_round_device(wired, capsys):
     client, _ = wired
-    client.get("/api/device/r1/scene?w=240&h=240&depth=16&components=radar")
+    client.get("/api/devices/r1/scene?w=240&h=240&depth=16&components=radar")
     client.patch("/api/devices/r1", json={"name": "r1", "scene": "planes"})
     rc = mockdevice.main(["--hw", "r1", "--kind", "round", "--once", "--approve"])
     printed = capsys.readouterr().out
@@ -240,7 +240,7 @@ def test_main_reports_components_for_a_round_device(wired, capsys):
 
 def test_main_says_so_when_a_scene_is_pixel_push_only(wired, capsys):
     client, _ = wired
-    client.get("/api/device/r2/scene?w=240&h=240&depth=16&components=radar")
+    client.get("/api/devices/r2/scene?w=240&h=240&depth=16&components=radar")
     client.patch("/api/devices/r2", json={"name": "r2", "scene": "clock"})
     mockdevice.main(["--hw", "r2", "--kind", "round", "--once", "--approve"])
     assert "no components" in capsys.readouterr().out

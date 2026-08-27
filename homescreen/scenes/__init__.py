@@ -108,6 +108,61 @@ class Scene:
                            clean_poll_s(self.poll_max_s) or self.poll_s)
 
 
+def surfaces(name: str) -> tuple:
+    """What glass this component says it can draw on.
+
+    A component declaring nothing is offered everywhere, which is what every
+    component did before this existed. Declaring is how a component says "a
+    radar needs room for rings" or "this is a text page, not a badge" without
+    anyone maintaining a table of known panels somewhere else.
+    """
+    try:
+        build_fn = _registry()[name]
+    except KeyError:
+        return ()
+    module = sys.modules.get(build_fn.__module__)
+    declared = getattr(module, "SURFACES", ())
+    return tuple(d for d in declared if isinstance(d, dict))
+
+
+def supports(name: str, caps) -> tuple[bool, str]:
+    """(can this component draw on this glass, why not). Never raises.
+
+    Any ONE declared surface matching is enough: a component may serve a small
+    round panel one way and a wide band another, and it only has to be able to
+    do one of them here.
+    """
+    from homescreen import surface as _surface
+    declared = surfaces(name)
+    if not declared:
+        return True, ""
+    screen = _surface.describe(caps)
+    if not screen["w"] or not screen["h"]:
+        # Geometry not declared yet. Unknown is not the same as too small, and
+        # judging a device before it has said what it is would disable every
+        # component on a board that has only just called in.
+        return True, ""
+    for spec in declared:
+        try:
+            if _surface.fits(screen, **spec):
+                return True, ""
+        except TypeError:
+            continue                     # a spec naming an unknown constraint
+    return False, _why_not(declared, screen)
+
+
+def _why_not(declared, screen) -> str:
+    """A reason in the dashboard's language, not a dump of the constraint."""
+    wants_shape = {d.get("shape") for d in declared if d.get("shape")}
+    if wants_shape and screen.get("shape") not in wants_shape:
+        return f"necesita pantalla {'/'.join(sorted(wants_shape))}"
+    smallest = min((d.get("min_short") or d.get("min_w") or 0)
+                   for d in declared)
+    if smallest and screen.get("short", 0) < smallest:
+        return f"necesita al menos {smallest}px"
+    return "no encaja en esta pantalla"
+
+
 def clean_poll_s(value):
     """Coerce a scene's requested cadence to a usable number of seconds.
 

@@ -15,6 +15,11 @@ from datetime import datetime
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._style import page
 
+#: Host stats are a page of labelled rows. On a narrow badge the labels and
+#: their values cannot share a line, and stacking them makes a list nobody can
+#: read at a glance -- which is the only reason to show host stats at all.
+SURFACES = ({"shape": "rect", "min_w": 320},)
+
 CSS = """
 .wrap{padding:18px;display:flex;flex-direction:column;height:100%;
   align-items:center;justify-content:center;text-align:center}

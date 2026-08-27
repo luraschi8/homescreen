@@ -22,7 +22,23 @@ constexpr char kFirmwareVersion[] = "hs-0.1";
  * list the firmware executes without knowing what it means, so adding a name
  * here costs one word and no drawing code.
  */
-constexpr char kDeclaredComponents[] = "radar,clock";
+//: What this device can draw.
+//:
+//: `draw_list` is a CAPABILITY, not a component: it says "I can execute any
+//: instruction list you send". The dispatcher already draws any component it
+//: does not recognise as long as that component ships a draw list -- it
+//: deliberately does not know what a clock is -- so naming components one by
+//: one here was the only thing making every new component a firmware release.
+//:
+//: `radar` stays named because it is genuinely not an instruction list: the
+//: device projects, dead-reckons between polls, and runs a label-collision
+//: ladder per frame.
+constexpr char kDeclaredComponents[] = "radar,draw_list";
+
+//: Round glass. Declared rather than inferred: 240x240 could equally be a
+//: square panel, and a server guessing wrong lays a layout across corners
+//: this screen does not have.
+constexpr char kScreenShape[] = "round";
 
 // --- Wi-Fi portal ---
 constexpr char kPortalApName[] = "HomeScreen-Setup";

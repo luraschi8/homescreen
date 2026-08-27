@@ -30,6 +30,11 @@ from homescreen.config import feed_cache_path
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._style import page
 
+#: A radar draws range rings, a heading vector and collision-laddered labels
+#: around a centre. Under this it is a smear: the innermost ring and the
+#: aircraft symbol overlap, and every label collides with every other.
+SURFACES = ({"min_short": 160},)
+
 CSS = """
 .wrap{padding:18px;display:flex;flex-direction:column;height:100%}
 table{width:100%;border-collapse:collapse;margin-top:8px}

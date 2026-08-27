@@ -77,7 +77,8 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     lists = datalist_markup([f for s in schemas.values() for f in (s or [])])
 
     thumbs = "".join(
-        f'<figure class="pv"><img src="/preview/{hw}/{e(name)}.svg" '
+        f'<figure class="pv">'
+        f'<img src="/api/devices/{hw}/preview.svg?view={e(name)}" '
         f'alt="{e(name)} en esta pantalla" loading="lazy">'
         f'<figcaption>{e(name)}</figcaption></figure>'
         for name, ok, _ in options if ok)

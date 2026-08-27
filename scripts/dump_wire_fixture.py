@@ -55,27 +55,27 @@ def build(out_path: pathlib.Path) -> None:
     _write_feed(cache_dir, NOW)
 
     # First contact: registered, but nobody has let it into the fleet yet.
-    pending = client.get(f"/api/device/{HW}/scene?{QUERY}")
-    client.post(f"/api/devices/{HW}/approval", json={"approved": True})
+    pending = client.get(f"/api/devices/{HW}/scene?{QUERY}")
+    client.put(f"/api/devices/{HW}/membership", json={"approved": True})
     # Admitted, but not yet given a job. A different screen and a different
     # message, and the firmware has to tell them apart -- so both are pinned.
-    unassigned = client.get(f"/api/device/{HW}/scene?{QUERY}")
+    unassigned = client.get(f"/api/devices/{HW}/scene?{QUERY}")
     client.patch(f"/api/devices/{HW}", json={"name": "radar", "scene": "planes"})
-    assigned = client.get(f"/api/device/{HW}/scene?{QUERY}")
+    assigned = client.get(f"/api/devices/{HW}/scene?{QUERY}")
     dropped = client.get(
-        f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=text")
+        f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=text")
 
     # ok:false with fresh data -- one upstream timeout. The device must NOT
     # blank on this; write_failure keeps the last good aircraft.
-    client.get(f"/api/device/{HW}/scene?{QUERY}")          # re-declare radar
+    client.get(f"/api/devices/{HW}/scene?{QUERY}")          # re-declare radar
     _write_feed(cache_dir, NOW, ok=False)
-    feed_down = client.get(f"/api/device/{HW}/scene?{QUERY}")
+    feed_down = client.get(f"/api/devices/{HW}/scene?{QUERY}")
 
     # ok:TRUE and 90 seconds stale -- the fetch daemon was stopped, so nothing
     # ever wrote a failure. This is the fixture the whole expiry design exists
     # for, and revision 2 of the plan never generated one.
     _write_feed(cache_dir, NOW - 90.0, ok=True)
-    feed_stale = client.get(f"/api/device/{HW}/scene?{QUERY}")
+    feed_stale = client.get(f"/api/devices/{HW}/scene?{QUERY}")
 
     def body(resp) -> str:
         return json.dumps(resp.get_json(), separators=(",", ":"),

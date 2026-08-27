@@ -152,7 +152,7 @@ def test_first_contact_registers_and_says_it_is_waiting_to_be_let_in(ctx):
     # everything that ever spoke. A device now arrives pending, and says so on
     # its own glass rather than sitting on a scene nobody granted it.
     client, cache, _ = ctx
-    body = client.get(f"/api/device/{HW}/scene?fw=0.2.0&rssi=-64&uptime=99").get_json()
+    body = client.get(f"/api/devices/{HW}/scene?fw=0.2.0&rssi=-64&uptime=99").get_json()
     assert body["assigned"] is False
     assert body["scene"] == "pending"
     assert body["hw"] == HW, "a newly flashed board can tell you its id"
@@ -164,33 +164,33 @@ def test_first_contact_registers_and_says_it_is_waiting_to_be_let_in(ctx):
 
 def test_an_assigned_device_gets_its_scene(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene")
+    client.get(f"/api/devices/{HW}/scene")
     registry.set_approval(cache, HW, True)
     registry.assign(cache, HW, name="radar", scene="planes")
-    body = client.get(f"/api/device/{HW}/scene").get_json()
+    body = client.get(f"/api/devices/{HW}/scene").get_json()
     assert (body["assigned"], body["scene"], body["name"]) == (True, "planes", "radar")
     assert "message" not in body
 
 
 def test_the_device_call_updates_liveness(ctx):
     client, _, clock = ctx
-    client.get(f"/api/device/{HW}/scene")
+    client.get(f"/api/devices/{HW}/scene")
     clock.t += 3600
     assert client.get("/api/devices").get_json()["devices"][0]["online"] is False
-    client.get(f"/api/device/{HW}/scene")
+    client.get(f"/api/devices/{HW}/scene")
     assert client.get("/api/devices").get_json()["devices"][0]["online"] is True
 
 
 def test_poll_seconds_is_advertised_so_cadence_stays_server_controlled(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene")
+    client.get(f"/api/devices/{HW}/scene")
     registry.assign(cache, HW, poll_seconds=30)
-    assert client.get(f"/api/device/{HW}/scene").headers["X-Poll-Seconds"] == "30"
+    assert client.get(f"/api/devices/{HW}/scene").headers["X-Poll-Seconds"] == "30"
 
 
 def test_capabilities_are_recorded_and_range_checked(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&layouts=fill"
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&layouts=fill"
                "&components=text,rings,markers")
     caps = registry.load(cache)[HW]["caps"]
     assert (caps["w"], caps["h"], caps["depth"]) == (240, 240, 16)
@@ -205,7 +205,7 @@ def test_capabilities_are_recorded_and_range_checked(ctx):
 ])
 def test_malformed_capability_query_strings_never_500(ctx, qs):
     client, cache, _ = ctx
-    assert client.get(f"/api/device/{HW}/scene?{qs}").status_code == 200
+    assert client.get(f"/api/devices/{HW}/scene?{qs}").status_code == 200
     caps = registry.load(cache)[HW]["caps"]
     for key in ("w", "h", "depth"):
         if key in caps:
@@ -222,14 +222,18 @@ def test_an_unusable_hardware_id_is_rejected_not_registered(ctx, hw, status):
     # `in (400, 404)` hid which ids the server actually validates and which
     # never arrive at all -- so _check_hw could have stopped running entirely.
     client, cache, _ = ctx
-    assert client.get(f"/api/device/{hw}/scene").status_code == status
+    # An EMPTY id never reaches routing: Werkzeug collapses the doubled slash
+    # and redirects, and the target 404s. The claim being made is the same
+    # either way -- an unusable id creates no record.
+    expected = (status, 308) if hw == "" else (status,)
+    assert client.get(f"/api/devices/{hw}/scene").status_code in expected
     assert registry.load(cache) == {}
 
 
 def test_one_call_cannot_write_an_unbounded_registry(ctx, tmp_path):
     client, cache, _ = ctx
     qs = "&".join(f"k{i}=" + "v" * 400 for i in range(200))
-    assert client.get(f"/api/device/{HW}/scene?{qs}").status_code == 200
+    assert client.get(f"/api/devices/{HW}/scene?{qs}").status_code == 200
     rec = registry.load(cache)[HW]
     assert len(rec["telemetry"]) <= registry.MAX_TELEMETRY_KEYS
     assert all(len(v) <= registry.MAX_VALUE_LEN for v in rec["telemetry"].values())
@@ -238,7 +242,7 @@ def test_one_call_cannot_write_an_unbounded_registry(ctx, tmp_path):
 def test_a_registration_flood_is_bounded_on_disk(ctx):
     client, cache, _ = ctx
     for i in range(registry.MAX_DEVICES * 3):
-        client.get(f"/api/device/{i:012x}/scene")
+        client.get(f"/api/devices/{i:012x}/scene")
     assert len(registry.load(cache)) <= registry.MAX_DEVICES
 
 
@@ -247,8 +251,8 @@ def test_a_registration_flood_does_not_lock_out_real_hardware(ctx):
     # by one GET each held the door shut against new hardware indefinitely.
     client, cache, _ = ctx
     for i in range(registry.MAX_DEVICES):
-        client.get(f"/api/device/{i:012x}/scene")
-    r = client.get("/api/device/realpanel/scene?w=800&h=480&depth=1")
+        client.get(f"/api/devices/{i:012x}/scene")
+    r = client.get("/api/devices/realpanel/scene?w=800&h=480&depth=1")
     assert r.status_code == 200, r.get_data()
     assert "realpanel" in registry.load(cache)
 
@@ -259,9 +263,9 @@ def test_a_fully_configured_fleet_refuses_a_new_registration(ctx):
     client, cache, _ = ctx
     for i in range(registry.MAX_DEVICES):
         hw = f"{i:012x}"
-        client.get(f"/api/device/{hw}/scene")
+        client.get(f"/api/devices/{hw}/scene")
         client.patch(f"/api/devices/{hw}", json={"name": f"d{i}", "scene": "clock"})
-    r = client.get("/api/device/ffffffffffff/scene")
+    r = client.get("/api/devices/ffffffffffff/scene")
     assert r.status_code == 400
     assert "full" in r.get_json()["error"]
 
@@ -284,7 +288,7 @@ def test_a_damaged_registry_still_lets_a_device_register(ctx):
     client, cache, _ = ctx
     registry.registry_path(cache).parent.mkdir(parents=True, exist_ok=True)
     registry.registry_path(cache).write_text("{not json")
-    assert client.get(f"/api/device/{HW}/scene").status_code == 200
+    assert client.get(f"/api/devices/{HW}/scene").status_code == 200
     assert list(registry.load(cache)) == [HW]
 
 
@@ -303,9 +307,9 @@ def test_an_unchanged_scene_is_a_304(ctx):
     # scene" is implemented: /frame had an ETag and this route had none, so a
     # firmware sending If-None-Match here got a full body every poll.
     client, cache, _ = ctx
-    first = client.get(f"/api/device/{HW}/scene?w=240&h=240&components=text")
+    first = client.get(f"/api/devices/{HW}/scene?w=240&h=240&components=text")
     etag = first.headers["ETag"]
-    again = client.get(f"/api/device/{HW}/scene?w=240&h=240&components=text",
+    again = client.get(f"/api/devices/{HW}/scene?w=240&h=240&components=text",
                        headers={"If-None-Match": etag})
     assert again.status_code == 304
     assert again.get_data() == b""
@@ -315,7 +319,7 @@ def test_an_unchanged_scene_is_a_304(ctx):
 
 def test_assigning_a_scene_changes_the_etag(ctx):
     client, cache, _ = ctx
-    q = f"/api/device/{HW}/scene?w=240&h=240&components=radar"
+    q = f"/api/devices/{HW}/scene?w=240&h=240&components=radar"
     before = client.get(q).headers["ETag"]
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
     after = client.get(q).headers["ETag"]
@@ -326,7 +330,7 @@ def test_a_renamed_device_changes_the_etag(ctx):
     # The name is in the body, so a device that 304'd would keep showing the
     # old one on the status panel.
     client, cache, _ = ctx
-    q = f"/api/device/{HW}/scene?w=800&h=480&depth=1"
+    q = f"/api/devices/{HW}/scene?w=800&h=480&depth=1"
     before = client.get(q).headers["ETag"]
     client.patch(f"/api/devices/{HW}", json={"name": "escritorio"})
     assert client.get(q).headers["ETag"] != before
@@ -364,10 +368,10 @@ def test_a_dropped_component_shows_up_where_an_operator_looks(ctx):
     # staring at a panel showing the wrong thing had to diff two JSON payloads
     # by hand to learn the server had dropped something.
     client, cache, _ = ctx
-    client.get("/api/device/rd/scene?w=240&h=240&components=text")
+    client.get("/api/devices/rd/scene?w=240&h=240&components=text")
     registry.set_approval(cache, "rd", True)
     client.patch("/api/devices/rd", json={"name": "rd", "scene": "planes"})
-    client.get("/api/device/rd/scene?w=240&h=240&components=text")
+    client.get("/api/devices/rd/scene?w=240&h=240&components=text")
     entry, = [d for d in client.get("/api/devices").get_json()["devices"]
               if d["hw"] == "rd"]
     assert entry["unsupported"] == ["radar"]
@@ -376,12 +380,12 @@ def test_a_dropped_component_shows_up_where_an_operator_looks(ctx):
 def test_a_scene_that_raises_is_recorded_against_the_device(ctx, monkeypatch):
     client, cache, _ = ctx
     from homescreen.scenes import clock as clock_mod
-    client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
     registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "clock"})
     monkeypatch.setattr(clock_mod, "build",
                         lambda c: (_ for _ in ()).throw(RuntimeError("boom")))
-    client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
     registry.set_approval(cache, HW, True)
     entry, = [d for d in client.get("/api/devices").get_json()["devices"]
               if d["hw"] == HW]
@@ -393,10 +397,10 @@ def test_a_recovered_scene_clears_the_note(ctx, monkeypatch):
     # A stale error is worse than none: it sends an operator looking for a
     # fault that fixed itself.
     client, cache, _ = ctx
-    client.get("/api/device/rd2/scene?w=240&h=240&components=text")
+    client.get("/api/devices/rd2/scene?w=240&h=240&components=text")
     client.patch("/api/devices/rd2", json={"name": "rd2", "scene": "planes"})
-    client.get("/api/device/rd2/scene?w=240&h=240&components=text")
-    client.get("/api/device/rd2/scene?w=240&h=240&components=radar")
+    client.get("/api/devices/rd2/scene?w=240&h=240&components=text")
+    client.get("/api/devices/rd2/scene?w=240&h=240&components=radar")
     entry, = [d for d in client.get("/api/devices").get_json()["devices"]
               if d["hw"] == "rd2"]
     assert "unsupported" not in entry
@@ -414,11 +418,11 @@ def test_every_route_agrees_on_the_window_silence_is_judged_against(ctx):
     # route ever sent it. So: one budget everywhere, and the countdown the
     # device actually obeys never exceeds it.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
     registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "salon", "scene": "clock"})
 
-    scene = client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    scene = client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
     data = client.get("/api/display/salon/data")
     fleet, = [d for d in client.get("/api/devices").get_json()["devices"]
               if d["hw"] == HW]
@@ -434,12 +438,12 @@ def test_every_route_agrees_on_the_window_silence_is_judged_against(ctx):
 
 def test_an_operator_cadence_reaches_every_route_too(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
     registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}",
                  json={"name": "salon2", "scene": "clock", "poll_seconds": 90})
     assert client.get("/api/display/salon2/data").headers["X-Poll-Seconds"] == "90"
-    assert client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1"
+    assert client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1"
                       ).headers["X-Poll-Seconds"] == "90"
 
 
@@ -464,7 +468,7 @@ def test_an_unchanged_sky_answers_304_despite_the_clock_moving(ctx):
     client, cache, clock = ctx
     _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
                                 "cs": "IBE1"}])
-    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    q = f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar"
     client.get(q)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
     etag = client.get(q).headers["ETag"]
@@ -477,7 +481,7 @@ def test_the_hidden_age_drift_is_bounded_by_one_bucket(ctx):
     client, cache, clock = ctx
     _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
                                 "cs": "IBE1"}])
-    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    q = f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar"
     client.get(q)
     registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
@@ -494,7 +498,7 @@ def test_a_changed_sky_still_changes_the_etag_within_a_bucket(ctx):
     client, cache, clock = ctx
     _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
                                 "cs": "IBE1"}])
-    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    q = f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar"
     client.get(q)
     registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
@@ -508,7 +512,7 @@ def test_a_new_aircraft_changes_the_etag(ctx):
     client, cache, clock = ctx
     _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
                                 "cs": "IBE1"}])
-    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    q = f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar"
     client.get(q)
     registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
@@ -527,7 +531,7 @@ def test_a_feed_going_down_changes_the_etag(ctx):
     client, cache, clock = ctx
     _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
                                 "cs": "IBE1"}])
-    q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
+    q = f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar"
     client.get(q)
     registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
@@ -553,11 +557,11 @@ def test_the_api_can_put_a_device_back_to_unassigned(ctx):
 def test_an_unassigned_device_is_served_the_unassigned_scene_again(ctx):
     # Round trip: the device must actually see the change, not just the record.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar")
     registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "planes"})
     client.patch(f"/api/devices/{HW}", json={"scene": "unassigned"})
-    body = client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16"
+    body = client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16"
                       "&components=radar").get_json()
     assert body["assigned"] is False
     assert body["scene"] == "unassigned"
@@ -606,12 +610,12 @@ def test_the_current_scene_is_preselected(ctx):
 def test_applying_a_scene_from_the_dashboard_changes_what_the_device_is_served(ctx):
     # The whole point: the operator picks, and the device follows.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar")
     registry.set_approval(cache, HW, True)
     r = client.post("/home/device",
                     data={"hw": HW, "name": "salon", "scene": "planes"})
     assert r.status_code in (302, 303), "a form POST must redirect, not render"
-    body = client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16"
+    body = client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16"
                       "&components=radar").get_json()
     assert body["scene"] == "planes" and body["assigned"] is True
     assert [c["c"] for c in body["components"]] == ["radar"]
@@ -619,11 +623,11 @@ def test_applying_a_scene_from_the_dashboard_changes_what_the_device_is_served(c
 
 def test_the_dashboard_can_put_a_device_back_to_unassigned(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar")
     client.post("/home/device", data={"hw": HW, "name": "salon", "scene": "planes"})
     client.post("/home/device", data={"hw": HW, "name": "salon",
                                       "scene": "unassigned"})
-    body = client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16"
+    body = client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16"
                       "&components=radar").get_json()
     assert body["assigned"] is False
     assert registry.load(cache)[HW]["name"] == "salon", "the name must survive"
@@ -632,7 +636,7 @@ def test_the_dashboard_can_put_a_device_back_to_unassigned(ctx):
 def test_renaming_from_the_dashboard_changes_what_the_name_route_serves(ctx):
     # The name is what /api/display/<name>/ routes on, so this is not cosmetic.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar")
     registry.set_approval(cache, HW, True)
     client.post("/home/device", data={"hw": HW, "name": "cocina", "scene": "planes"})
     assert client.get("/api/display/cocina/health").status_code == 200
@@ -755,7 +759,7 @@ def test_a_data_push_device_is_only_offered_scenes_it_can_draw(ctx):
     # only, so picking it put "escena no soportada" on the glass -- and the
     # operator had no way to know that before pressing apply.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar")
     html = _device(client)
     assert '<option value="planes"' in html
     assert 'disabled' in html, "clock and status are not drawable here"
@@ -764,17 +768,21 @@ def test_a_data_push_device_is_only_offered_scenes_it_can_draw(ctx):
 
 
 def test_a_disabled_option_says_why(ctx):
-    # "clock — no components for this device" beats a silent grey row.
+    # A reason beats a silent grey row -- and it is in the page's own language
+    # now, rather than English leaking into a Spanish dashboard.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar")
     html = _device(client)
-    assert "no components for this device" in html
+    # Two kinds of reason, and each names the actual obstacle: what this
+    # screen cannot carry, and what a component needs that it does not have.
+    assert "la pantalla no declara clock" in html
+    assert "necesita al menos 320px" in html, "the component's own requirement"
 
 
 def test_a_pixel_push_device_is_offered_every_scene(ctx):
     # An e-paper takes a rendered framebuffer, so any scene with html works.
     client, cache, _ = ctx
-    client.get("/api/device/epap/scene?w=800&h=480&depth=1")
+    client.get("/api/devices/epap/scene?w=800&h=480&depth=1")
     html = _device(client, "epap")
     for scene in ("clock", "planes", "status"):
         assert f'<option value="{scene}"' in html
@@ -787,14 +795,14 @@ def test_a_device_that_declares_a_component_we_have_no_scene_for(ctx):
     # Declaring `text` today matches no scene, so everything is disabled -- and
     # every row says what it would need.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=text")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=text")
     html = _device(client)
-    assert "needs radar" in html, "planes should say what it wants"
+    assert "no declara radar" in html, "planes should say what it wants"
 
 
 def test_the_offered_list_still_lets_you_unassign(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar")
     assert '<option value="unassigned"' in _device(client)
 
 
@@ -802,8 +810,8 @@ def test_the_offered_list_still_lets_you_unassign(ctx):
 
 def test_a_drawable_scene_previews_what_the_device_would_draw(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
-    r = client.get(f"/preview/{HW}/clock.svg")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    r = client.get(f"/api/devices/{HW}/preview.svg?view=clock")
     assert r.status_code == 200
     assert r.mimetype == "image/svg+xml"
     body = r.get_data(as_text=True)
@@ -814,18 +822,18 @@ def test_the_preview_is_drawn_at_the_devices_own_geometry(ctx):
     # A preview at the wrong size is worse than none: it shows a layout the
     # device will never produce.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
-    client.get("/api/device/EP/scene?w=800&h=480&depth=1")
-    assert 'viewBox="0 0 240 240"' in client.get(f"/preview/{HW}/clock.svg").get_data(as_text=True)
-    assert 'viewBox="0 0 800 480"' in client.get("/preview/EP/clock.svg").get_data(as_text=True)
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    client.get("/api/devices/EP/scene?w=800&h=480&depth=1")
+    assert 'viewBox="0 0 240 240"' in client.get(f"/api/devices/{HW}/preview.svg?view=clock").get_data(as_text=True)
+    assert 'viewBox="0 0 800 480"' in client.get("/api/devices/EP/preview.svg?view=clock").get_data(as_text=True)
 
 
 def test_a_square_panel_previews_round_and_a_wide_one_does_not(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
-    client.get("/api/device/EP/scene?w=800&h=480&depth=1")
-    assert "<circle" in client.get(f"/preview/{HW}/clock.svg").get_data(as_text=True)
-    assert "<circle" not in client.get("/preview/EP/clock.svg").get_data(as_text=True)
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    client.get("/api/devices/EP/scene?w=800&h=480&depth=1")
+    assert "<circle" in client.get(f"/api/devices/{HW}/preview.svg?view=clock").get_data(as_text=True)
+    assert "<circle" not in client.get("/api/devices/EP/preview.svg?view=clock").get_data(as_text=True)
 
 
 def test_a_component_with_no_instructions_says_so_rather_than_faking_one(ctx):
@@ -833,8 +841,8 @@ def test_a_component_with_no_instructions_says_so_rather_than_faking_one(ctx):
     # approximation and calling it a preview would be exactly the drift this
     # design exists to prevent.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
-    body = client.get(f"/preview/{HW}/planes.svg").get_data(as_text=True)
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    body = client.get(f"/api/devices/{HW}/preview.svg?view=planes").get_data(as_text=True)
     assert "sin vista previa" in body
 
 
@@ -842,42 +850,42 @@ def test_the_preview_never_forks_a_browser(ctx, monkeypatch):
     # Previews are refreshed on every dashboard load. If one could take a render
     # slot, opening the page would compete with the devices asking for frames.
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=clock")
 
     def boom(*a, **k):
         raise AssertionError("a preview must never render HTML")
 
     monkeypatch.setattr("homescreen.serve.render_frame", boom)
-    assert client.get(f"/preview/{HW}/clock.svg").status_code == 200
+    assert client.get(f"/api/devices/{HW}/preview.svg?view=clock").status_code == 200
 
 
 def test_an_unknown_device_or_scene_is_a_404_not_a_blank_image(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
-    assert client.get("/preview/ghost/clock.svg").status_code == 404
-    assert client.get(f"/preview/{HW}/nosuchscene.svg").status_code == 404
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    assert client.get("/api/devices/ghost/preview.svg?view=clock").status_code == 404
+    assert client.get(f"/api/devices/{HW}/preview.svg?view=nosuchscene").status_code == 404
 
 
 def test_a_scene_that_raises_is_a_503_not_a_500(ctx, monkeypatch):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=clock")
     from homescreen.scenes import clock as clock_mod
     monkeypatch.setattr(clock_mod, "build",
                         lambda c: (_ for _ in ()).throw(RuntimeError("x")))
-    assert client.get(f"/preview/{HW}/clock.svg").status_code == 503
+    assert client.get(f"/api/devices/{HW}/preview.svg?view=clock").status_code == 503
 
 
 def test_the_dashboard_shows_a_preview_for_every_drawable_scene(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=clock")
     html = _device(client)
-    assert f'src="/preview/{HW}/clock.svg"' in html
+    assert f'src="/api/devices/{HW}/preview.svg?view=clock"' in html
     assert 'loading="lazy"' in html, "a fleet of screens should not block on thumbnails"
 
 
 def test_the_dashboard_does_not_thumbnail_a_scene_the_device_cannot_draw(ctx):
     client, cache, _ = ctx
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=clock")
     html = _home(client)
-    assert f'src="/preview/{HW}/planes.svg"' not in html, \
+    assert f'src="/api/devices/{HW}/preview.svg?view=planes"' not in html, \
         "planes needs a radar component this device did not declare"

@@ -183,12 +183,12 @@ void buildUrl(char* out, size_t len) {
   // silently drops our capability declaration and the server sends no radar.
   const int n = snprintf(
       out, len,
-      "%s/api/device/%s/scene?w=%d&h=%d&depth=%d&max_items=%u"
-      "&components=%s&fw=%s&uptime=%lu&rssi=%d",
+      "%s/api/devices/%s/scene?w=%d&h=%d&depth=%d&max_items=%u"
+      "&shape=%s&components=%s&fw=%s&uptime=%lu&rssi=%d",
       server::baseUrl(), deviceId(), config::kDisplayWidth,
       config::kDisplayHeight, config::kDisplayDepth,
-      static_cast<unsigned>(kMaxAircraft), config::kDeclaredComponents,
-      config::kFirmwareVersion,
+      static_cast<unsigned>(kMaxAircraft), config::kScreenShape,
+      config::kDeclaredComponents, config::kFirmwareVersion,
       millis() / 1000UL, WiFi.RSSI());
   if (n < 0 || static_cast<size_t>(n) >= len) {
     DEBUG_LOG("poll: URL truncated at %u bytes -- host too long?",

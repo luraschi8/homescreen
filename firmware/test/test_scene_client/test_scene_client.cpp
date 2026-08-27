@@ -45,8 +45,9 @@ void test_the_request_declares_everything_the_server_needs(void) {
   // stops an operator's max_aircraft from sending a body we cannot parse.
   poll(kWireAssigned);
   const std::string& url = g_http.last_url;
-  const char* needles[] = {"/api/device/", "/scene?", "w=240", "h=240",
-                           "depth=16", "max_items=40", "components=radar,clock",
+  const char* needles[] = {"/api/devices/", "/scene?", "w=240", "h=240",
+                           "depth=16", "max_items=40", "shape=round",
+                           "components=radar,draw_list",
                            "fw=hs-0.1", "aabb00112233"};
   for (const char* n : needles) {
     TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, url.find(n), n);

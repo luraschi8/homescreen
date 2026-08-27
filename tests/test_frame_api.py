@@ -62,9 +62,9 @@ def real_chromium():
 def test_an_unassigned_device_gets_a_real_frame_not_an_error(client, needs_chromium, tmp_path):
     # Spec §6.1: a newly flashed board must be able to tell you its id, not
     # sit blank or 404.
-    client.get(f"/api/device/{HW}/frame{EPAPER_Q}")     # first contact registers it
+    client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")     # first contact registers it
     registry.set_approval(tmp_path, HW, True)
-    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    r = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     assert r.status_code == 200
     assert r.headers["X-Scene"] == "unassigned"
     assert len(r.get_data()) == 800 * 480 // 8
@@ -74,23 +74,23 @@ def test_the_frame_is_exactly_the_declared_geometry(client, needs_chromium, tmp_
     # One hw per geometry: a single device asking for three different panels
     # inside one second is not a device, and the cold-render throttle says so.
     for i, (w, h) in enumerate(((800, 480), (240, 240), (400, 300))):
-        client.get(f"/api/device/geo{i}/scene?w={w}&h={h}&depth=1")
-        r = client.get(f"/api/device/geo{i}/frame?w={w}&h={h}")
+        client.get(f"/api/devices/geo{i}/scene?w={w}&h={h}&depth=1")
+        r = client.get(f"/api/devices/geo{i}/frame?w={w}&h={h}")
         assert len(r.get_data()) == w * h // 8, f"{w}x{h}"
 
 
 def test_an_assigned_scene_is_the_one_rendered(client, needs_chromium, tmp_path):
-    client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     registry.set_approval(tmp_path, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "desk", "scene": "clock"})
-    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    r = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     assert r.headers["X-Scene"] == "clock"
 
 
 def test_an_unchanged_frame_is_a_304(client, needs_chromium):
-    first = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    first = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     etag = first.headers["ETag"]
-    again = client.get(f"/api/device/{HW}/frame{EPAPER_Q}",
+    again = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}",
                        headers={"If-None-Match": etag})
     assert again.status_code == 304
     assert again.get_data() == b"", "a 304 carries no body"
@@ -98,9 +98,9 @@ def test_an_unchanged_frame_is_a_304(client, needs_chromium):
 
 
 def test_a_changed_scene_changes_the_etag(client, needs_chromium):
-    first = client.get(f"/api/device/{HW}/frame{EPAPER_Q}").headers["ETag"]
+    first = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}").headers["ETag"]
     client.patch(f"/api/devices/{HW}", json={"name": "desk", "scene": "clock"})
-    assert client.get(f"/api/device/{HW}/frame{EPAPER_Q}").headers["ETag"] != first
+    assert client.get(f"/api/devices/{HW}/frame{EPAPER_Q}").headers["ETag"] != first
 
 
 @pytest.mark.parametrize("w,h,why", [
@@ -113,7 +113,7 @@ def test_an_unrenderable_geometry_is_refused_before_any_work(client, w, h, why):
     # Rejected with a 400 rather than forking a browser for ~3s and then
     # failing to pack -- which returned a retryable 503 that was never cached,
     # so one misconfigured device could occupy both render slots forever.
-    r = client.get(f"/api/device/{HW}/frame?w={w}&h={h}&depth=1")
+    r = client.get(f"/api/devices/{HW}/frame?w={w}&h={h}&depth=1")
     assert r.status_code == 400, why
 
 
@@ -124,7 +124,7 @@ def test_an_unreadable_dimension_is_refused_not_silently_replaced(client,
     # the input is junk: a device that asked for something we could not read
     # would receive 48,000 bytes with no indication they were not what it asked
     # for, and stream them at whatever panel it actually has.
-    r = client.get(f"/api/device/{HW}/frame?w={w}&h=480&depth=1")
+    r = client.get(f"/api/devices/{HW}/frame?w={w}&h=480&depth=1")
     assert r.status_code == 400
     assert r.mimetype == "application/json", "an error is never a framebuffer"
 
@@ -134,10 +134,10 @@ def test_an_operator_scene_change_is_not_throttled(client, needs_chromium,
     # The cold-render throttle protects the render queue from strangers, not
     # from the operator. A scene change must reach the glass on the next poll,
     # not half a poll interval later -- which on an e-paper is 15 seconds.
-    client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     registry.set_approval(tmp_path, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "clock"})
-    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    r = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     assert r.status_code == 200 and r.headers["X-Scene"] == "clock"
 
 
@@ -145,11 +145,11 @@ def test_a_stranger_cannot_spend_the_render_queue(client, needs_chromium):
     # ~2.9s of Chromium per cold frame against 2 slots: 20 unauthenticated
     # connections took the panel off the air for as long as they kept it up.
     # A caller asking faster than the device polls is now answered instantly.
-    client.get(f"/api/device/flood/scene?w=800&h=480&depth=1")
-    first = client.get("/api/device/flood/frame?w=800&h=480")
+    client.get(f"/api/devices/flood/scene?w=800&h=480&depth=1")
+    first = client.get("/api/devices/flood/frame?w=800&h=480")
     assert first.status_code == 200
     render.clear_cache()                       # force the expensive path
-    r = client.get("/api/device/flood/frame?w=800&h=480")
+    r = client.get("/api/devices/flood/frame?w=800&h=480")
     assert r.status_code == 429
     assert r.headers["Retry-After"] == "5"
 
@@ -158,11 +158,11 @@ def test_a_cached_frame_is_never_throttled(client, needs_chromium):
     # The throttle must gate cost, not correctness: a device polling for a
     # frame we already hold gets it, however often it asks. Configured, so the
     # unconfigured-device budget is out of the picture and this tests one rule.
-    client.get("/api/device/warm/scene?w=800&h=480&depth=1")
+    client.get("/api/devices/warm/scene?w=800&h=480&depth=1")
     client.patch("/api/devices/warm", json={"name": "warm", "scene": "clock"})
-    assert client.get("/api/device/warm/frame?w=800&h=480").status_code == 200
+    assert client.get("/api/devices/warm/frame?w=800&h=480").status_code == 200
     for _ in range(5):
-        assert client.get("/api/device/warm/frame?w=800&h=480").status_code == 200
+        assert client.get("/api/devices/warm/frame?w=800&h=480").status_code == 200
 
 
 def test_a_render_failure_is_503_not_a_short_frame(client, monkeypatch):
@@ -170,13 +170,13 @@ def test_a_render_failure_is_503_not_a_short_frame(client, monkeypatch):
         raise render.RenderError("chromium exploded")
 
     monkeypatch.setattr("homescreen.serve.render_frame", boom)
-    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    r = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     assert r.status_code == 503, "a device must not mistake an error for pixels"
     assert "render failed" in r.get_json()["error"]
 
 
 def test_the_frame_length_header_matches_the_body(client, needs_chromium):
-    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    r = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     assert int(r.headers["X-Frame-Bytes"]) == len(r.get_data())
 
 
@@ -186,8 +186,8 @@ def test_the_frame_decodes_back_to_a_readable_image(client, real_chromium,
     # and a real panel would show a photographic negative.
     from PIL import Image
     client.patch(f"/api/devices/{HW}", json={"name": "desk", "scene": "clock"}) \
-        if client.get(f"/api/device/{HW}/frame{EPAPER_Q}") else None
-    packed = client.get(f"/api/device/{HW}/frame{EPAPER_Q}").get_data()
+        if client.get(f"/api/devices/{HW}/frame{EPAPER_Q}") else None
+    packed = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}").get_data()
     img = Image.frombytes("1", (800, 480), bytes(b ^ 0xFF for b in packed))
     hist = img.convert("L").histogram()
     assert hist[255] > hist[0], "a mostly-white page, not a negative"
@@ -200,19 +200,19 @@ def test_a_data_push_only_scene_returns_409_not_a_blank_frame(client, monkeypatc
     monkeypatch.setattr("homescreen.scenes._registry",
                         lambda: {**real,
                                  "clock": lambda c: scenes.Scene(components=({"c": "x"},))})
-    client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     registry.set_approval(tmp_path, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "clock"})
-    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    r = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     assert r.status_code == 409
 
 
 def test_the_scene_endpoint_carries_components_for_data_push(client, tmp_path):
-    client.get("/api/device/ccdd44556677/scene?w=240&h=240&components=radar")
+    client.get("/api/devices/ccdd44556677/scene?w=240&h=240&components=radar")
     registry.set_approval(tmp_path, HW, True)
     registry.set_approval(tmp_path, "ccdd44556677", True)
     client.patch("/api/devices/ccdd44556677", json={"name": "r", "scene": "planes"})
-    body = client.get("/api/device/ccdd44556677/scene?w=240&h=240").get_json()
+    body = client.get("/api/devices/ccdd44556677/scene?w=240&h=240").get_json()
     assert body["layout"] == "fill"
     assert body["components"][0]["c"] == "radar"
 
@@ -224,52 +224,52 @@ def test_a_registry_write_failure_is_503_not_500(client, monkeypatch):
         raise OSError("read-only file system")
 
     monkeypatch.setattr("homescreen.registry.touch", boom)
-    assert client.get(f"/api/device/{HW}/scene").status_code == 503
-    assert client.get(f"/api/device/{HW}/frame{EPAPER_Q}").status_code == 503
+    assert client.get(f"/api/devices/{HW}/scene").status_code == 503
+    assert client.get(f"/api/devices/{HW}/frame{EPAPER_Q}").status_code == 503
 
 
 def test_the_frame_is_served_as_binary_not_json(client, needs_chromium):
     # A device streams the body straight at a panel; a JSON content type would
     # mean somebody had wrapped it.
-    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    r = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     assert r.mimetype == "application/octet-stream"
 
 
 def test_a_device_declaring_no_geometry_is_told_to_declare_one(client, needs_chromium):
     # There used to be an 800x480 fallback here. It was the hole: the fallback
     # read stored caps, and stored caps are written by whoever asks last.
-    r = client.get(f"/api/device/{HW}/frame?fw=0.1")
+    r = client.get(f"/api/devices/{HW}/frame?fw=0.1")
     assert r.status_code == 400
     assert "w=" in r.get_json()["error"] and "h=" in r.get_json()["error"]
 
 
 def test_a_device_is_told_a_default_cadence_before_it_is_assigned(client):
-    r = client.get(f"/api/device/{HW}/scene")
+    r = client.get(f"/api/devices/{HW}/scene")
     assert r.headers["X-Poll-Seconds"] == "5"
 
 
 def test_components_the_device_did_not_declare_are_dropped_and_reported(client, tmp_path):
     # ADDENDUM §5.5: the device never receives something it cannot draw, and
     # the substitution is reported rather than silent.
-    client.get("/api/device/RR/scene?w=240&h=240&components=text")
+    client.get("/api/devices/RR/scene?w=240&h=240&components=text")
     registry.set_approval(tmp_path, "RR", True)
     client.patch("/api/devices/RR", json={"name": "r", "scene": "planes"})
-    body = client.get("/api/device/RR/scene?w=240&h=240&components=text").get_json()
+    body = client.get("/api/devices/RR/scene?w=240&h=240&components=text").get_json()
     assert body["components"] == []
     assert body["unsupported"] == ["radar"]
 
 
 def test_a_device_that_declares_the_component_still_gets_it(client, tmp_path):
-    client.get("/api/device/RR2/scene?w=240&h=240&components=radar,text")
+    client.get("/api/devices/RR2/scene?w=240&h=240&components=radar,text")
     registry.set_approval(tmp_path, "RR2", True)
     client.patch("/api/devices/RR2", json={"name": "r2", "scene": "planes"})
-    body = client.get("/api/device/RR2/scene?w=240&h=240&components=radar").get_json()
+    body = client.get("/api/devices/RR2/scene?w=240&h=240&components=radar").get_json()
     assert [c["c"] for c in body["components"]] == ["radar"]
     assert "unsupported" not in body
 
 
 def test_telemetry_does_not_swallow_capability_or_firmware_keys(client, tmp_path):
-    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&fw=1.2&rssi=-64")
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&fw=1.2&rssi=-64")
     rec = registry.load(tmp_path)[HW]
     assert rec["telemetry"] == {"rssi": "-64"}
     assert rec["fw"] == "1.2"
@@ -278,7 +278,7 @@ def test_telemetry_does_not_swallow_capability_or_firmware_keys(client, tmp_path
 def test_a_named_registry_device_is_reachable_by_its_friendly_name(client, tmp_path):
     # ADDENDUM §4.5. Without the alias the fleet view lists devices you cannot
     # curl -- resolve_name existed and was wired to no route.
-    client.get("/api/device/aa99bb88cc77/scene?w=240&h=240")
+    client.get("/api/devices/aa99bb88cc77/scene?w=240&h=240")
     registry.set_approval(tmp_path, "aa99bb88cc77", True)
     client.patch("/api/devices/aa99bb88cc77", json={"name": "kitchen",
                                                     "scene": "planes"})
@@ -305,7 +305,7 @@ def test_a_busy_render_queue_is_a_503_with_a_retry_hint(client, monkeypatch,
         raise render.RenderBusy("render queue busy for 20s")
 
     monkeypatch.setattr("homescreen.serve.render_frame", busy)
-    r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    r = client.get(f"/api/devices/{HW}/frame{EPAPER_Q}")
     assert r.status_code == 503
     assert r.headers["Retry-After"] == "5"
     assert "busy" in r.get_json()["error"]

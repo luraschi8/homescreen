@@ -20,6 +20,10 @@ from homescreen.scenes._style import page
 #: this, the registry stores the values against the assignment, and
 #: scenes.clean_options coerces them -- so adding an option is one edit here
 #: rather than three that can disagree.
+#: A clock is the least demanding thing here: a time and a label fit
+#: anywhere text is legible at all, on any shape, at any depth.
+SURFACES = ({"min_short": 100},)
+
 OPTIONS = (
     {"key": "timezone", "label": "Zona horaria", "type": "text",
      "default": "",

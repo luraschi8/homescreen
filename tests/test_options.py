@@ -24,14 +24,14 @@ Q = "w=240&h=240&depth=16&components=clock"
 @pytest.fixture
 def ctx(tmp_path):
     client = create_app(CFG, tmp_path, version="t").test_client()
-    client.get(f"/api/device/{HW}/scene?{Q}")
+    client.get(f"/api/devices/{HW}/scene?{Q}")
     registry.set_approval(tmp_path, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "desk", "scene": "clock"})
     return client, tmp_path
 
 
 def _drawn(client):
-    body = client.get(f"/api/device/{HW}/scene?{Q}").get_json()
+    body = client.get(f"/api/devices/{HW}/scene?{Q}").get_json()
     return [i["v"] for i in body["components"][0]["draw"]]
 
 
@@ -110,7 +110,7 @@ def test_options_are_stored_against_the_assignment(ctx):
 def test_two_devices_can_configure_the_same_component_differently(ctx):
     # The whole reason configuration is per assignment.
     client, cache = ctx
-    client.get(f"/api/device/other/scene?{Q}")
+    client.get(f"/api/devices/other/scene?{Q}")
     client.patch("/api/devices/other", json={"name": "hall", "scene": "clock"})
     client.patch(f"/api/devices/{HW}", json={"options": {"timezone": "Asia/Tokyo"}})
     client.patch("/api/devices/other",
@@ -171,7 +171,7 @@ def test_an_option_changes_the_preview_too(ctx):
     # A preview that ignored options would show a layout the device never draws.
     client, _ = ctx
     client.patch(f"/api/devices/{HW}", json={"options": {"timezone": "Asia/Tokyo"}})
-    assert "Tokyo" in client.get(f"/preview/{HW}/clock.svg").get_data(as_text=True)
+    assert "Tokyo" in client.get(f"/api/devices/{HW}/preview.svg?view=clock").get_data(as_text=True)
 
 
 def test_a_bad_timezone_falls_back_rather_than_blanking_the_screen(ctx):
@@ -248,7 +248,7 @@ def test_a_hostile_option_value_cannot_break_the_preview(ctx):
     client.post("/home/device", data={"hw": HW, "name": "desk", "scene": "clock",
                                       "opt.second_label": "</text><script>x</script>",
                                       "opt.second_timezone": "Asia/Tokyo"})
-    svg = client.get(f"/preview/{HW}/clock.svg").get_data(as_text=True)
+    svg = client.get(f"/api/devices/{HW}/preview.svg?view=clock").get_data(as_text=True)
     assert "<script>" not in svg
 
 

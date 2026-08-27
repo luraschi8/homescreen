@@ -54,7 +54,13 @@ void tearDown(void) { g_mutex_on_give = nullptr; }
 // --- the declaration and the switch must never disagree ---------------------
 
 void test_the_declared_list_matches_what_we_can_actually_draw(void) {
-  TEST_ASSERT_EQUAL_STRING("radar,clock", ui::kDeclaredComponents);
+  // `draw_list` is a CAPABILITY, not a component. It says "send me any
+  // instruction list", which is what the dispatcher has always done -- it
+  // draws anything it does not recognise, provided the component ships a draw
+  // list. Naming components one by one here made every new component on the
+  // server a firmware release, for a device that never needed to know their
+  // names.
+  TEST_ASSERT_EQUAL_STRING("radar,draw_list", ui::kDeclaredComponents);
   TEST_ASSERT_EQUAL_STRING(config::kDeclaredComponents,
                            ui::kDeclaredComponents);
   TEST_ASSERT_EQUAL(ui::ComponentKind::kRadar,
@@ -215,11 +221,30 @@ void test_a_component_with_an_instruction_list_is_drawn_without_knowing_it(void)
 void test_the_firmware_declares_it_can_draw_instruction_lists(void) {
   // The declaration and the dispatcher must agree, or the server drops a
   // component we could have drawn -- or sends one we cannot.
-  TEST_ASSERT_NOT_NULL(strstr(ui::kDeclaredComponents, "clock"));
+  TEST_ASSERT_NOT_NULL(strstr(ui::kDeclaredComponents, "draw_list"));
   TEST_ASSERT_NOT_NULL(strstr(ui::kDeclaredComponents, "radar"));
   poll(kClockScene);
   TEST_ASSERT_EQUAL(ui::ComponentKind::kDrawList,
                     ui::componentKindFromName("clock"));
+}
+
+void test_a_component_this_firmware_has_never_heard_of_is_still_drawn(void) {
+  // The point of declaring a capability instead of a list: a component that
+  // did not exist when this binary was built draws anyway, because the device
+  // executes instructions rather than recognising names. If this fails, every
+  // new component is a reflash.
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"weather\","
+       "\"components\":[{\"c\":\"weather\",\"draw\":["
+       "{\"t\":\"text\",\"slot\":\"center\",\"v\":\"21\\u00b0\","
+       "\"size\":\"xl\"},"
+       "{\"t\":\"text\",\"slot\":\"below\",\"v\":\"Madrid\","
+       "\"size\":\"sm\"}]}]}");
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.textContains("Madrid"),
+                           "an unknown component with a draw list must draw");
+  TEST_ASSERT_EQUAL(ui::ComponentKind::kDrawList,
+                    ui::componentKindFromName("weather"));
 }
 
 void test_instructions_land_where_the_resolver_says(void) {
@@ -449,6 +474,7 @@ int main(void) {
   RUN_TEST(test_switching_between_a_drawlist_and_the_radar_leaves_no_residue);
   RUN_TEST(test_a_draw_list_too_large_to_hold_is_refused_not_truncated);
   RUN_TEST(test_the_declared_list_matches_what_we_can_actually_draw);
+  RUN_TEST(test_a_component_this_firmware_has_never_heard_of_is_still_drawn);
   RUN_TEST(test_the_declared_list_is_what_the_client_actually_sends);
   RUN_TEST(test_a_device_that_never_reached_the_server_says_so_with_the_address);
   RUN_TEST(test_an_unassigned_device_shows_its_id_and_the_servers_message);

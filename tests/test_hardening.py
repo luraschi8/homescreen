@@ -121,14 +121,14 @@ def test_a_stranger_cannot_change_the_length_of_anyone_elses_frame(client, monke
     # Chromium, and skipping meant P1's own regression tests reported green on
     # the box that actually serves them. None of this logic needs a browser.
     _stub_browser(monkeypatch)
-    client.get("/api/device/panel/scene?w=800&h=480&depth=1")
-    assert len(client.get("/api/device/panel/frame?w=800&h=480").get_data()) \
+    client.get("/api/devices/panel/scene?w=800&h=480&depth=1")
+    assert len(client.get("/api/devices/panel/frame?w=800&h=480").get_data()) \
         == 800 * 480 // 8
 
-    client.get("/api/device/panel/scene?w=1024&h=768")            # the attack
-    client.get("/api/device/panel/frame?w=1024&h=768")            # and again
+    client.get("/api/devices/panel/scene?w=1024&h=768")            # the attack
+    client.get("/api/devices/panel/frame?w=1024&h=768")            # and again
 
-    r = client.get("/api/device/panel/frame?w=800&h=480")
+    r = client.get("/api/devices/panel/frame?w=800&h=480")
     assert r.status_code == 200, "the panel is never locked out of its own frame"
     assert len(r.get_data()) == 800 * 480 // 8, "nor handed someone else's size"
     assert r.headers["X-Frame-Bytes"] == str(800 * 480 // 8)
@@ -138,8 +138,8 @@ def test_a_frame_request_that_declares_nothing_is_refused(client, monkeypatch):
     # The server will not guess a length. Guessing is where every wrong-length
     # body came from: the guess read a record a stranger could write.
     _stub_browser(monkeypatch)
-    client.get("/api/device/panel/scene?w=800&h=480&depth=1")
-    r = client.get("/api/device/panel/frame")
+    client.get("/api/devices/panel/scene?w=800&h=480&depth=1")
+    r = client.get("/api/devices/panel/frame")
     assert r.status_code == 400
     assert "w=" in r.get_json()["error"]
 
@@ -148,9 +148,9 @@ def test_the_scene_a_frame_renders_uses_the_requested_geometry(client, monkeypat
     # Not the stored one: otherwise the layout is chosen by whoever wrote the
     # record last, even when the byte count is right.
     _stub_browser(monkeypatch)
-    client.get("/api/device/panel/scene?w=800&h=480&depth=1")
-    client.get("/api/device/panel/scene?w=240&h=240")             # the attack
-    assert len(client.get("/api/device/panel/frame?w=800&h=480").get_data()) \
+    client.get("/api/devices/panel/scene?w=800&h=480&depth=1")
+    client.get("/api/devices/panel/scene?w=240&h=240")             # the attack
+    assert len(client.get("/api/devices/panel/frame?w=800&h=480").get_data()) \
         == 800 * 480 // 8
 
 
@@ -158,8 +158,8 @@ def test_a_fragment_cannot_redefine_what_a_device_is(client):
     # `?components=nothing` with no geometry used to be a complete declaration:
     # it merged over the stored caps and blanked the radar until the device
     # next spoke. A capability list is now only read as part of a handshake.
-    client.get("/api/device/radar1/scene?w=240&h=240&depth=16&components=radar")
-    client.get("/api/device/radar1/scene?components=nothing")     # the attack
+    client.get("/api/devices/radar1/scene?w=240&h=240&depth=16&components=radar")
+    client.get("/api/devices/radar1/scene?components=nothing")     # the attack
     assert registry.load(client.cache_dir)["radar1"]["caps"]["components"] \
         == ["radar"]
 
@@ -168,8 +168,8 @@ def test_the_frame_route_cannot_declare_anything_at_all(client, monkeypatch):
     # Defence in depth: even a full, well-formed handshake on /frame must not
     # be persisted. The frame route reads the record; it never writes to it.
     _stub_browser(monkeypatch)
-    client.get("/api/device/panel3/scene?w=800&h=480&depth=1&components=text")
-    client.get("/api/device/panel3/frame?w=800&h=480&components=nothing&depth=16")
+    client.get("/api/devices/panel3/scene?w=800&h=480&depth=1&components=text")
+    client.get("/api/devices/panel3/frame?w=800&h=480&components=nothing&depth=16")
     caps = registry.load(client.cache_dir)["panel3"]["caps"]
     assert caps["components"] == ["text"] and caps["depth"] == 1
 
@@ -184,15 +184,15 @@ def test_a_hand_edited_capability_never_500s_a_route(tmp_path, caps, monkeypatch
     # "registry is full" message invites exactly that edit.
     _stub_browser(monkeypatch)
     client = create_app(CFG, tmp_path, version="t", clock=FrozenClock()).test_client()
-    client.get("/api/device/P/scene")
+    client.get("/api/devices/P/scene")
     raw = json.loads(registry.registry_path(tmp_path).read_text())
     raw["P"]["caps"] = caps
     registry.registry_path(tmp_path).write_text(json.dumps(raw))
-    assert client.get("/api/device/P/scene").status_code == 200
+    assert client.get("/api/devices/P/scene").status_code == 200
     # Geometry now comes from the request, so a junk record cannot reach int()
     # on this path at all -- but the scene still reads the record for
     # `components`, and the fleet view still renders it.
-    assert client.get("/api/device/P/frame?w=800&h=480").status_code == 200
+    assert client.get("/api/devices/P/frame?w=800&h=480").status_code == 200
 
 
 @pytest.mark.parametrize("w,h", [(12, 8), (4, 2), (101, 8)])
@@ -301,7 +301,7 @@ def _flood(client, monkeypatch, peer, n=120):
     """n hostile GETs from one host, each claiming to be a different device."""
     codes = []
     for i in range(n):
-        codes.append(client.get(f"/api/device/bot{i}/frame?w=800&h=480",
+        codes.append(client.get(f"/api/devices/bot{i}/frame?w=800&h=480",
                                 environ_base={"REMOTE_ADDR": peer}).status_code)
     return codes
 
@@ -326,7 +326,7 @@ def test_a_flood_from_one_host_does_not_starve_another(client, monkeypatch):
     _stub_browser(monkeypatch)
     render.clear_cache()
     _flood(client, monkeypatch, "10.0.0.66")
-    r = client.get("/api/device/brandnew/frame?w=800&h=480",
+    r = client.get("/api/devices/brandnew/frame?w=800&h=480",
                    environ_base={"REMOTE_ADDR": "192.168.1.40"})
     assert r.status_code == 200, "a different host is a different budget"
     assert len(r.get_data()) == 800 * 480 // 8
@@ -336,11 +336,11 @@ def test_a_configured_panel_is_served_while_the_flood_runs(client, monkeypatch):
     # The gate must protect the fleet, not join the attack.
     _stub_browser(monkeypatch)
     render.clear_cache()
-    client.get("/api/device/desk/scene?w=800&h=480&depth=1",
+    client.get("/api/devices/desk/scene?w=800&h=480&depth=1",
                environ_base={"REMOTE_ADDR": "192.168.1.41"})
     client.patch("/api/devices/desk", json={"name": "desk", "scene": "clock"})
     _flood(client, monkeypatch, "10.0.0.66", n=60)
-    r = client.get("/api/device/desk/frame?w=800&h=480",
+    r = client.get("/api/devices/desk/frame?w=800&h=480",
                    environ_base={"REMOTE_ADDR": "192.168.1.41"})
     assert r.status_code == 200
     assert len(r.get_data()) == 800 * 480 // 8
@@ -354,12 +354,12 @@ def test_a_peer_budget_refills_so_a_transient_burst_is_not_a_ban(client,
     render.clear_cache()
     import time as _t
     _flood(client, monkeypatch, "10.0.0.77", n=30)
-    assert client.get("/api/device/later/frame?w=800&h=480",
+    assert client.get("/api/devices/later/frame?w=800&h=480",
                       environ_base={"REMOTE_ADDR": "10.0.0.77"}
                       ).status_code == 429
     real = _t.monotonic
     monkeypatch.setattr(_t, "monotonic", lambda: real() + 3600)
-    r = client.get("/api/device/later2/frame?w=800&h=480",
+    r = client.get("/api/devices/later2/frame?w=800&h=480",
                    environ_base={"REMOTE_ADDR": "10.0.0.77"})
     assert r.status_code == 200, "the bucket must refill, not latch"
 
@@ -369,7 +369,7 @@ def test_a_newly_flashed_panel_still_gets_its_first_frame(client, monkeypatch):
     # cold render, because the unassigned scene embeds its own hw id.
     _stub_browser(monkeypatch)
     render.clear_cache()
-    r = client.get("/api/device/brandnew/frame?w=800&h=480",
+    r = client.get("/api/devices/brandnew/frame?w=800&h=480",
                    environ_base={"REMOTE_ADDR": "192.168.1.42"})
     assert r.status_code == 200, "an unconfigured device is not an attacker"
     assert len(r.get_data()) == 800 * 480 // 8
@@ -382,12 +382,12 @@ def test_a_configured_panel_sharing_an_address_with_a_flood_is_still_served(
     # peer budget for exactly that reason.
     _stub_browser(monkeypatch)
     render.clear_cache()
-    client.get("/api/device/deskx/scene?w=800&h=480&depth=1",
+    client.get("/api/devices/deskx/scene?w=800&h=480&depth=1",
                environ_base={"REMOTE_ADDR": "10.0.0.99"})
-    client.post("/api/devices/deskx/approval", json={"approved": True})
+    client.put("/api/devices/deskx/membership", json={"approved": True})
     client.patch("/api/devices/deskx", json={"name": "deskx", "scene": "clock"})
     _flood(client, monkeypatch, "10.0.0.99", n=80)
-    r = client.get("/api/device/deskx/frame?w=800&h=480",
+    r = client.get("/api/devices/deskx/frame?w=800&h=480",
                    environ_base={"REMOTE_ADDR": "10.0.0.99"})
     assert r.status_code == 200
     assert len(r.get_data()) == 800 * 480 // 8
@@ -399,12 +399,12 @@ def test_no_cadence_lets_a_device_spend_the_browser_faster_than_the_floor(
     # devices thrashed the frame cache and every render went cold.
     _stub_browser(monkeypatch)
     render.clear_cache()
-    client.get("/api/device/fast/scene?w=800&h=480&depth=1")
+    client.get("/api/devices/fast/scene?w=800&h=480&depth=1")
     client.patch("/api/devices/fast",
                  json={"name": "fast", "scene": "clock", "poll_seconds": 1})
     before = render.cache_stats()["misses"]
     for i in range(40):
-        client.get(f"/api/device/fast/frame?w={800 + 8 * i}&h=480")
+        client.get(f"/api/devices/fast/frame?w={800 + 8 * i}&h=480")
     assert render.cache_stats()["misses"] - before <= 1, \
         "one cold render per floor interval, whatever the cadence says"
 
@@ -419,9 +419,9 @@ def test_every_in_memory_map_stays_bounded_under_a_flood(client, monkeypatch):
     render.clear_cache()
     for i in range(600):
         peer = f"10.0.{i // 250}.{i % 250}"
-        client.get(f"/api/device/id{i}/scene?w=800&h=480&depth=1",
+        client.get(f"/api/devices/id{i}/scene?w=800&h=480&depth=1",
                    environ_base={"REMOTE_ADDR": peer})
-        client.get(f"/api/device/id{i}/frame?w=800&h=480",
+        client.get(f"/api/devices/id{i}/frame?w=800&h=480",
                    environ_base={"REMOTE_ADDR": peer})
     client.get("/api/display/radar/data?" + "&".join(f"k{i}=1" for i in range(40)))
 
@@ -430,10 +430,10 @@ def test_every_in_memory_map_stays_bounded_under_a_flood(client, monkeypatch):
     # this loop the cap was unreachable and its removal changed no test.
     for i in range(registry.MAX_DEVICES * 2 + 20):
         hw = f"sub{i}"
-        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
-        client.post(f"/api/devices/{hw}/approval", json={"approved": True})
+        client.get(f"/api/devices/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.put(f"/api/devices/{hw}/membership", json={"approved": True})
         client.patch(f"/api/devices/{hw}", json={"scene": "planes"})
-        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.get(f"/api/devices/{hw}/scene?w=240&h=240&depth=16&components=text")
 
     mem = client.get("/api/status").get_json()["memory"]
     assert mem["cold_render_ids"] <= registry.MAX_DEVICES * 2, mem
@@ -451,9 +451,9 @@ def test_a_flood_cannot_grow_the_servers_memory_without_limit(client,
     _stub_browser(monkeypatch)
     render.clear_cache()
     for i in range(400):
-        client.get(f"/api/device/f{i}/scene?w=800&h=480&depth=1",
+        client.get(f"/api/devices/f{i}/scene?w=800&h=480&depth=1",
                    environ_base={"REMOTE_ADDR": f"10.1.{i // 250}.{i % 250}"})
-        client.get(f"/api/device/f{i}/frame?w=800&h=480",
+        client.get(f"/api/devices/f{i}/frame?w=800&h=480",
                    environ_base={"REMOTE_ADDR": f"10.1.{i // 250}.{i % 250}"})
     assert len(registry.load(client.cache_dir)) <= registry.MAX_DEVICES
     assert client.get("/api/devices").status_code == 200
@@ -469,10 +469,10 @@ def test_a_note_about_a_device_that_no_longer_exists_is_dropped(client,
     _stub_browser(monkeypatch)
     for i in range(registry.MAX_DEVICES):
         hw = f"note{i}"
-        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
-        client.post(f"/api/devices/{hw}/approval", json={"approved": True})
+        client.get(f"/api/devices/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.put(f"/api/devices/{hw}/membership", json={"approved": True})
         client.patch(f"/api/devices/{hw}", json={"scene": "planes"})
-        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.get(f"/api/devices/{hw}/scene?w=240&h=240&depth=16&components=text")
     assert client.get("/api/status").get_json()["memory"]["serve_notes"] \
         == registry.MAX_DEVICES
 
@@ -480,8 +480,8 @@ def test_a_note_about_a_device_that_no_longer_exists_is_dropped(client,
         client.delete(f"/api/devices/note{i}")
     for i in range(3):                                       # any later serve
         hw = f"fresh{i}"
-        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
-        client.post(f"/api/devices/{hw}/approval", json={"approved": True})
+        client.get(f"/api/devices/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.put(f"/api/devices/{hw}/membership", json={"approved": True})
         client.patch(f"/api/devices/{hw}", json={"scene": "planes"})
-        client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.get(f"/api/devices/{hw}/scene?w=240&h=240&depth=16&components=text")
     assert client.get("/api/status").get_json()["memory"]["serve_notes"] <= 4

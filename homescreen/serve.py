@@ -610,6 +610,27 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             for key in [k for k in _serve_notes if k not in known]:
                 _serve_notes.pop(key, None)
 
+    #: A device declaring this can execute ANY instruction list.
+    #:
+    #: The firmware already draws any component it does not recognise, as long
+    #: as that component ships a `draw` list -- it deliberately does not know
+    #: what a "clock" is. So naming components one by one in the firmware was
+    #: the only thing standing between the Pi and a new component, and it made
+    #: every new component a firmware release for no reason.
+    DRAW_LIST_CAP = "draw_list"
+
+    def _device_can_draw(component: dict, declared) -> bool:
+        """Can this device render this component?
+
+        Either it named the component, or it says it can execute instruction
+        lists and the component ships one. `radar` stays named because it is
+        not an instruction list: the device projects, dead-reckons and runs a
+        label-collision ladder for it.
+        """
+        if component.get("c") in declared:
+            return True
+        return DRAW_LIST_CAP in declared and bool(component.get("draw"))
+
     def _scene_options(rec: dict) -> list:
         """(name, renderable, why_not) for every assignable scene, per device.
 
@@ -636,19 +657,26 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             except Exception:                       # noqa: BLE001
                 out.append((name, False, "scene failed to build"))
                 continue
+            # What the COMPONENT says about this glass comes first: a radar
+            # on a 128x64 badge is a smear whether or not the device can carry
+            # its payload, and "necesita al menos 160px" is a better answer
+            # than a delivery-path error.
+            ok, why = scenes.supports(name, caps)
+            if not ok:
+                out.append((name, False, why))
+                continue
             if not declared:
                 out.append((name, bool(scene.html), ""
-                            if scene.html else "no pixel rendering"))
+                            if scene.html else "no se puede renderizar en el Pi"))
                 continue
             kinds = {c.get("c") for c in scene.components}
-            usable = sorted(kinds & set(declared))
-            if usable:
+            if any(_device_can_draw(c, declared) for c in scene.components):
                 out.append((name, True, ""))
             elif kinds:
                 out.append((name, False,
-                            f"needs {', '.join(sorted(kinds))}"))
+                            f"la pantalla no declara {', '.join(sorted(kinds))}"))
             else:
-                out.append((name, False, "no components for this device"))
+                out.append((name, False, "sin componentes para esta pantalla"))
         return out
 
     def _fleet_entry(hw: str, rec: dict, now: float) -> dict:
@@ -728,9 +756,8 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         _last_cold.pop(hw, None)
         return jsonify(_fleet_entry(hw, rec, clock()))
 
-    @app.get("/api/devices/<hw>/preview.svg", defaults={"scene": None})
-    @app.get("/preview/<hw>/<scene>.svg")            # legacy: scene in the path
-    def preview(hw: str, scene: str | None):
+    @app.get("/api/devices/<hw>/preview.svg")
+    def preview(hw: str):
         """What this scene would look like on THIS device, before assigning it.
 
         Executes the same instruction list the device would execute. It is not
@@ -742,11 +769,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         belong to devices asking for frames, and a dashboard refresh must never
         compete with the glass.
         """
-        # The canonical path takes the scene as a query parameter: a preview is
-        # a PROJECTION of this device, not a resource of its own. The legacy
-        # path carried it as a path segment.
-        if scene is None:
-            scene = request.args.get("view") or request.args.get("scene") or ""
+        # A preview is a PROJECTION of this device, so the view is a query
+        # parameter rather than a path segment.
+        scene = request.args.get("view") or request.args.get("scene") or ""
         rec = registry.load(cache_dir).get(hw)
         if rec is None:
             return jsonify({"error": "unknown device"}), 404
@@ -839,7 +864,6 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         return jsonify({"hw": hw, "approved": registry.is_approved(rec)})
 
     @app.put("/api/devices/<hw>/membership")
-    @app.post("/api/devices/<hw>/approval")          # legacy: event, not state
     def device_approval(hw: str):
         """Let a device into the fleet, or put it back outside.
 
@@ -994,7 +1018,6 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         return name, scenes.safe_build(name, ctx)
 
     @app.get("/api/devices/<hw>/scene")
-    @app.get("/api/device/<hw>/scene")               # legacy: singular noun
     def device_scene(hw: str):
         rec, err = _register(hw)
         if err:
@@ -1009,9 +1032,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                     .get("components"))
         kept, dropped = list(scene.components), []
         if declared:
-            kept = [c for c in scene.components if c.get("c") in declared]
+            kept = [c for c in scene.components if _device_can_draw(c, declared)]
             dropped = [c.get("c") for c in scene.components
-                       if c.get("c") not in declared]
+                       if not _device_can_draw(c, declared)]
         body = {"hw": hw, "name": rec.get("name"), "scene": name,
                 "assigned": assigned, "layout": scene.layout,
                 "components": kept}
@@ -1079,7 +1102,6 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         return int(w), int(h), None
 
     @app.get("/api/devices/<hw>/frame")
-    @app.get("/api/device/<hw>/frame")               # legacy: singular noun
     def device_frame(hw: str):
         """Packed 1bpp, MSB first, 1 = black. No header, no compression.
 
@@ -1129,27 +1151,6 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         resp.headers["X-Frame-Bytes"] = str(len(packed))
         resp.headers["X-Scene"] = name
         return _poll_header(resp, rec, scene, hw)
-
-    #: Rules that answer on a path we intend to remove. Keyed by the RULE, not
-    #: the request path, so a device hitting `/api/device/ab/scene` is matched
-    #: without string surgery. Aliases share one handler, so there is no second
-    #: implementation to drift.
-    LEGACY_RULES = {
-        "/api/device/<hw>/scene", "/api/device/<hw>/frame",
-        "/preview/<hw>/<scene>.svg", "/api/devices/<hw>/approval",
-    }
-    #: RFC 8594. A date, not a promise: removal additionally requires every
-    #: approved device reporting the new firmware, and a quiet legacy log.
-    SUNSET = "Wed, 31 Dec 2026 23:59:59 GMT"
-
-    @app.after_request
-    def _mark_legacy(resp):
-        rule = getattr(request.url_rule, "rule", None)
-        if rule in LEGACY_RULES:
-            resp.headers["Deprecation"] = "true"
-            resp.headers["Sunset"] = SUNSET
-            resp.headers["Link"] = '</api/devices>; rel="successor-version"'
-        return resp
 
     @app.get("/api/status")
     def status():
