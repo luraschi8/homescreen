@@ -92,10 +92,18 @@ Verified tasks are frozen. Each remaining task ends green on `pio test -e native
 | T4 | `scene_client` | **done** · 33 tests, 5 mutations killed |
 | T5 | Port renderer, geometry, runway overlay; repoint at `scene_client`; third staleness term | next |
 | T6 | Rewrite `test_display` for the scene wire format | after T5 |
-| T7 | Status screens + component dispatcher | after T6 |
+| T7 | Status screens + component dispatcher | next |
 | T8 | Provisioning (server field) + `main.cpp` | after T7 |
-| T9 | Flash and bring up | needs the board |
-| T10 | Measure, soak, document | needs the board |
+| T9 | Flash and bring up on the real panel | needs the board |
+| T10 | **Make the dashboard configure, not just report** | server-side |
+| T11 | Soak, measure, document | needs the board |
+
+**T10 was missing from every earlier revision.** `/home` renders the fleet and
+nothing else: zero forms, selects or buttons. Changing what a screen shows needs
+a `curl`. Meanwhile the server tells an unassigned device to display *"sin
+asignar · elige una escena en el panel"* — "choose a scene in the panel" — a
+promise the panel does not keep. The goal of this phase is not reached until an
+operator can pick a scene from the dashboard.
 
 ### T5 — acceptance criteria
 
@@ -142,7 +150,23 @@ Verified tasks are frozen. Each remaining task ends green on `pio test -e native
   at full TX power, and that guard rides on a file we hand-edit.
 - `test_main` adapted by hand, not `sed`: it pokes `s_task` directly to reach the retry path.
 
-### T9 / T10 — acceptance criteria
+### T10 — acceptance criteria
+
+- Each fleet card offers the assignable scenes (`registry.ASSIGNABLE_SCENES`)
+  and applies the choice. The device follows within one poll.
+- **A plain HTML form, not fetch().** No JavaScript, no CDN — same constraint as
+  the scenes themselves, and it keeps working from a phone with a flaky
+  connection. The form POSTs; the existing PATCH validation backs it, so an
+  unknown scene is refused by the same code path that already refuses one.
+- Renaming a device from the card, since the name is what `/api/display/<name>/`
+  routes on and what the operator reads.
+- The unassigned device's own message stops being a lie: it can say "choose a
+  scene in the panel" because the panel now has one.
+- A POST that changes nothing must not write to the card — same wear discipline
+  as everywhere else.
+- Nothing regresses for the API: the JSON PATCH route keeps working unchanged.
+
+### T9 / T11 — acceptance criteria
 
 - **Identify the attached board before flashing.** `/dev/cu.usbmodem2101` may be the
   working radar; a `Plane Radar` banner means stop and ask.
