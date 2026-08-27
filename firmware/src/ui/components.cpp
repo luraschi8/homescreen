@@ -50,13 +50,17 @@ bool drawInstructions(const char* draw_json) {
   if (n == 0) {
     return false;   // nothing drawable: the caller shows a status screen
   }
+  displayFontEnsureLoaded(tft);
   tft.fillScreen(config::kColorBlack);
   tft.setTextDatum(textdatum_t::middle_center);
   for (size_t i = 0; i < n; ++i) {
     // The resolver decided WHERE and HOW BIG; this only chooses the pen and
     // the face. Any layout thinking here would be a second opinion, and the
     // preview would stop matching the glass.
-    displayFontSetSmoothSize(tft, placed[i].px);
+    // Pixels, not a scale factor. displayFontSetSmoothSize takes a SCALE and
+    // reads as if it took a size; passing 62 there rendered the 15px face at
+    // 62x and the panel showed one letter.
+    displayFontSetPixelHeight(tft, placed[i].px);
     tft.setTextColor(penFor(placed[i].tone), config::kColorBlack);
     tft.drawString(placed[i].text, placed[i].x, placed[i].y);
   }

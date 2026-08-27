@@ -17,3 +17,16 @@ inline void displayFontSetSmoothSize(lgfx::LGFXBase& g, float s) {
 inline void displayFontSetBitmap(lgfx::LGFXBase& g, const lgfx::GFXfont* f) {
   g.setFont(f); g.setTextSize(1);
 }
+/** Absolute pixel height, modelling the real one: measure at 1:1, then scale.
+ *  Without this the mock took a pixel count where the firmware's
+ *  displayFontSetSmoothSize wanted a SCALE, so passing 62 rendered the 15px
+ *  face at 62x -- one letter filling the panel -- and the host saw nothing
+ *  wrong. */
+inline void displayFontSetPixelHeight(lgfx::LGFXBase& g, int px) {
+  if (px <= 0) return;
+  g.setFont(nullptr);
+  g.setTextSize(1.0f);
+  const int natural = g.fontHeight();
+  if (natural <= 0) return;
+  g.setTextSize((float)px / (float)natural);
+}

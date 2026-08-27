@@ -51,6 +51,22 @@ void displayFontSetSmoothSize(lgfx::LGFXBase& gfx, float size) {
   gfx.setTextSize(size);
 }
 
+void displayFontSetPixelHeight(lgfx::LGFXBase& gfx, int px) {
+  if (px <= 0) {
+    return;
+  }
+  // Measure the face at 1:1 first. The VLW is a fixed-size bitmap face (Noto
+  // Sans Bold 15), so "how many pixels tall is this" is a property of the file,
+  // not a constant worth hardcoding here -- a different embedded font would
+  // silently change every size on the panel.
+  gfx.setTextSize(1.0f);
+  const int natural = gfx.fontHeight();
+  if (natural <= 0) {
+    return;
+  }
+  gfx.setTextSize(static_cast<float>(px) / static_cast<float>(natural));
+}
+
 void displayFontSetBitmap(lgfx::LGFXBase& gfx, const lgfx::GFXfont* font) {
   gfx.setFont(font);
   gfx.setTextSize(1);

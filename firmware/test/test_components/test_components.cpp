@@ -323,11 +323,81 @@ void test_a_draw_list_too_large_to_hold_is_refused_not_truncated(void) {
                             "a truncated list must not be drawn");
 }
 
+
+void test_text_is_drawn_at_the_pixel_height_the_resolver_asked_for(void) {
+  // The bug this exists for: displayFontSetSmoothSize takes a SCALE FACTOR and
+  // reads as if it took a size, so passing the resolver's 62px rendered the
+  // 15px face at 62x and the panel showed part of one letter. Every other test
+  // asserted WHERE text landed and none asserted HOW BIG, so the host was
+  // perfectly happy.
+  poll(kClockScene);
+  g_gfx.reset();
+  ui::renderScene();
+
+  ui::drawlist::Placement want[ui::drawlist::kMaxPlacements];
+  const size_t n = ui::drawlist::resolve(services::scene::drawJson(),
+                                         config::kDisplayWidth,
+                                         config::kDisplayHeight, want,
+                                         ui::drawlist::kMaxPlacements);
+  TEST_ASSERT_GREATER_THAN_UINT(0, n);
+  for (size_t i = 0; i < n; ++i) {
+    bool checked = false;
+    for (const auto& op : g_gfx.ops) {
+      if (op.kind != DrawOp::Text || op.text != want[i].text) continue;
+      char m[128];
+      snprintf(m, sizeof(m), "'%s' asked for %dpx, drew %dpx", want[i].text,
+               want[i].px, op.h);
+      // Within a pixel: the scale is a float division onto an integer face.
+      TEST_ASSERT_INT_WITHIN_MESSAGE(1, want[i].px, op.h, m);
+      checked = true;
+      break;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(checked, "the string was never drawn at all");
+  }
+}
+
+void test_nothing_a_component_draws_overflows_the_panel(void) {
+  // The symptom the operator actually reported: something far too big for the
+  // glass. Whatever the cause, this is the assertion that names it.
+  poll(kClockScene);
+  g_gfx.reset();
+  ui::renderScene();
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind != DrawOp::Text) continue;
+    char m[128];
+    snprintf(m, sizeof(m), "'%s' is %dx%d on a %dx%d panel", op.text.c_str(),
+             op.w, op.h, config::kDisplayWidth, config::kDisplayHeight);
+    TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(config::kDisplayHeight, op.h, m);
+    TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(config::kDisplayWidth, op.w, m);
+  }
+}
+
+void test_the_largest_size_token_still_fits_the_round_panel(void) {
+  // xl on 240x240 resolves to 62px. A face rendered at 62x that would be 930px.
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"x\","
+       "\"components\":[{\"c\":\"x\",\"draw\":["
+       "{\"t\":\"text\",\"slot\":\"center\",\"v\":\"88:88\","
+       "\"size\":\"xl\"}]}]}");
+  g_gfx.reset();
+  ui::renderScene();
+  bool seen = false;
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind != DrawOp::Text || op.text != "88:88") continue;
+    seen = true;
+    TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(config::kDisplayHeight, op.h,
+                                      "xl must fit the height it is a fraction of");
+  }
+  TEST_ASSERT_TRUE(seen);
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_a_component_with_an_instruction_list_is_drawn_without_knowing_it);
   RUN_TEST(test_the_firmware_declares_it_can_draw_instruction_lists);
   RUN_TEST(test_instructions_land_where_the_resolver_says);
+  RUN_TEST(test_text_is_drawn_at_the_pixel_height_the_resolver_asked_for);
+  RUN_TEST(test_nothing_a_component_draws_overflows_the_panel);
+  RUN_TEST(test_the_largest_size_token_still_fits_the_round_panel);
   RUN_TEST(test_tones_reach_the_pen);
   RUN_TEST(test_an_empty_instruction_list_says_so_rather_than_blanking);
   RUN_TEST(test_the_radar_is_untouched_by_any_of_this);
