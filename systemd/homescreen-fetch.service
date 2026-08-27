@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/dashboard
-ExecStart=/home/pi/dashboard/venv/bin/python -m homescreen.sources.adsb
+ExecStart=/home/pi/dashboard/venv/bin/python -m homescreen.fetchd
 Restart=always
 RestartSec=10
 # See homescreen-serve.service: check_cadence rejecting a config -- including a
