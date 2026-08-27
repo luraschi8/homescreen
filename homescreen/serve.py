@@ -15,7 +15,8 @@ from pathlib import Path
 from flask import (Flask, Response, jsonify, redirect, request,
                    url_for)
 
-from homescreen import draw, layout, overrides, registry, scenes, web
+from homescreen import draw, layout, overrides, registry, scenes, secrets, web
+from homescreen import jobs, jobstore, providers
 from homescreen import schedule as scheduling
 from homescreen import render
 from homescreen.render import (RenderBusy, RenderError, check_geometry as
@@ -895,6 +896,67 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         """
         hw = (request.form.get("hw") or "").strip()
         return redirect(url_for("home", m=_apply_device_form(hw, request.form)))
+
+    @app.get("/api/providers")
+    def list_providers():
+        """What can be fetched, and what each one needs.
+
+        Secret NAMES, never values: a provider says it needs `api_key`, and the
+        dashboard renders a field for it. There is no route that returns one.
+        """
+        return jsonify({"providers": [
+            {"name": name,
+             "params": list(providers.params_schema(name)),
+             "interval_s": providers.default_interval(name),
+             "secrets": secrets.statuses(cache_dir, name,
+                                         providers.secrets_for(name))}
+            for name in providers.names()]})
+
+    @app.put("/api/providers/<name>/secrets/<secret>")
+    def set_provider_secret(name: str, secret: str):
+        if providers.get(name) is None:
+            return jsonify({"error": f"proveedor desconocido: {name}"}), 404
+        if secret not in providers.secrets_for(name):
+            return jsonify({"error": f"{name} no usa un secreto {secret!r}"}), 404
+        body = request.get_json(silent=True) or {}
+        try:
+            state = secrets.set_secret(cache_dir, name, secret,
+                                       body.get("value"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except OSError as exc:
+            log.error("secret write failed: %s", exc)
+            return jsonify({"error": "no se pudo guardar"}), 503
+        return jsonify(state)
+
+    @app.delete("/api/providers/<name>/secrets/<secret>")
+    def clear_provider_secret(name: str, secret: str):
+        if providers.get(name) is None:
+            return jsonify({"error": f"proveedor desconocido: {name}"}), 404
+        try:
+            gone = secrets.clear(cache_dir, name, secret)
+        except (ValueError, OSError):
+            gone = False
+        return ("", 204) if gone else (jsonify({"error": "no estaba puesto"}), 404)
+
+    @app.get("/api/jobs")
+    def list_jobs():
+        """The fetch work the fleet currently implies, and how it is doing.
+
+        Derived on read, exactly as the daemon derives it, so this cannot drift
+        from what is actually being fetched.
+        """
+        plan = jobs.collect(registry.load(cache_dir), _live())
+        out = []
+        for job in sorted(plan.values(), key=lambda j: j.key):
+            env = jobstore.read(cache_dir, job.key) or {}
+            out.append({"key": job.key, "provider": job.provider,
+                        "params": job.params, "interval_s": job.interval_s,
+                        "wanted_by": list(job.wanted_by),
+                        "ok": env.get("ok"),
+                        "fetched_at": env.get("fetched_at"),
+                        "error": env.get("error")})
+        return jsonify({"jobs": out})
 
     @app.get("/api/devices/<hw>/schedule")
     def device_schedule(hw: str):
