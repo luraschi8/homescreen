@@ -58,7 +58,7 @@ def duration(seconds: float) -> str:
         return f"{s // 3600}h {(s % 3600) // 60}m"
     return f"{s // 86400}d {(s % 86400) // 3600}h"
 
-def render_home(st: dict, scene_names=(), name_max: int = 32,
+def render_home(st: dict, scene_options=None, name_max: int = 32,
                 notice: str = "") -> str:
     e = html.escape
 
@@ -123,10 +123,19 @@ def render_home(st: dict, scene_names=(), name_max: int = 32,
         # than to silence. The POST is backed by the same validation as the
         # JSON PATCH, so an unknown scene is refused by one code path.
         current = d.get("scene") or "unassigned"
+        # Per device, not a global list: a scene this one cannot draw is shown
+        # disabled with the reason, so the operator can see WHY rather than
+        # picking it and getting "escena no soportada" on the glass.
+        opts = (scene_options or {}).get(d.get("hw")) or []
         options = "".join(
-            f'<option value="{e(s_)}"{" selected" if s_ == current else ""}>'
-            f'{e(s_)}</option>'
-            for s_ in (list(scene_names) + ["unassigned"]))
+            f'<option value="{e(name)}"'
+            f'{" selected" if name == current else ""}'
+            f'{"" if ok else " disabled"}>'
+            f'{e(name)}{"" if ok else " — " + e(why)}</option>'
+            for name, ok, why in opts)
+        options += (f'<option value="unassigned"'
+                    f'{" selected" if current == "unassigned" else ""}>'
+                    f'unassigned</option>')
         form = f"""<form class="cfg" method="post" action="/home/device">
     <input type="hidden" name="hw" value="{esc(d.get("hw"))}">
     <label>name <input name="name" value="{e(str(d.get("name") or ""))}"

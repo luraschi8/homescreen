@@ -696,3 +696,53 @@ def test_applying_the_same_values_does_not_rewrite_the_card(ctx):
     before = os.stat(registry.registry_path(cache)).st_mtime_ns
     client.post("/home/device", data={"hw": HW, "name": "x", "scene": "planes"})
     assert os.stat(registry.registry_path(cache)).st_mtime_ns == before
+
+
+# --- the dashboard must not offer a choice that cannot work ------------------
+
+def test_a_data_push_device_is_only_offered_scenes_it_can_draw(ctx):
+    # A round display draws its own geometry from components. `clock` is HTML
+    # only, so picking it put "escena no soportada" on the glass -- and the
+    # operator had no way to know that before pressing apply.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    html = _home(client)
+    assert '<option value="planes"' in html
+    assert 'disabled' in html, "clock and status are not drawable here"
+    assert 'value="clock" disabled' in html or 'value="clock"  disabled' in html \
+        or 'value="clock" selected disabled' in html
+
+
+def test_a_disabled_option_says_why(ctx):
+    # "clock — no components for this device" beats a silent grey row.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    html = _home(client)
+    assert "no components for this device" in html
+
+
+def test_a_pixel_push_device_is_offered_every_scene(ctx):
+    # An e-paper takes a rendered framebuffer, so any scene with html works.
+    client, cache, _ = ctx
+    client.get("/api/device/epap/scene?w=800&h=480&depth=1")
+    html = _home(client)
+    for scene in ("clock", "planes", "status"):
+        assert f'<option value="{scene}"' in html
+    card = html[html.index("epap"):]
+    card = card[:card.index("</form>")]
+    assert "disabled" not in card, "a pixel-push device can render all of them"
+
+
+def test_a_device_that_declares_a_component_we_have_no_scene_for(ctx):
+    # Declaring `text` today matches no scene, so everything is disabled -- and
+    # every row says what it would need.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=text")
+    html = _home(client)
+    assert "needs radar" in html, "planes should say what it wants"
+
+
+def test_the_offered_list_still_lets_you_unassign(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    assert '<option value="unassigned"' in _home(client)

@@ -356,7 +356,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     @app.get("/home")
     def home():
         return Response(
-            web.render_home(_status(), scene_names=scenes.names(),
+            web.render_home(_status(),
+                            scene_options={
+                                hw: _scene_options(rec) for hw, rec
+                                in registry.load(cache_dir).items()},
                             name_max=registry.NAME_MAX,
                             notice=request.args.get("m", "")),
             mimetype="text/html")
@@ -521,6 +524,46 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             known = set(registry.load(cache_dir))
             for key in [k for k in _serve_notes if k not in known]:
                 _serve_notes.pop(key, None)
+
+    def _scene_options(rec: dict) -> list:
+        """(name, renderable, why_not) for every assignable scene, per device.
+
+        The dashboard used to offer every scene to every device. A round display
+        picking `clock` got "escena no soportada" on the glass, because clock is
+        HTML only and that device draws its own geometry from components. The
+        operator had no way to know which choice would work.
+
+        A device that DECLARED components is data-push: it can only show a scene
+        that emits one it declared. A device that declared none is pixel-push --
+        it takes a rendered framebuffer from /frame, and any scene with html
+        works.
+        """
+        caps = registry.clean_caps(rec.get("caps") or {})
+        declared = caps.get("components")
+        out = []
+        for name in scenes.names():
+            try:
+                scene = scenes.build(name, scenes.SceneContext(
+                    cfg=_live(), cache_dir=cache_dir, caps=caps, now=clock(),
+                    device={"hw": "?", "id": rec.get("name") or "?",
+                            "name": rec.get("name"), "feed": "adsb"}))
+            except Exception:                       # noqa: BLE001
+                out.append((name, False, "scene failed to build"))
+                continue
+            if not declared:
+                out.append((name, bool(scene.html), ""
+                            if scene.html else "no pixel rendering"))
+                continue
+            kinds = {c.get("c") for c in scene.components}
+            usable = sorted(kinds & set(declared))
+            if usable:
+                out.append((name, True, ""))
+            elif kinds:
+                out.append((name, False,
+                            f"needs {', '.join(sorted(kinds))}"))
+            else:
+                out.append((name, False, "no components for this device"))
+        return out
 
     def _fleet_entry(hw: str, rec: dict, now: float) -> dict:
         entry = {"hw": hw, "name": rec.get("name"), "scene": rec.get("scene"),
