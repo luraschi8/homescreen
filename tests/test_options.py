@@ -191,7 +191,7 @@ def test_show_seconds_actually_shows_seconds(ctx):
 
 def test_the_form_renders_a_field_per_declared_option(ctx):
     client, _ = ctx
-    html = client.get("/home").get_data(as_text=True)
+    html = client.get(f"/device/{HW}").get_data(as_text=True)
     for field in scenes.option_schema("clock"):
         assert f'name="opt.{field["key"]}"' in html, field["key"]
 
@@ -200,7 +200,7 @@ def test_the_form_shows_the_stored_values(ctx):
     client, _ = ctx
     client.patch(f"/api/devices/{HW}", json={"options": {"timezone": "Asia/Tokyo",
                                                          "show_seconds": True}})
-    html = client.get("/home").get_data(as_text=True)
+    html = client.get(f"/device/{HW}").get_data(as_text=True)
     assert 'value="Asia/Tokyo"' in html
     assert "checked" in html
 
@@ -238,7 +238,7 @@ def test_a_hostile_option_value_cannot_reach_the_page_unescaped(ctx):
     client, _ = ctx
     client.post("/home/device", data={"hw": HW, "name": "desk", "scene": "clock",
                                       "opt.timezone": '"><img src=x onerror=1>'})
-    html = client.get("/home").get_data(as_text=True)
+    html = client.get(f"/device/{HW}").get_data(as_text=True)
     assert '"><img src=x' not in html
     assert "&lt;img" in html or "&quot;&gt;" in html
 

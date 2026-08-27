@@ -1,9 +1,14 @@
 # tests/test_web.py
-"""The status page's whole job is telling a human what state the system is in.
+"""The dashboard's whole job is telling a human what state the fleet is in.
 
 Mutation testing found that hardcoding "0 aircraft" or "healthy" passed the
-entire suite -- behavioural regressions a human would see and no test would.
-These assert the rendered values, not merely that the page renders.
+entire suite -- regressions a human would see and no test would. These assert
+the rendered values, not merely that a page renders.
+
+The page split (fleet list / one screen / settings) moved several of these
+assertions rather than retiring them: telemetry, substitutions and geometry are
+facts about ONE screen and now live on its page, and feed health is a fact
+about a source and lives with the source. What each test protects is unchanged.
 """
 import pytest
 
@@ -33,7 +38,7 @@ def test_duration_truncates_rather_than_rounding():
     assert web.duration(7199) == "1h 59m"
 
 
-# --- the page must show the real values ------------------------------------
+# --- fixtures ---------------------------------------------------------------
 
 def _status(**over):
     base = {"service": "homescreen", "version": "abc1234", "server_time": 1,
@@ -45,173 +50,224 @@ def _status(**over):
     return base
 
 
-def _device(**over):
+def _source(**over):
     base = {"id": "radar", "kind": "gc9a01_client", "render": "device",
             "feed_name": "adsb", "poll_seconds": 5,
             "feed": {"ok": True, "age_s": 2.4, "aircraft": 17,
                      "fetched_at": "2026-08-26T10:00:00+02:00", "error": None},
-            "endpoints": {"data": "/api/display/radar/data",
-                          "health": "/api/display/radar/health"},
+            "endpoints": {"data": "/api/display/radar/data"},
             "last_telemetry": None}
     base.update(over)
     return base
 
 
-def test_the_aircraft_count_is_the_real_one(monkeypatch):
-    # `assert "3" in body` was the previous check; "3" appears in #e3e3e3 and
-    # in the version string, so it held with zero aircraft.
-    html = web.render_home(_status(devices=[_device()]))
-    assert ">17<" in html or "17</dd>" in html, "the real count must appear"
-    other = web.render_home(_status(devices=[
-        _device(feed={"ok": True, "age_s": 1.0, "aircraft": 42,
-                      "fetched_at": "x", "error": None})]))
-    assert "42" in other and "17" not in other.replace("abc1234", "")
-
-
-def test_a_healthy_feed_and_a_stale_one_render_differently():
-    healthy = web.render_home(_status(devices=[_device()]))
-    stale = web.render_home(_status(devices=[
-        _device(feed={"ok": False, "age_s": 900.0, "aircraft": 3,
-                      "fetched_at": "x", "error": "no route to host"})]))
-    assert "healthy" in healthy and "healthy" not in stale
-    assert "stale" in stale
-    assert "no route to host" in stale, "the reason reaches the reader"
-
-
-def test_a_feed_that_never_fetched_says_so():
-    html = web.render_home(_status(devices=[
-        _device(feed={"ok": False, "age_s": 0.0, "aircraft": 0,
-                      "fetched_at": None, "error": None})]))
-    assert "never" in html.lower()
-
-
-def test_a_pixel_push_device_is_not_reported_as_a_dead_feed():
-    html = web.render_home(_status(devices=[_device(feed=None)]))
-    assert "no feed" in html
-    assert "stale" not in html
-
-
-def test_the_version_and_uptime_are_rendered():
-    html = web.render_home(_status(version="deadbee-dirty", uptime_s=3661))
-    assert "deadbee-dirty" in html
-    assert "1h 1m" in html
-
-
-def test_the_upstream_feed_block_shows_provider_endpoint_and_cadence():
-    html = web.render_home(_status())
-    assert "adsb.fi" in html and "https://x" in html and "3s" in html
-
-
-# --- the fleet section ------------------------------------------------------
-
-def _fleet(**over):
+def _screen(**over):
     base = {"hw": "a4cf12ab3c44", "name": "radar", "scene": "planes",
-            "fw": "0.2.0", "poll_seconds": 5, "online": True,
+            "fw": "0.2.0", "poll_seconds": 5, "online": True, "approved": True,
             "last_seen": "2026-08-26T10:00:00+02:00",
             "first_seen": "2026-08-26T09:00:00+02:00",
-            "caps": {"w": 240, "h": 240}, "telemetry": {}}
+            "caps": {"w": 240, "h": 240}, "telemetry": {}, "options": {}}
     base.update(over)
     return base
 
 
+def _device_page(screen, **kw):
+    kw.setdefault("options", [("planes", True, ""), ("clock", True, "")])
+    kw.setdefault("schemas", {})
+    kw.setdefault("name_max", 32)
+    return web.render_device(screen, **kw)
+
+
+# --- the source's real numbers reach a human --------------------------------
+
+def test_the_aircraft_count_is_the_real_one():
+    html = web.render_settings(_status()["feed"], devices=[_source()])
+    assert "17" in html
+
+
+def test_a_healthy_feed_and_a_stale_one_render_differently():
+    healthy = web.render_settings({}, devices=[_source()])
+    stale = web.render_settings({}, devices=[
+        _source(feed={"ok": False, "age_s": 900, "aircraft": 0,
+                      "fetched_at": "x", "error": "timeout"})])
+    assert "al día" in healthy and "caducado" not in healthy
+    assert "caducado" in stale and "timeout" in stale
+
+
+def test_a_feed_that_never_fetched_says_so():
+    html = web.render_settings({}, devices=[
+        _source(feed={"ok": False, "age_s": None, "aircraft": 0,
+                      "fetched_at": None, "error": None})])
+    assert "nunca consultado" in html
+
+
+def test_a_pixel_push_device_is_not_reported_as_a_dead_feed():
+    html = web.render_settings({}, devices=[_source(feed=None)])
+    assert "caducado" not in html and "nunca consultado" not in html
+
+
+def test_the_upstream_feed_block_shows_provider_endpoint_and_cadence():
+    html = web.render_settings(_status()["feed"], devices=[])
+    assert "adsb.fi" in html and "https://x" in html and "3" in html
+
+
+def test_the_version_and_uptime_are_rendered():
+    html = web.render_fleet(_status())
+    assert "abc1234" in html and "1h 1m" in html
+
+
+# --- the fleet list ---------------------------------------------------------
+
 def test_online_and_offline_render_differently():
-    on = web.render_home(_status(fleet=[_fleet()]))
-    off = web.render_home(_status(fleet=[_fleet(online=False)]))
-    assert "online" in on and "offline" not in on
-    assert "offline" in off
+    on = web.render_fleet(_status(fleet=[_screen()]))
+    off = web.render_fleet(_status(fleet=[_screen(online=False)]))
+    assert "en línea" in on and "sin conexión" not in on
+    assert "sin conexión" in off
 
 
-def test_the_header_counts_devices_and_how_many_are_up():
-    html = web.render_home(_status(fleet=[
-        _fleet(), _fleet(hw="b", name="two", online=False)]))
-    assert "2 device(s) registered" in html
-    assert "1 online" in html
+def test_a_device_waiting_to_be_let_in_is_not_counted_as_a_member():
+    # It is neither online nor offline -- it is not in the fleet at all, and
+    # showing it in the members table would make approval look decorative.
+    html = web.render_fleet(_status(fleet=[
+        _screen(), _screen(hw="bb", name=None, approved=False)]))
+    assert "Quieren unirse (1)" in html
+    assert "1 pantalla(s)" in html, "the member count excludes it"
+
+
+def test_the_header_counts_screens_and_how_many_are_up():
+    html = web.render_fleet(_status(fleet=[
+        _screen(), _screen(hw="b", name="two", online=False)]))
+    assert "2 pantalla(s)" in html and "1 en línea" in html
 
 
 def test_an_unnamed_device_still_shows_its_hardware_id():
-    html = web.render_home(_status(fleet=[_fleet(name=None)]))
+    html = web.render_fleet(_status(fleet=[_screen(name=None)]))
     assert "a4cf12ab3c44" in html, "so a human can adopt it"
-    assert "unnamed" in html
-
-
-def test_declared_geometry_is_shown_when_present():
-    assert "240x240" in web.render_home(_status(fleet=[_fleet()]))
-    assert "240x240" not in web.render_home(_status(fleet=[_fleet(caps={})]))
+    assert "sin nombre" in html
 
 
 def test_an_empty_fleet_says_so_rather_than_rendering_nothing():
-    html = web.render_home(_status())
-    assert "no devices have called in yet" in html
+    assert "Ninguna pantalla" in web.render_fleet(_status())
+
+
+def test_every_row_links_to_the_screens_own_page():
+    html = web.render_fleet(_status(fleet=[_screen()]))
+    assert 'href="/device/a4cf12ab3c44"' in html
+
+
+# --- one screen's page ------------------------------------------------------
+
+def test_declared_geometry_is_shown_when_present():
+    assert "240\u00d7240" in _device_page(_screen())
+    assert "240\u00d7240" not in _device_page(_screen(caps={}))
 
 
 def test_telemetry_is_shown_when_a_device_has_reported_any():
-    html = web.render_home(_status(fleet=[_fleet(telemetry={"rssi": "-64"})]))
-    assert "rssi=-64" in html
+    assert "rssi=-64" in _device_page(_screen(telemetry={"rssi": "-64"}))
+
+
+def test_the_page_shows_what_the_server_substituted():
+    # A green card for a panel the server is quietly serving something else is
+    # worse than no card: the operator stops looking.
+    html = _device_page(_screen(unsupported=["radar"],
+                                scene_error="fallo en planes: KeyError"))
+    # `"radar" in html` held from the device NAME regardless of the list.
+    assert "<dt>descartado</dt>" in html
+    assert "esta pantalla no lo declara" in html
+    assert "fallo en planes: KeyError" in html
+
+
+def test_a_healthy_screen_carries_no_substitution_rows():
+    html = _device_page(_screen())
+    assert "<dt>descartado</dt>" not in html
+    assert "<dt>escena</dt>" not in html
+
+
+def test_a_substitution_message_is_escaped():
+    html = _device_page(_screen(scene_error="<script>alert(1)</script>"))
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_a_screen_waiting_for_approval_offers_the_way_to_admit_it():
+    html = _device_page(_screen(approved=False))
+    assert "esperando aprobación" in html
+    assert 'action="/device/a4cf12ab3c44/approval"' in html
+
+
+def test_an_admitted_screen_is_offered_removal_and_revocation():
+    html = _device_page(_screen())
+    assert "Sacar de la flota" in html
+    assert 'action="/device/a4cf12ab3c44/remove"' in html
+
+
+def test_only_the_chosen_components_settings_are_submitted():
+    # A hidden input still posts its value, so every unchosen component's
+    # options would ride along with the one that was picked.
+    html = _device_page(_screen(scene="clock"), schemas={
+        "planes": [{"key": "radius_km", "label": "Radio", "type": "int"}],
+        "clock": [{"key": "timezone", "label": "Zona", "type": "text"}]})
+    assert 'data-scene="clock" style' in html, "the chosen one is enabled"
+    assert 'data-scene="planes" hidden disabled' in html
+
+
+def test_a_timezone_field_offers_the_zones_rather_than_demanding_one():
+    # It used to be a free-text box that required knowing "Europe/Madrid".
+    html = _device_page(_screen(scene="clock"), schemas={
+        "clock": [{"key": "timezone", "label": "Zona", "type": "text",
+                   "datalist": "timezones"}]})
+    assert 'list="dl-timezones"' in html
+    assert '<datalist id="dl-timezones">' in html
+    assert 'value="Europe/Madrid"' in html
 
 
 # --- escaping ---------------------------------------------------------------
 
 @pytest.mark.parametrize("field,value", [
-    ("name", "<b>bold"), ("scene", "<i>x"), ("fw", "<script>a"),
-    ("hw", "<em>h"),
+    ("name", "<b>bold"), ("scene", "<i>x"), ("hw", "<em>h"),
 ])
-def test_every_device_supplied_field_is_escaped(field, value):
-    html = web.render_home(_status(fleet=[_fleet(**{field: value})]))
-    assert value not in html
-    assert "&lt;" in html
+def test_every_device_supplied_field_is_escaped_on_the_fleet_page(field, value):
+    # fw is not on this page -- it is a fact about one screen. It is covered
+    # below, where it is actually rendered.
+    html = web.render_fleet(_status(fleet=[_screen(**{field: value})]))
+    assert value not in html and "&lt;" in html
+
+
+@pytest.mark.parametrize("field,value", [
+    ("name", "<b>bold"), ("scene", "<i>x"), ("fw", "<script>a"),
+])
+def test_every_device_supplied_field_is_escaped_on_the_device_page(field, value):
+    html = _device_page(_screen(**{field: value}))
+    assert value not in html and "&lt;" in html
 
 
 def test_telemetry_values_are_escaped():
-    html = web.render_home(_status(fleet=[
-        _fleet(telemetry={"x": "<script>alert(1)</script>"})]))
-    assert "<script>" not in html
-
-
-# --- the page must be self-contained ---------------------------------------
-
-def test_the_page_makes_no_external_requests():
-    html = web.render_home(_status(devices=[_device()], fleet=[_fleet()]))
-    for scheme in ("http://", "//fonts.", "<script src"):
-        assert scheme not in html, f"{scheme} would break on a LAN with no WAN"
-
-
-def test_the_page_renders_with_everything_missing():
-    # A partially-built status dict must not take the page down.
-    assert web.render_home({"version": "v", "uptime_s": 0,
-                            "feed": {"source": None, "endpoint": None,
-                                     "fetch_seconds": None}})
-
-
-def test_the_fleet_page_shows_what_the_server_substituted():
-    # A green card for a panel the server is quietly serving something else is
-    # worse than no card: the operator stops looking.
-    html = web.render_home(_status(fleet=[{
-        "hw": "aabb", "name": "radar", "scene": "planes", "online": True,
-        "fw": "1.0", "poll_seconds": 5, "caps": {"w": 240, "h": 240},
-        "last_seen": "x", "first_seen": "y",
-        "unsupported": ["radar"], "scene_error": "fallo en planes: KeyError"}]))
-    # `"radar" in html` held from the device NAME regardless of the list.
-    assert "<dt>dropped</dt>" in html
-    assert "<dd class=\"bad\">radar &mdash; not declared by this device</dd>" \
-        in html
-    assert "fallo en planes: KeyError" in html
-
-
-def test_a_healthy_device_carries_no_substitution_rows():
-    html = web.render_home(_status(fleet=[{
-        "hw": "aabb", "name": "radar", "scene": "planes", "online": True,
-        "fw": "1.0", "poll_seconds": 5, "caps": {}, "last_seen": "x",
-        "first_seen": "y"}]))
-    # `"scene_error" not in html` could never fail: web.py emits <dt>scene</dt>
-    # and never the literal key, so the assertion passed with the row present.
-    assert "<dt>dropped</dt>" not in html
-    assert "<dt>scene</dt>" not in html
-
-
-def test_a_substitution_message_is_escaped():
-    html = web.render_home(_status(fleet=[{
-        "hw": "aabb", "name": "d", "scene": "clock", "online": True,
-        "fw": "1", "poll_seconds": 5, "caps": {}, "last_seen": "x",
-        "first_seen": "y", "scene_error": "<script>alert(1)</script>"}]))
+    html = _device_page(_screen(telemetry={"x": "<script>alert(1)</script>"}))
     assert "<script>alert(1)</script>" not in html
-    assert "&lt;script&gt;" in html
+
+
+# --- the pages must be self-contained --------------------------------------
+
+@pytest.mark.parametrize("html", [
+    web.render_fleet(_status(fleet=[_screen()])),
+    web.render_settings(_status()["feed"], devices=[_source()]),
+    web.render_device(_screen(), options=[("clock", True, "")], schemas={},
+                      name_max=32),
+])
+def test_no_page_makes_an_external_request(html):
+    # The dashboard is how you debug the network. Needing the network to render
+    # it means it stops working exactly when you need it.
+    for bad in ("http://", "https://fonts.", "//fonts.", "<script src",
+                '<link rel="stylesheet"'):
+        assert bad not in html, f"{bad} would break on a LAN with no WAN"
+
+
+def test_the_fleet_page_renders_with_everything_missing():
+    # A partially-built status dict must not take the page down.
+    assert web.render_fleet({"version": "v", "uptime_s": 0,
+                             "feed": {"source": None, "endpoint": None,
+                                      "fetch_seconds": None}})
+
+
+def test_the_device_page_renders_with_everything_missing():
+    assert web.render_device({"hw": "aa"}, options=[], schemas={}, name_max=32)

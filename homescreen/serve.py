@@ -355,13 +355,60 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     @app.get("/")
     @app.get("/home")
     def home():
+        return Response(web.render_fleet(_status(),
+                                         notice=request.args.get("m", "")),
+                        mimetype="text/html")
+
+    @app.get("/device/<hw>")
+    def device_page(hw: str):
+        rec = registry.load(cache_dir).get(hw)
+        if rec is None:
+            return redirect(url_for("home", m=f"no existe ninguna pantalla {hw}"))
+        now = clock()
+        opts = _scene_options(rec)
+        # Every drawable component's schema travels with the page, so choosing
+        # one shows its settings without another round trip -- and so a
+        # component cannot be picked without its configuration being visible.
+        schemas = {name: list(scenes.option_schema(name))
+                   for name, ok, _ in opts if ok}
         return Response(
-            web.render_home(_status(),
-                            scene_options={
-                                hw: _scene_options(rec) for hw, rec
-                                in registry.load(cache_dir).items()},
-                            name_max=registry.NAME_MAX,
-                            notice=request.args.get("m", "")),
+            web.render_device(_fleet_entry(hw, rec, now), options=opts,
+                              schemas=schemas, name_max=registry.NAME_MAX,
+                              notice=request.args.get("m", "")),
+            mimetype="text/html")
+
+    @app.post("/device/<hw>")
+    def device_page_apply(hw: str):
+        message = _apply_device_form(hw, request.form)
+        return redirect(url_for("device_page", hw=hw, m=message))
+
+    @app.post("/device/<hw>/approval")
+    def device_page_approval(hw: str):
+        wanted = request.form.get("approved") == "1"
+        rec = registry.set_approval(cache_dir, hw, wanted)
+        if rec is None:
+            return redirect(url_for("home", m=f"no existe ninguna pantalla {hw}"))
+        name = rec.get("name") or hw
+        return redirect(url_for(
+            "device_page", hw=hw,
+            m=f"{name} {"añadida a la flota" if wanted else "sacada de la flota"}"))
+
+    @app.post("/device/<hw>/remove")
+    def device_page_remove(hw: str):
+        # Back to the fleet, not to a page for something that no longer exists.
+        gone = registry.forget(cache_dir, hw)
+        _serve_notes.pop(hw, None)
+        return redirect(url_for(
+            "home", m=(f"{hw} eliminada del registro" if gone
+                       else f"no existe ninguna pantalla {hw}")))
+
+    @app.get("/settings")
+    def settings_page():
+        st = _status()
+        return Response(
+            web.render_settings(st["feed"] or {}, devices=st.get("devices"),
+                                notice=request.args.get("m", ""),
+                                version=version),
             mimetype="text/html")
 
     @app.get("/api/config")
@@ -569,6 +616,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     def _fleet_entry(hw: str, rec: dict, now: float) -> dict:
         entry = {"hw": hw, "name": rec.get("name"), "scene": rec.get("scene"),
                  "fw": rec.get("fw"),
+                 # Membership, not health: a pending device can be perfectly
+                 # online and still be served nothing.
+                 "approved": registry.is_approved(rec),
                  "poll_seconds": registry.advertised_poll_seconds(rec),
                  "online": registry.is_online(rec, now),
                  "last_seen": rec.get("last_seen"),
@@ -685,25 +735,20 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
-    @app.post("/home/device")
-    def home_device():
-        """The dashboard's form target.
+    def _apply_device_form(hw: str, form) -> str:
+        """Apply a dashboard edit and say what happened, in one sentence.
 
-        Form-encoded rather than JSON, and a redirect rather than a body, so the
-        page works with no JavaScript at all -- the same constraint the scenes
-        live under. It is a thin shell over `registry.assign`, the identical
-        call the JSON PATCH makes, so there is exactly one place that decides
-        what a valid name or scene is.
+        Shared by the fleet form and the device page so there is exactly one
+        place that decides what a valid name, scene or option is -- and it is
+        the same `registry.assign` the JSON PATCH calls.
         """
-        hw = (request.form.get("hw") or "").strip()
-        name = (request.form.get("name") or "").strip()
-        scene = (request.form.get("scene") or "").strip()
-        if hw not in registry.load(cache_dir):
-            return redirect(url_for("home", m="unknown device"))
-        target = scene or (registry.load(cache_dir).get(hw, {}).get("scene")
-                           or "")
-        raw_options = {k[4:]: v for k, v in request.form.items()
-                       if k.startswith("opt.")}
+        name = (form.get("name") or "").strip()
+        scene = (form.get("scene") or "").strip()
+        known = registry.load(cache_dir)
+        if hw not in known:
+            return f"no existe ninguna pantalla {hw}"
+        target = scene or (known.get(hw, {}).get("scene") or "")
+        raw_options = {k[4:]: v for k, v in form.items() if k.startswith("opt.")}
         # A form that carried ANY option field carried them all -- a text input
         # always submits, and a checkbox that is off submits nothing. So an
         # absent bool means "off", which is what clean_options already does by
@@ -715,16 +760,25 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             rec = registry.assign(cache_dir, hw, name=name or None,
                                   scene=scene or None, options=options)
         except ValueError as exc:
-            return redirect(url_for("home", m=str(exc)))
+            return str(exc)
         except OSError as exc:
             log.error("registry write failed for %s: %s", hw, exc)
-            return redirect(url_for("home", m="registry unavailable"))
+            return "registry unavailable"
         # An operator just changed what this panel shows; that deliberately
         # costs one render rather than waiting out the throttle.
         _last_cold.pop(hw, None)
-        shown = rec.get("scene") or "unassigned"
         who = rec.get("name") or hw
-        return redirect(url_for("home", m=f"{who} now shows {shown}"))
+        return f"{who} muestra ahora {rec.get('scene') or 'sin asignar'}"
+
+    @app.post("/home/device")
+    def home_device():
+        """The fleet page's form target, kept so a bookmarked POST still works.
+
+        Form-encoded rather than JSON, and a redirect rather than a body, so it
+        degrades to a page reload rather than to silence.
+        """
+        hw = (request.form.get("hw") or "").strip()
+        return redirect(url_for("home", m=_apply_device_form(hw, request.form)))
 
     @app.post("/api/devices/<hw>/approval")
     def device_approval(hw: str):

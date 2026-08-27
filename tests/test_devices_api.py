@@ -571,6 +571,15 @@ def test_an_unassigned_device_is_served_the_unassigned_scene_again(ctx):
 # needed a curl, while the server told unassigned devices to "elige una escena
 # en el panel" -- a promise the panel did not keep.
 
+def _device(client, hw=HW, **q):
+    """One screen's page. The scene picker, its previews and its component
+    settings moved here from the fleet list: they are facts about ONE screen,
+    and a fleet of eight would otherwise render eight forms nobody asked for."""
+    from urllib.parse import urlencode
+    return client.get(f"/device/{hw}"
+                      + ("?" + urlencode(q) if q else "")).get_data(as_text=True)
+
+
 def _home(client, **q):
     from urllib.parse import urlencode
     return client.get("/home" + ("?" + urlencode(q) if q else "")).get_data(as_text=True)
@@ -579,7 +588,7 @@ def _home(client, **q):
 def test_the_dashboard_offers_every_assignable_scene_and_unassigned(ctx):
     client, cache, _ = ctx
     registry.touch(cache, HW, now=1000.0)
-    html = _home(client)
+    html = _device(client)
     for scene in registry.ASSIGNABLE_SCENES:
         assert f'<option value="{scene}"' in html, scene
     assert '<option value="unassigned"' in html, \
@@ -590,7 +599,7 @@ def test_the_current_scene_is_preselected(ctx):
     client, cache, _ = ctx
     registry.touch(cache, HW, now=1000.0)
     registry.assign(cache, HW, name="salon", scene="planes")
-    html = _home(client)
+    html = _device(client)
     assert '<option value="planes" selected>' in html
     assert '<option value="clock" selected>' not in html
 
@@ -680,7 +689,7 @@ def test_a_hostile_name_that_IS_accepted_cannot_reach_the_page_unescaped(ctx):
     client.post("/home/device", data={"hw": HW, "name": payload,
                                       "scene": "planes"})
     assert registry.load(cache)[HW]["name"] == payload, "precondition: accepted"
-    html = _home(client)
+    html = _device(client)
     assert payload not in html
     assert "&lt;img" in html
     assert "onerror=alert(1)&gt;" in html or "&lt;img src=x onerror" in html
@@ -733,7 +742,7 @@ def test_a_data_push_device_is_only_offered_scenes_it_can_draw(ctx):
     # operator had no way to know that before pressing apply.
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
-    html = _home(client)
+    html = _device(client)
     assert '<option value="planes"' in html
     assert 'disabled' in html, "clock and status are not drawable here"
     assert 'value="clock" disabled' in html or 'value="clock"  disabled' in html \
@@ -744,7 +753,7 @@ def test_a_disabled_option_says_why(ctx):
     # "clock — no components for this device" beats a silent grey row.
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
-    html = _home(client)
+    html = _device(client)
     assert "no components for this device" in html
 
 
@@ -752,12 +761,12 @@ def test_a_pixel_push_device_is_offered_every_scene(ctx):
     # An e-paper takes a rendered framebuffer, so any scene with html works.
     client, cache, _ = ctx
     client.get("/api/device/epap/scene?w=800&h=480&depth=1")
-    html = _home(client)
+    html = _device(client, "epap")
     for scene in ("clock", "planes", "status"):
         assert f'<option value="{scene}"' in html
-    card = html[html.index("epap"):]
-    card = card[:card.index("</form>")]
-    assert "disabled" not in card, "a pixel-push device can render all of them"
+    picker = html[html.index("<select name=\"scene\""):]
+    picker = picker[:picker.index("</select>")]
+    assert "disabled" not in picker, "a pixel-push device can render all of them"
 
 
 def test_a_device_that_declares_a_component_we_have_no_scene_for(ctx):
@@ -765,14 +774,14 @@ def test_a_device_that_declares_a_component_we_have_no_scene_for(ctx):
     # every row says what it would need.
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=text")
-    html = _home(client)
+    html = _device(client)
     assert "needs radar" in html, "planes should say what it wants"
 
 
 def test_the_offered_list_still_lets_you_unassign(ctx):
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
-    assert '<option value="unassigned"' in _home(client)
+    assert '<option value="unassigned"' in _device(client)
 
 
 # --- the preview: pick by looking, not by reading a name ---------------------
@@ -847,7 +856,7 @@ def test_a_scene_that_raises_is_a_503_not_a_500(ctx, monkeypatch):
 def test_the_dashboard_shows_a_preview_for_every_drawable_scene(ctx):
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
-    html = _home(client)
+    html = _device(client)
     assert f'src="/preview/{HW}/clock.svg"' in html
     assert 'loading="lazy"' in html, "a fleet of screens should not block on thumbnails"
 

@@ -21,14 +21,18 @@ from homescreen.scenes._style import page
 #: scenes.clean_options coerces them -- so adding an option is one edit here
 #: rather than three that can disagree.
 OPTIONS = (
-    {"key": "timezone", "label": "Timezone", "type": "text",
-     "default": "", "help": "IANA name, e.g. Europe/Madrid. Blank uses the "
-                            "server's own location."},
-    {"key": "second_label", "label": "Second city", "type": "text",
-     "default": "", "help": "Blank hides the second line."},
-    {"key": "second_timezone", "label": "Second timezone", "type": "text",
-     "default": ""},
-    {"key": "show_seconds", "label": "Show seconds", "type": "bool",
+    {"key": "timezone", "label": "Zona horaria", "type": "text",
+     "default": "",
+     # The dashboard renders this as a list the browser filters as you type.
+     # It was a free-text box, which demanded you already knew that Madrid is
+     # spelled "Europe/Madrid".
+     "datalist": "timezones",
+     "help": "En blanco usa la ubicación del servidor."},
+    {"key": "second_label", "label": "Segunda ciudad", "type": "text",
+     "default": "", "help": "En blanco oculta la segunda línea."},
+    {"key": "second_timezone", "label": "Zona de la segunda ciudad",
+     "type": "text", "default": "", "datalist": "timezones"},
+    {"key": "show_seconds", "label": "Mostrar segundos", "type": "bool",
      "default": False},
 )
 

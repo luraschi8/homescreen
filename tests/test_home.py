@@ -56,31 +56,34 @@ def test_home_renders_for_a_human(ctx, route):
     assert r.status_code == 200
     assert r.mimetype == "text/html"
     body = r.get_data(as_text=True)
-    # The four things the page exists to answer.
+    # What the FLEET page exists to answer. Per-source endpoints and per-screen
+    # detail moved to /settings and /device/<hw> respectively; the fleet view
+    # answers "what is here and is it working", and links to the rest.
     assert "abc1234" in body, "which code is running"
-    assert "radar" in body and "kitchen" in body, "which devices are registered"
-    assert "/api/display/radar/data" in body, "where the data is served"
     assert "adsb.fi" in body, "where the data comes from"
+    assert 'href="/settings"' in body, "and how to get at it"
 
 
 def test_home_shows_live_feed_state(ctx):
     client, path, clock = ctx
     _seed(path, n=3)
     clock.t += 4.0
-    body = client.get("/home").get_data(as_text=True)
+    # Feed health belongs with the source, not repeated under every screen:
+    # one stale feed used to look like N problems.
+    body = client.get("/settings").get_data(as_text=True)
     # `assert "3" in body` was the old check and was vacuous: "3" appears in
-    # the #e3e3e3 palette and in the version string, so it held at zero
-    # aircraft. Assert the rendered field.
-    assert "<dt>aircraft</dt><dd>3</dd>" in body
-    assert "<dt>feed age</dt><dd>4.0s</dd>" in body
+    # the palette and in the version string, so it held at zero aircraft.
+    assert "<dt>aviones</dt><dd>3</dd>" in body
+    assert "<dt>antigüedad</dt><dd>4.0s</dd>" in body
 
 
 def test_home_works_before_any_fetch_has_happened(ctx):
     # A cold Pi with no cache must still render, not 500.
     client, _, _ = ctx
-    r = client.get("/home")
+    assert client.get("/home").status_code == 200
+    r = client.get("/settings")
     assert r.status_code == 200
-    assert "never" in r.get_data(as_text=True).lower()
+    assert "nunca consultado" in r.get_data(as_text=True)
 
 
 def test_home_never_500s_on_a_corrupt_cache(ctx):
@@ -178,40 +181,48 @@ def test_home_lists_registered_devices_with_state(tmp_path):
     client = _reg_app(tmp_path, clock).test_client()
     _registry.touch(tmp_path, "a4cf12ab3c44", fw="0.2.0",
                     caps={"w": 240, "h": 240}, now=clock.t)
+    _registry.set_approval(tmp_path, "a4cf12ab3c44", True)
     _registry.assign(tmp_path, "a4cf12ab3c44", name="radar", scene="planes")
     _registry.touch(tmp_path, "deadbeef0000", fw="0.1.0", now=clock.t)
+    _registry.set_approval(tmp_path, "deadbeef0000", True)
     body = client.get("/home").get_data(as_text=True)
     assert "radar" in body and "planes" in body
     assert "a4cf12ab3c44" in body, "hw id shown so a new board is identifiable"
-    assert "unassigned" in body and "unnamed" in body
-    assert "0.2.0" in body and "0.1.0" in body
-    assert "240x240" in body
+    assert "sin asignar" in body and "sin nombre" in body
+    # Firmware and geometry are facts about ONE screen and are on its page --
+    # a fleet list that repeats them for eight panels is a wall of text.
+    page = client.get("/device/a4cf12ab3c44").get_data(as_text=True)
+    assert "0.2.0" in page
+    assert "240\u00d7240" in page
 
 
 def test_home_marks_a_silent_device_offline(tmp_path):
     clock = Clock()
     client = _reg_app(tmp_path, clock).test_client()
     _registry.touch(tmp_path, "a4cf12ab3c44", now=clock.t)
-    assert "offline" not in client.get("/home").get_data(as_text=True).lower()
+    _registry.set_approval(tmp_path, "a4cf12ab3c44", True)
+    assert "sin conexión" not in client.get("/home").get_data(as_text=True)
     clock.t += 3600
-    assert "offline" in client.get("/home").get_data(as_text=True).lower()
+    assert "sin conexión" in client.get("/home").get_data(as_text=True)
 
 
 def test_home_header_counts_the_fleet_not_the_config(tmp_path):
     clock = Clock()
     client = _reg_app(tmp_path, clock).test_client()
     _registry.touch(tmp_path, "a4cf12ab3c44", now=clock.t)
+    _registry.set_approval(tmp_path, "a4cf12ab3c44", True)
     _registry.touch(tmp_path, "deadbeef0000", now=clock.t)
+    _registry.set_approval(tmp_path, "deadbeef0000", True)
     body = client.get("/home").get_data(as_text=True)
-    assert "2 device(s) registered" in body
-    assert "2 online" in body
+    assert "2 pantalla(s)" in body
+    assert "2 en línea" in body
 
 
 def test_home_renders_with_an_empty_fleet(tmp_path):
     client = _reg_app(tmp_path).test_client()
     body = client.get("/home").get_data(as_text=True)
     assert client.get("/home").status_code == 200
-    assert "no devices have called in yet" in body
+    assert "Ninguna pantalla" in body
 
 
 def test_status_json_carries_the_fleet(tmp_path):
@@ -227,7 +238,7 @@ def test_the_fleet_view_does_not_leak_telemetry_into_html(tmp_path):
     client = _reg_app(tmp_path).test_client()
     _registry.touch(tmp_path, "a4cf12ab3c44", now=1_700_000_000.0,
                     telemetry={"x": "<script>alert(1)</script>"})
-    body = client.get("/home").get_data(as_text=True)
+    body = client.get("/device/a4cf12ab3c44").get_data(as_text=True)
     assert "<script>alert(1)</script>" not in body
     assert "&lt;script&gt;" in body
 
@@ -236,6 +247,7 @@ def test_a_name_containing_a_slash_is_refused_outright(tmp_path):
     # The alias resolves names in a URL path, so a slash would misroute.
     client = _reg_app(tmp_path).test_client()
     _registry.touch(tmp_path, "a4cf12ab3c44", now=1_700_000_000.0)
+    _registry.set_approval(tmp_path, "a4cf12ab3c44", True)
     r = client.patch("/api/devices/a4cf12ab3c44", json={"name": "<b>x</b>"})
     assert r.status_code == 400
 
@@ -245,6 +257,7 @@ def test_a_device_named_with_html_is_escaped(tmp_path):
     # escaping is what must stop it, not the name check.
     client = _reg_app(tmp_path).test_client()
     _registry.touch(tmp_path, "a4cf12ab3c44", now=1_700_000_000.0)
+    _registry.set_approval(tmp_path, "a4cf12ab3c44", True)
     _registry.assign(tmp_path, "a4cf12ab3c44", name="<b>bold")
     body = client.get("/home").get_data(as_text=True)
     assert "<b>bold" not in body
