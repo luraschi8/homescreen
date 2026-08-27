@@ -28,6 +28,11 @@ h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.09em;color:var(--di
       padding:.9rem 1.1rem;margin-bottom:.7rem}
 .row{display:flex;flex-wrap:wrap;gap:.5rem 1.5rem;align-items:baseline}
 .name{font-weight:600}
+.pvs{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
+.pv{margin:0;text-align:center}
+.pv img{width:104px;height:104px;border-radius:8px;background:#000;
+  display:block;border:1px solid #ddd}
+.pv figcaption{font-size:11px;color:#666;margin-top:4px}
 .cfg{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;
   margin-top:12px;padding-top:12px;border-top:1px solid #e8e8e8}
 .cfg label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#666}
@@ -126,7 +131,15 @@ def render_home(st: dict, scene_options=None, name_max: int = 32,
         # Per device, not a global list: a scene this one cannot draw is shown
         # disabled with the reason, so the operator can see WHY rather than
         # picking it and getting "escena no soportada" on the glass.
+        # One preview per drawable scene, so an operator picks by looking
+        # rather than by reading a name and hoping.
         opts = (scene_options or {}).get(d.get("hw")) or []
+        thumbs = "".join(
+            f'<figure class="pv"><img src="/preview/{e(str(d.get("hw")))}/'
+            f'{e(name)}.svg" alt="{e(name)} on this screen" loading="lazy">'
+            f'<figcaption>{e(name)}</figcaption></figure>'
+            for name, ok, _why in opts if ok)
+        preview = f'<div class="pvs">{thumbs}</div>' if thumbs else ""
         options = "".join(
             f'<option value="{e(name)}"'
             f'{" selected" if name == current else ""}'
@@ -153,6 +166,7 @@ def render_home(st: dict, scene_options=None, name_max: int = 32,
     {state}</div>
   <dl><dt>last seen</dt><dd>{esc(d.get("last_seen"))}</dd>
       <dt>first seen</dt><dd>{esc(d.get("first_seen"))}</dd>{tel_row}{notes}</dl>
+  {preview}
   {form}
 </div>""")
     notice_html = (f'<div class="notice">{e(notice)}</div>' if notice else "")

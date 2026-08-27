@@ -746,3 +746,88 @@ def test_the_offered_list_still_lets_you_unassign(ctx):
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
     assert '<option value="unassigned"' in _home(client)
+
+
+# --- the preview: pick by looking, not by reading a name ---------------------
+
+def test_a_drawable_scene_previews_what_the_device_would_draw(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    r = client.get(f"/preview/{HW}/clock.svg")
+    assert r.status_code == 200
+    assert r.mimetype == "image/svg+xml"
+    body = r.get_data(as_text=True)
+    assert "<svg" in body and ":" in body, "the time should be in there"
+
+
+def test_the_preview_is_drawn_at_the_devices_own_geometry(ctx):
+    # A preview at the wrong size is worse than none: it shows a layout the
+    # device will never produce.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    client.get("/api/device/EP/scene?w=800&h=480&depth=1")
+    assert 'viewBox="0 0 240 240"' in client.get(f"/preview/{HW}/clock.svg").get_data(as_text=True)
+    assert 'viewBox="0 0 800 480"' in client.get("/preview/EP/clock.svg").get_data(as_text=True)
+
+
+def test_a_square_panel_previews_round_and_a_wide_one_does_not(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    client.get("/api/device/EP/scene?w=800&h=480&depth=1")
+    assert "<circle" in client.get(f"/preview/{HW}/clock.svg").get_data(as_text=True)
+    assert "<circle" not in client.get("/preview/EP/clock.svg").get_data(as_text=True)
+
+
+def test_a_component_with_no_instructions_says_so_rather_than_faking_one(ctx):
+    # radar is opaque today: the device projects and dead-reckons. Drawing an
+    # approximation and calling it a preview would be exactly the drift this
+    # design exists to prevent.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    body = client.get(f"/preview/{HW}/planes.svg").get_data(as_text=True)
+    assert "sin vista previa" in body
+
+
+def test_the_preview_never_forks_a_browser(ctx, monkeypatch):
+    # Previews are refreshed on every dashboard load. If one could take a render
+    # slot, opening the page would compete with the devices asking for frames.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+
+    def boom(*a, **k):
+        raise AssertionError("a preview must never render HTML")
+
+    monkeypatch.setattr("homescreen.serve.render_frame", boom)
+    assert client.get(f"/preview/{HW}/clock.svg").status_code == 200
+
+
+def test_an_unknown_device_or_scene_is_a_404_not_a_blank_image(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    assert client.get("/preview/ghost/clock.svg").status_code == 404
+    assert client.get(f"/preview/{HW}/nosuchscene.svg").status_code == 404
+
+
+def test_a_scene_that_raises_is_a_503_not_a_500(ctx, monkeypatch):
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    from homescreen.scenes import clock as clock_mod
+    monkeypatch.setattr(clock_mod, "build",
+                        lambda c: (_ for _ in ()).throw(RuntimeError("x")))
+    assert client.get(f"/preview/{HW}/clock.svg").status_code == 503
+
+
+def test_the_dashboard_shows_a_preview_for_every_drawable_scene(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    html = _home(client)
+    assert f'src="/preview/{HW}/clock.svg"' in html
+    assert 'loading="lazy"' in html, "a fleet of screens should not block on thumbnails"
+
+
+def test_the_dashboard_does_not_thumbnail_a_scene_the_device_cannot_draw(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=clock")
+    html = _home(client)
+    assert f'src="/preview/{HW}/planes.svg"' not in html, \
+        "planes needs a radar component this device did not declare"

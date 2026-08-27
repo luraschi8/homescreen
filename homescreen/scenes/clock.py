@@ -1,7 +1,10 @@
-"""Clock scene: the two cities, with sun times inline.
+"""Clock: the two cities.
 
-Pixel-push only for now. The round display would want a `hand` component
-rather than digits, which is Phase 3 work.
+Renders both ways from one source of truth. The e-paper gets HTML the Pi
+rasterises; a self-drawing panel gets a `clock` component carrying an
+instruction list -- "this text, this slot, this size" -- which the firmware
+executes directly and `homescreen.draw` executes onto a PNG for the dashboard
+preview. Neither invents layout, so the preview cannot drift from the glass.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from homescreen.scenes import Scene, SceneContext
+from homescreen import draw
 from homescreen.scenes._style import page
 
 CSS = """
@@ -51,4 +55,16 @@ def build(ctx: SceneContext) -> Scene:
     stamp = datetime.fromtimestamp(ctx.now).strftime("%Y-%m-%d %H:%M")
     body.append(f'<div class="foot"><div class="rule"></div>'
                 f'<div class="ter" style="margin-top:6px">{stamp}</div></div></div>')
-    return Scene(layout="fill", html=page(w, h, "".join(body), CSS))
+
+    # The same clocks as instructions. A 240x240 round panel has room for one
+    # time and its label plus a second city small at the rim -- deciding that
+    # here, once, is what lets the preview be exact.
+    instructions = [draw.text("center", primary[1], "xl"),
+                    draw.text("below", primary[0], "sm", "dim")]
+    if rest:
+        instructions.append(
+            draw.text("rim_bottom", f"{rest[0][0]} {rest[0][1]}", "xs", "dim"))
+    components = ({"c": "clock", "draw": instructions},)
+
+    return Scene(layout="fill", components=components,
+                 html=page(w, h, "".join(body), CSS))

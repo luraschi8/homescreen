@@ -15,7 +15,7 @@ from pathlib import Path
 from flask import (Flask, Response, jsonify, redirect, request,
                    url_for)
 
-from homescreen import overrides, registry, scenes, web
+from homescreen import draw, overrides, registry, scenes, web
 from homescreen import render
 from homescreen.render import (RenderBusy, RenderError, check_geometry as
                                render_check_geometry, render_frame)
@@ -623,6 +623,54 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # leaves an e-paper on the old one for up to half a poll interval.
         _last_cold.pop(hw, None)
         return jsonify(_fleet_entry(hw, rec, clock()))
+
+    @app.get("/preview/<hw>/<scene>.svg")
+    def preview(hw: str, scene: str):
+        """What this scene would look like on THIS device, before assigning it.
+
+        Executes the same instruction list the device would execute. It is not
+        the frame -- fonts and antialiasing are the panel's own -- but nothing
+        about the layout is guessed, which is the property that makes a preview
+        worth showing at all.
+
+        SVG, so a preview cannot fork Chromium or take a render slot: those
+        belong to devices asking for frames, and a dashboard refresh must never
+        compete with the glass.
+        """
+        rec = registry.load(cache_dir).get(hw)
+        if rec is None:
+            return jsonify({"error": "unknown device"}), 404
+        if scene not in scenes.names():
+            return jsonify({"error": "unknown scene"}), 404
+        caps = registry.clean_caps(rec.get("caps") or {})
+        w = int(caps.get("w") or 240)
+        h = int(caps.get("h") or 240)
+        try:
+            built = scenes.build(scene, scenes.SceneContext(
+                cfg=_live(), cache_dir=cache_dir, caps=caps, now=clock(),
+                device={"hw": hw, "id": rec.get("name") or hw,
+                        "name": rec.get("name"), "feed": "adsb",
+                        "max_aircraft": 20}))
+        except Exception as exc:                    # noqa: BLE001
+            log.warning("preview %s/%s failed: %s", hw, scene, exc)
+            return jsonify({"error": "scene failed to build"}), 503
+        instructions = []
+        for comp in built.components:
+            instructions.extend(comp.get("draw") or ())
+        if not instructions:
+            # A component with no instruction list -- radar, today -- cannot be
+            # previewed exactly, and drawing an approximation would be a
+            # different program's guess presented as fact. Say so instead.
+            body = draw.to_svg(
+                [draw.text("center", scene, "md"),
+                 draw.text("below", "sin vista previa", "xs", "dim")],
+                w, h, round_panel=(w == h))
+        else:
+            body = draw.to_svg(instructions, w, h, round_panel=(w == h))
+        resp = Response(body, mimetype="image/svg+xml")
+        # A preview is cheap to rebuild and always reflects live data.
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     @app.post("/home/device")
     def home_device():
