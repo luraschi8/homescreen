@@ -28,6 +28,11 @@ h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.09em;color:var(--di
       padding:.9rem 1.1rem;margin-bottom:.7rem}
 .row{display:flex;flex-wrap:wrap;gap:.5rem 1.5rem;align-items:baseline}
 .name{font-weight:600}
+.opts{display:flex;gap:10px;flex-wrap:wrap;flex-basis:100%;margin-top:4px;
+  padding-top:10px;border-top:1px dotted #e8e8e8}
+.opts label.chk{flex-direction:row;align-items:center;gap:6px;
+  font-size:13px;color:#333}
+.hint{font-size:11px;color:#999;font-weight:400}
 .pvs{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
 .pv{margin:0;text-align:center}
 .pv img{width:104px;height:104px;border-radius:8px;background:#000;
@@ -149,12 +154,48 @@ def render_home(st: dict, scene_options=None, name_max: int = 32,
         options += (f'<option value="unassigned"'
                     f'{" selected" if current == "unassigned" else ""}>'
                     f'unassigned</option>')
+        # Fields come from the assigned component's own schema, so adding an
+        # option to a component adds it here with no edit -- and a component
+        # cannot grow an option the dashboard silently cannot set.
+        opt_values = d.get("options") or {}
+        opt_fields = []
+        for field in (d.get("option_schema") or []):
+            key, label = field.get("key"), field.get("label", field.get("key"))
+            value = opt_values.get(key, field.get("default"))
+            kind = field.get("type", "text")
+            hint = (f'<span class="hint">{e(str(field["help"]))}</span>'
+                    if field.get("help") else "")
+            if kind == "bool":
+                checked = " checked" if value else ""
+                opt_fields.append(
+                    f'<label class="chk"><input type="checkbox" '
+                    f'name="opt.{e(str(key))}" value="1"{checked}>'
+                    f'{e(str(label))}{hint}</label>')
+            elif kind == "choice":
+                picks = "".join(
+                    f'<option value="{e(str(o))}"'
+                    f'{" selected" if o == value else ""}>{e(str(o))}</option>'
+                    for o in field.get("choices", ()))
+                opt_fields.append(
+                    f'<label>{e(str(label))}<select name="opt.{e(str(key))}">'
+                    f'{picks}</select>{hint}</label>')
+            else:
+                itype = "number" if kind == "int" else "text"
+                opt_fields.append(
+                    f'<label>{e(str(label))}<input type="{itype}" '
+                    f'name="opt.{e(str(key))}" '
+                    f'value="{e("" if value is None else str(value))}"'
+                    f'>{hint}</label>')
+        opts_html = (f'<div class="opts">{"".join(opt_fields)}</div>'
+                     if opt_fields else "")
+
         form = f"""<form class="cfg" method="post" action="/home/device">
     <input type="hidden" name="hw" value="{esc(d.get("hw"))}">
     <label>name <input name="name" value="{e(str(d.get("name") or ""))}"
       maxlength="{name_max}" placeholder="unnamed"></label>
     <label>shows <select name="scene">{options}</select></label>
     <button type="submit">apply</button>
+    {opts_html}
   </form>"""
         fleet_rows.append(f"""<div class="card">
   <div class="row"><span class="name">{name}</span>

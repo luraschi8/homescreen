@@ -350,7 +350,7 @@ def test_an_unknown_field_is_refused_with_the_settable_list(ctx):
     assert r.status_code == 400
     body = r.get_json()
     assert body["error"] == "not settable: ['colour']"
-    assert set(body["settable"]) == {"name", "scene", "poll_seconds"}
+    assert set(body["settable"]) == {"name", "scene", "poll_seconds", "options"}
 
 
 # --- spec §5.5 / §6.2: the fleet view records what the server substituted -----

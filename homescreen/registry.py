@@ -99,6 +99,8 @@ MAX_DEVICES = 64
 MAX_TELEMETRY_KEYS = 16
 MAX_VALUE_LEN = 128
 MAX_CAP_LIST = 32
+#: Options one assignment may carry. Mirrors scenes.MAX_OPTIONS.
+MAX_OPTIONS = 12
 CAP_INT_RANGE = (1, 4096)
 #: Capability ints a device may declare. `max_items` is how many list entries
 #: it can hold: the device knows its own RAM and the server does not.
@@ -187,6 +189,8 @@ def _valid_record(rec) -> bool:
     if not isinstance(rec.get("caps", {}), dict):
         return False
     if not isinstance(rec.get("telemetry", {}), dict):
+        return False
+    if not isinstance(rec.get("options", {}), dict):
         return False
     poll = rec.get("poll_seconds", DEFAULT_POLL_SECONDS)
     if poll is None:
@@ -504,6 +508,10 @@ def _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now) -> dict:
                # to come back in 5 seconds. Absent means "nobody has chosen",
                # which is the truth until an operator PATCHes one.
                "poll_seconds": None, "fw": None,
+               # Per ASSIGNMENT, not per scene: two screens can show stocks
+               # with different tickers. Validated against the scene's own
+               # schema by whoever assigns, never trusted from disk.
+               "options": {},
                "caps": {}, "telemetry": {}}
         log.info("new device registered: %s", hw_id)
 
@@ -552,14 +560,21 @@ def _check_name(data: dict, hw_id: str, name) -> str:
 
 
 def assign(cache_dir: Path, hw_id: str, *, name=None, scene=None,
-           poll_seconds=None) -> dict:
-    """Set name/scene/poll_seconds. Validates everything BEFORE persisting."""
+           poll_seconds=None, options=None) -> dict:
+    """Set name/scene/poll_seconds/options. Validates BEFORE persisting.
+
+    `options` must already be coerced by the caller against the scene's schema
+    (`scenes.clean_options`) -- this module does not import scenes, and should
+    not: the registry stores what a device is, not what a component means.
+    """
     with _locked(cache_dir):
         _quarantine(cache_dir)
-        return _assign_locked(cache_dir, hw_id, name, scene, poll_seconds)
+        return _assign_locked(cache_dir, hw_id, name, scene, poll_seconds,
+                              options)
 
 
-def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds) -> dict:
+def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds,
+                   options=None) -> dict:
     data = load_raw(cache_dir)
     if hw_id not in data:
         raise ValueError(f"unknown device: {hw_id}")
@@ -580,6 +595,11 @@ def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds) -> dict:
         if scene != "unassigned" and scene not in ASSIGNABLE_SCENES:
             raise ValueError(f"unknown scene {scene!r}; assignable: "
                              f"{', '.join(ASSIGNABLE_SCENES)}, unassigned")
+        if scene != rec.get("scene") and options is None:
+            # A different component takes different options. Carrying the old
+            # ones forward would leave a clock configured with a stock ticker's
+            # settings -- present, meaningless, and invisible in the form.
+            rec["options"] = {}
         rec["scene"] = scene
     if poll_seconds is not None:
         try:
@@ -590,6 +610,17 @@ def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds) -> dict:
         if not 1.0 <= n <= 3600.0:
             raise ValueError(f"poll_seconds must be 1 to 3600, got {n}")
         rec["poll_seconds"] = n
+
+    if options is not None:
+        if not isinstance(options, dict):
+            raise ValueError(f"options must be a mapping, got {options!r}")
+        if len(options) > MAX_OPTIONS:
+            raise ValueError(f"at most {MAX_OPTIONS} options, got {len(options)}")
+        # Bounded on the way in, like every other network-written field here.
+        rec["options"] = {
+            str(k)[:32]: (v if isinstance(v, (bool, int, float))
+                          else str(v)[:MAX_VALUE_LEN])
+            for k, v in list(options.items())[:MAX_OPTIONS]}
 
     if rec == data[hw_id]:
         # Nothing changed, so nothing is written. The dashboard has an apply

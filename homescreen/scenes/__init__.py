@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import sys
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -32,6 +33,11 @@ class SceneContext:
     caps: dict
     now: float
     device: dict
+    #: This assignment's options, already validated against the scene's own
+    #: schema. Per ASSIGNMENT, not per scene: two screens can show stocks with
+    #: different tickers, or a clock in different cities, and neither is a
+    #: property of the component.
+    options: dict = dataclasses.field(default_factory=dict)
 
 
 #: Layout modes the wire protocol actually carries. `grid` is deferred (spec
@@ -106,3 +112,71 @@ def _fallback(ctx: SceneContext, message: str) -> Scene:
     from homescreen.scenes import status
     return dataclasses.replace(status.build(ctx, message=message),
                                error=message)
+
+
+# --- component options ------------------------------------------------------
+#
+# A component declares which options it takes; the dashboard renders fields from
+# that declaration and the registry stores the values against the assignment.
+# One schema drives the form, the validation and the defaults, so a new option
+# is one edit rather than three that can disagree.
+
+#: How much option data one assignment may hold. These are written from an
+#: unauthenticated LAN, like everything else here.
+MAX_OPTIONS = 12
+MAX_OPTION_LEN = 120
+
+
+def option_schema(name: str) -> tuple:
+    """The options this scene takes, or () if it takes none.
+
+    Read off the scene module's `OPTIONS`, so a component declares its own
+    options next to the code that uses them rather than in a table somewhere
+    else that can fall out of step.
+    """
+    build_fn = _registry().get(name)
+    if build_fn is None:
+        return ()
+    module = sys.modules.get(build_fn.__module__)
+    return tuple(getattr(module, "OPTIONS", ()))
+
+
+def defaults(name: str) -> dict:
+    """Every option at its default. What an unconfigured assignment behaves as."""
+    return {f["key"]: f.get("default") for f in option_schema(name)}
+
+
+def clean_options(name: str, raw) -> dict:
+    """Coerce and range-check options against the scene's schema. Never raises.
+
+    Unknown keys are dropped rather than stored: an option nothing reads is an
+    option that looks configured and does nothing. Bad values fall back to the
+    default rather than rejecting the whole assignment -- a typo in one field
+    should not stop a screen showing anything at all.
+    """
+    if not isinstance(raw, dict):
+        raw = {}
+    out = {}
+    for field in option_schema(name)[:MAX_OPTIONS]:
+        key = field["key"]
+        value = raw.get(key, field.get("default"))
+        kind = field.get("type", "text")
+        if kind == "int":
+            try:
+                n = int(float(value))
+            except (TypeError, ValueError):
+                n = field.get("default", 0)
+            lo, hi = field.get("min", 0), field.get("max", 10_000)
+            out[key] = max(lo, min(hi, int(n)))
+        elif kind == "bool":
+            if isinstance(value, bool):
+                out[key] = value
+            else:
+                out[key] = str(value).strip().lower() in ("1", "true", "yes", "on")
+        elif kind == "choice":
+            allowed = tuple(field.get("choices", ()))
+            out[key] = value if value in allowed else field.get("default")
+        else:
+            text = "" if value is None else str(value)
+            out[key] = text.strip()[:MAX_OPTION_LEN]
+    return out

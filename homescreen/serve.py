@@ -497,7 +497,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 _last_cold.pop(key, None)
         return True
 
-    _SETTABLE = ("name", "scene", "poll_seconds")
+    _SETTABLE = ("name", "scene", "poll_seconds", "options")
     _CAP_INTS = registry.CAP_INTS
     _CAP_LISTS = ("layouts", "components")
 
@@ -545,6 +545,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             try:
                 scene = scenes.build(name, scenes.SceneContext(
                     cfg=_live(), cache_dir=cache_dir, caps=caps, now=clock(),
+                    options=scenes.defaults(name),
                     device={"hw": "?", "id": rec.get("name") or "?",
                             "name": rec.get("name"), "feed": "adsb"}))
             except Exception:                       # noqa: BLE001
@@ -573,6 +574,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                  "last_seen": rec.get("last_seen"),
                  "first_seen": rec.get("first_seen"),
                  "caps": rec.get("caps", {}) or {},
+                 "options": rec.get("options", {}) or {},
+                 "option_schema": list(scenes.option_schema(
+                     rec.get("scene") or "")),
                  "telemetry": rec.get("telemetry", {}) or {}}
         note = _serve_notes.get(hw)
         if note:
@@ -609,6 +613,14 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         if unknown:
             return jsonify({"error": f"not settable: {unknown}",
                             "settable": list(_SETTABLE)}), 400
+        if "options" in body:
+            # Coerced against the schema of the scene this device will BE on
+            # after the patch, not the one it is on now -- otherwise setting a
+            # scene and its options in one call validates against the old one.
+            target = body.get("scene") or registry.load(cache_dir).get(
+                hw, {}).get("scene") or ""
+            body = {**body,
+                    "options": scenes.clean_options(target, body["options"])}
         try:
             rec = registry.assign(cache_dir, hw, **body)
         except ValueError as exc:
@@ -648,6 +660,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         try:
             built = scenes.build(scene, scenes.SceneContext(
                 cfg=_live(), cache_dir=cache_dir, caps=caps, now=clock(),
+                options=scenes.clean_options(scene, rec.get("options") or {}),
                 device={"hw": hw, "id": rec.get("name") or hw,
                         "name": rec.get("name"), "feed": "adsb",
                         "max_aircraft": 20}))
@@ -687,9 +700,20 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         scene = (request.form.get("scene") or "").strip()
         if hw not in registry.load(cache_dir):
             return redirect(url_for("home", m="unknown device"))
+        target = scene or (registry.load(cache_dir).get(hw, {}).get("scene")
+                           or "")
+        raw_options = {k[4:]: v for k, v in request.form.items()
+                       if k.startswith("opt.")}
+        # A form that carried ANY option field carried them all -- a text input
+        # always submits, and a checkbox that is off submits nothing. So an
+        # absent bool means "off", which is what clean_options already does by
+        # filling every schema key from its default. A form that carried NO
+        # option fields is a rename, and must leave the options alone.
+        options = (scenes.clean_options(target, raw_options)
+                   if raw_options else None)
         try:
             rec = registry.assign(cache_dir, hw, name=name or None,
-                                  scene=scene or None)
+                                  scene=scene or None, options=options)
         except ValueError as exc:
             return redirect(url_for("home", m=str(exc)))
         except OSError as exc:
@@ -784,6 +808,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             # put a string in `w`, and every scene does int(caps["w"]).
             caps=registry.clean_caps(caps if caps is not None
                                      else rec.get("caps") or {}),
+            options=scenes.clean_options(name, rec.get("options") or {}),
             now=clock(),
             device={"hw": hw, "id": rec.get("name") or hw,
                     "name": rec.get("name"), "feed": "adsb",

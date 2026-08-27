@@ -16,6 +16,22 @@ from homescreen.scenes import Scene, SceneContext
 from homescreen import draw
 from homescreen.scenes._style import page
 
+#: What an operator can set per assignment. The dashboard renders fields from
+#: this, the registry stores the values against the assignment, and
+#: scenes.clean_options coerces them -- so adding an option is one edit here
+#: rather than three that can disagree.
+OPTIONS = (
+    {"key": "timezone", "label": "Timezone", "type": "text",
+     "default": "", "help": "IANA name, e.g. Europe/Madrid. Blank uses the "
+                            "server's own location."},
+    {"key": "second_label", "label": "Second city", "type": "text",
+     "default": "", "help": "Blank hides the second line."},
+    {"key": "second_timezone", "label": "Second timezone", "type": "text",
+     "default": ""},
+    {"key": "show_seconds", "label": "Show seconds", "type": "bool",
+     "default": False},
+)
+
 CSS = """
 .wrap{padding:18px;display:flex;flex-direction:column;height:100%}
 .big{font-size:56px;font-weight:500;letter-spacing:-.02em;line-height:1}
@@ -25,25 +41,40 @@ CSS = """
 """
 
 
-def _clocks(cfg: dict, now: float) -> list[tuple[str, str]]:
+def _clocks(cfg: dict, now: float, options: dict) -> list[tuple[str, str]]:
+    """The cities to show. The assignment's options win over config.yaml, so two
+    screens can show different places without the server holding two configs."""
     loc = cfg.get("location") or {}
     sec = cfg.get("secondary_clock") or {}
+    fmt = "%H:%M:%S" if options.get("show_seconds") else "%H:%M"
+
+    primary_tz = options.get("timezone") or loc.get("timezone", "Europe/Madrid")
+    primary_label = loc.get("name", "Madrid")
+    if options.get("timezone"):
+        # A configured zone names itself: "Europe/Madrid" -> "Madrid".
+        primary_label = str(options["timezone"]).rsplit("/", 1)[-1].replace("_", " ")
+
+    pairs = [(primary_label, primary_tz)]
+    second_tz = options.get("second_timezone") or sec.get("timezone")
+    second_label = options.get("second_label") or sec.get("label")
+    # An explicitly blank second_label hides the line; an unset one falls back.
+    if second_tz and (second_label or "second_label" not in options):
+        pairs.append((second_label or "", second_tz))
+
     out = []
-    for label, tz in ((loc.get("name", "Madrid"), loc.get("timezone", "Europe/Madrid")),
-                      (sec.get("label", "BS AS"),
-                       sec.get("timezone", "America/Argentina/Buenos_Aires"))):
+    for label, tz in pairs:
         try:
             stamp = datetime.fromtimestamp(now, ZoneInfo(tz))
         except Exception:  # noqa: BLE001 - a bad tz must not blank the screen
             continue
-        out.append((label, stamp.strftime("%H:%M")))
+        out.append((label, stamp.strftime(fmt)))
     return out
 
 
 def build(ctx: SceneContext) -> Scene:
     w = int(ctx.caps.get("w") or 800)
     h = int(ctx.caps.get("h") or 480)
-    clocks = _clocks(ctx.cfg, ctx.now)
+    clocks = _clocks(ctx.cfg, ctx.now, ctx.options or {})
     if not clocks:
         clocks = [("", "--:--")]
     primary, rest = clocks[0], clocks[1:]
