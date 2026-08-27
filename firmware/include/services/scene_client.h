@@ -147,6 +147,19 @@ float feedAgeS();
 /** True once at least one 200 has been parsed since boot. */
 bool everReceived();
 
+/**
+ * Bumped every time a 200 installs new content. The render loop redraws when
+ * this changes.
+ *
+ * Needed because the loop's other trigger is `hasTraffic()`, which counts
+ * AIRCRAFT -- a policy written when the only reason to redraw was a target
+ * moving. A clock has no aircraft, so after the boot frame the policy computed
+ * "nothing to animate" and the panel sat on whatever had been drawn before the
+ * first poll landed, forever. Content changing is a reason to redraw whatever
+ * the component is.
+ */
+uint32_t contentGeneration();
+
 #ifdef UNIT_TEST
 /** Host tests only: forget everything between cases, and make the mutex. */
 void resetForTest();

@@ -46,6 +46,8 @@ TaskHandle_t s_task = nullptr;
 unsigned long s_content_ms = 0;
 unsigned long s_contact_ms = 0;
 bool s_ever_received = false;
+/** Bumped on every install; the render loop watches it. */
+uint32_t s_generation = 0;
 bool s_was_link_up = false;
 /** Result of the last tick, so the task can pick its delay. */
 bool s_last_poll_ok = false;
@@ -158,6 +160,7 @@ void install(uint8_t back, const Parsed& p, unsigned long now) {
   s_content_ms = now;
   s_contact_ms = now;
   s_ever_received = true;
+  ++s_generation;
   if (s_mutex != nullptr) {
     xSemaphoreGive(s_mutex);
   }
@@ -470,6 +473,7 @@ float radiusKm() { return s_radius_km; }
 bool feedOk() { return s_feed_ok; }
 float feedAgeS() { return s_feed_age_s; }
 bool everReceived() { return s_ever_received; }
+uint32_t contentGeneration() { return s_generation; }
 
 unsigned pollTaskStackFree() {
   return s_task == nullptr
@@ -527,6 +531,7 @@ void resetForTest() {
   s_front = 0;
   s_content_ms = s_contact_ms = 0;
   s_ever_received = false;
+  s_generation = 0;
   s_was_link_up = false;
   s_last_poll_ok = false;
   s_headers_registered = false;

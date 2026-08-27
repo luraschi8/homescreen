@@ -33,6 +33,8 @@ unsigned long g_last_render_ms = 0;
 ui::RenderPolicy g_render;
 bool g_poll_task_ok = false;
 unsigned long g_last_task_retry_ms = 0;
+/** Content generation the panel is currently showing. */
+uint32_t g_drawn_generation = 0;
 
 void showSceneIfConnected() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -44,6 +46,9 @@ void showSceneIfConnected() {
   // stranding those symbols on an idle screen.
   const bool traffic = services::scene::hasTraffic();
   const bool blitted = ui::renderScene();
+  if (blitted) {
+    g_drawn_generation = services::scene::contentGeneration();
+  }
   g_render.onFrameDrawn(traffic, blitted);
   if (!blitted) {
     return;  // loop() retries; never latch over a status screen
@@ -159,11 +164,22 @@ void loop() {
       // frame AFTER the last aircraft leaves must still be drawn, or its symbol
       // stays burned on the panel until the next redraw.
       const bool traffic = services::scene::hasTraffic();
+      // New content is a reason to redraw whatever the component is. Without
+      // this the loop only ever redrew for moving aircraft, so a clock -- which
+      // has none -- froze on the frame drawn before its first poll landed.
+      const uint32_t generation = services::scene::contentGeneration();
+      if (generation != g_drawn_generation) {
+        g_render.requestRedraw();
+      }
       if (g_render.shouldRender(traffic)) {
         g_last_render_ms = millis();
         // The policy latches only on a real blit: a skipped clearing frame
         // recorded as painted would leave the last targets on screen.
-        g_render.onFrameDrawn(traffic, ui::renderScene());
+        const bool blitted = ui::renderScene();
+        if (blitted) {
+          g_drawn_generation = generation;
+        }
+        g_render.onFrameDrawn(traffic, blitted);
       }
     }
   }

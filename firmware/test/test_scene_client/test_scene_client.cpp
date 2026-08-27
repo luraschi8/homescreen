@@ -437,6 +437,57 @@ void test_the_watchdog_period_outlasts_a_slow_poll(void) {
   TEST_ASSERT_GREATER_OR_EQUAL(45u, kWatchdogTimeoutSec);
 }
 
+
+void test_new_content_bumps_the_generation_the_render_loop_watches(void) {
+  // The loop's other redraw trigger counts AIRCRAFT, so a component with none
+  // -- a clock -- never redrew and sat on the frame drawn before its first poll
+  // landed. Content changing is a reason to redraw whatever the component is.
+  const uint32_t start = contentGeneration();
+  poll(kWireAssigned, HTTP_CODE_OK, kWireAssignedEtag);
+  const uint32_t after_first = contentGeneration();
+  TEST_ASSERT_GREATER_THAN_UINT32(start, after_first);
+
+  poll(kWireUnassigned, HTTP_CODE_OK, "\"other\"");
+  TEST_ASSERT_GREATER_THAN_UINT32(after_first, contentGeneration());
+}
+
+void test_a_304_does_not_bump_the_generation(void) {
+  // Nothing changed, so nothing needs redrawing -- and redrawing anyway would
+  // composite a 44ms frame every poll for no reason.
+  poll(kWireAssigned, HTTP_CODE_OK, kWireAssignedEtag);
+  const uint32_t before = contentGeneration();
+  poll("", HTTP_CODE_NOT_MODIFIED, kWireAssignedEtag);
+  poll("", HTTP_CODE_NOT_MODIFIED, kWireAssignedEtag);
+  TEST_ASSERT_EQUAL_UINT32(before, contentGeneration());
+}
+
+void test_a_failed_poll_does_not_bump_the_generation(void) {
+  poll(kWireAssigned, HTTP_CODE_OK, kWireAssignedEtag);
+  const uint32_t before = contentGeneration();
+  poll("", 500);
+  poll("<html>nope</html>");
+  TEST_ASSERT_EQUAL_UINT32(before, contentGeneration());
+}
+
+void test_a_component_with_no_items_still_bumps_the_generation(void) {
+  // The exact case that froze the panel: a clock installs content and zero
+  // aircraft, so `hasTraffic()` is false and only the generation can say
+  // anything happened.
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"clock\","
+       "\"components\":[{\"c\":\"clock\",\"draw\":["
+       "{\"t\":\"text\",\"slot\":\"center\",\"v\":\"13:40\"}]}]}");
+  TEST_ASSERT_EQUAL_UINT(0, aircraftCount());
+  TEST_ASSERT_FALSE(hasTraffic());
+  const uint32_t before = contentGeneration();
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"clock\","
+       "\"components\":[{\"c\":\"clock\",\"draw\":["
+       "{\"t\":\"text\",\"slot\":\"center\",\"v\":\"13:41\"}]}]}",
+       HTTP_CODE_OK, "\"minute-later\"");
+  TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(
+      before, contentGeneration(),
+      "a ticking clock must be able to tell the loop to redraw");
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_the_request_declares_everything_the_server_needs);
@@ -472,5 +523,9 @@ int main(void) {
   RUN_TEST(test_every_tick_feeds_the_watchdog);
   RUN_TEST(test_the_tick_reports_the_delay_the_task_should_use);
   RUN_TEST(test_the_watchdog_period_outlasts_a_slow_poll);
+  RUN_TEST(test_new_content_bumps_the_generation_the_render_loop_watches);
+  RUN_TEST(test_a_304_does_not_bump_the_generation);
+  RUN_TEST(test_a_failed_poll_does_not_bump_the_generation);
+  RUN_TEST(test_a_component_with_no_items_still_bumps_the_generation);
   return UNITY_END();
 }
