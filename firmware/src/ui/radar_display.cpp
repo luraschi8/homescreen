@@ -529,15 +529,26 @@ bool drawAircraft() {
     // it from fetch to fetch. Removing that needs per-target hysteresis keyed
     // on hex across fetches. The drawn position uses the clamped sum, so the
     // symbol never moves when the colour changes.
-    // THREE causes, tested separately and deliberately -- see the note above
-    // about summing them making targets blink once per cycle. The third is new
-    // to the server-driven firmware: the device can be receiving perfectly
-    // fresh scenes from a server whose own feed has stalled, so both clocks
-    // above look healthy and only this term can dim the targets.
+    // TWO causes, tested separately and deliberately -- see the note above
+    // about summing them making targets blink once per cycle.
+    //
+    // A third term on feedAgeS() was added here and removed again: it is dead
+    // code against this server. PLAN.md section 3 asked for feed age as a
+    // separate cause back when the DEVICE was the feed client and had to
+    // combine the two ages itself. This server does that addition already --
+    // scenes/planes.py serves `age + dwell` per item and `dwell` as
+    // feed_age_s -- so pos_age_s >= feed_age_s always, and the first term
+    // fires two seconds EARLIER than a feed-age term ever could. Measured
+    // across the real server: zero cases where a feed-age term decides
+    // anything the first term has not already decided.
+    //
+    // The feed-stall detector this firmware genuinely needs lives in
+    // scene_client::contentExpired(), which drops the picture at 60 s of feed
+    // age -- and that one IS load-bearing, because the server keeps answering
+    // after its fetcher dies. Verified on hardware: feed_ok stayed true for
+    // 90 s while feed_age climbed and expiry fired at 62.9 s.
     const bool stale = planes[i].pos_age_s >= services::scene::kExtrapolationHorizonSec ||
-                       fetch_age_raw >= services::scene::kExtrapolationHorizonSec ||
-                       services::scene::feedAgeS() >=
-                           services::scene::kExtrapolationHorizonSec;
+                       fetch_age_raw >= services::scene::kExtrapolationHorizonSec;
     const float age_s = std::min(planes[i].pos_age_s + fetch_age_s,
                                  services::scene::kExtrapolationHorizonSec);
     dx_km += planes[i].vel_e_km_s * age_s;

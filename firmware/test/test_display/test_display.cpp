@@ -37,7 +37,8 @@ struct Target {
 static constexpr float kTestKnotsToKmPerSec = 1.852f / 3600.0f;
 static constexpr float kTestDegToRad = 0.01745329252f;
 
-static std::string payloadFor(const Target* t, int n) {
+static std::string payloadFor(const Target* t, int n,
+                              float feed_age_s = 1.0f) {
   // The km -> lat/lon projection is KEPT. All ~54 call sites in this file give
   // target positions as offsets in km from the radar centre; without it they
   // land at lat = east_km, lon = north_km -- hundreds of kilometres off the
@@ -47,7 +48,10 @@ static std::string payloadFor(const Target* t, int n) {
   std::string s =
       "{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"planes\","
       "\"components\":[{\"c\":\"radar\",\"feed_ok\":true,"
-      "\"feed_age_s\":1.0,\"radius_km\":60.0,\"items\":[";
+      "\"radius_km\":60.0,\"items\":[";
+  char fa[40];
+  snprintf(fa, sizeof(fa), "\"feed_age_s\":%.1f,", feed_age_s);
+  s.insert(s.find("\"radius_km\""), fa);
   for (int i = 0; i < n; ++i) {
     const double lat = kLat + t[i].north_km / 111.0;
     const double lon = kLon + t[i].east_km / (111.0 * cos_lat);
@@ -65,7 +69,11 @@ static std::string payloadFor(const Target* t, int n) {
              "\"alt\":\"3000 ft\"}",
              i ? "," : "", lat, lon, t[i].track_deg, t[i].track_deg,
              t[i].gs_kt, gs_km_s * sinf(trk_rad), gs_km_s * cosf(trk_rad),
-             t[i].seen_pos, t[i].callsign);
+             // The server serves `age + dwell` per item and `dwell` as
+             // feed_age_s -- the SAME dwell. A helper that raises feed_age_s
+             // without raising item ages fabricates a state planes.py cannot
+             // produce, and any test resting on it certifies nothing.
+             t[i].seen_pos + feed_age_s, t[i].callsign);
     s += b;
   }
   return s + "]}]}";
@@ -81,13 +89,10 @@ static void publishTargets(const Target* t, int n) {
   TEST_ASSERT_TRUE(services::scene::pollOnce());
 }
 
-/** Same targets, but with the server's own feed reported as N seconds stale. */
+/** Same targets, with the server's feed reported as N seconds stale -- which
+ *  ages every item by the same amount, exactly as scenes/planes.py does. */
 static void publishTargetsWithFeedAge(const Target* t, int n, float feed_age_s) {
-  std::string p = payloadFor(t, n);
-  const std::string from = "\"feed_age_s\":1.0";
-  char to[48];
-  snprintf(to, sizeof(to), "\"feed_age_s\":%.1f", feed_age_s);
-  p.replace(p.find(from), from.size(), to);
+  const std::string p = payloadFor(t, n, feed_age_s);
   g_http.reset();
   g_http.body = p;
   g_http.code = HTTP_CODE_OK;
@@ -96,11 +101,6 @@ static void publishTargetsWithFeedAge(const Target* t, int n, float feed_age_s) 
   TEST_ASSERT_TRUE(services::scene::pollOnce());
 }
 
-/**
- * Font metrics are computed once and latched in file-statics, so the smooth-font
- * path is unreachable after any test has run the bitmap path. These live in
- * anonymous namespaces inside the included .cpp, so this TU can clear them.
- */
 static void useFont(bool smooth) {
   g_font_is_smooth = smooth;
   ui::s_label_metrics_ready = false;
@@ -1401,45 +1401,49 @@ static void test_a_moving_target_actually_moves_between_frames() {
 }
 
 /**
- * PLAN.md section 3's third staleness cause, and the one the reference firmware
- * could not have had. A device can be receiving perfectly fresh scenes -- both
- * its clocks healthy -- from a server whose own feed has stalled. Measured on
- * hardware: feed_ok stayed true for 90 s while feed_age climbed to 88. Only
- * this term can dim the targets in that state.
+ * A stalled server feed DOES dim the targets -- through pos_age_s, not through
+ * a separate feed-age term. scenes/planes.py serves `age + dwell` per item, so
+ * a feed that stopped moving ages every target with it. A third term on
+ * feed_age_s was tried here and deleted: measured against the real server, it
+ * never decided anything pos_age_s had not already decided two seconds sooner.
  */
-static void test_a_stalled_server_feed_dims_targets_while_scenes_stay_fresh() {
+static void test_a_stalled_server_feed_dims_targets_through_their_own_age() {
   Target t[] = {{5.0f, 0.0f, 200, 90, 0.1f, "FRESH"}};
   publishTargetsWithFeedAge(t, 1, 1.0f);
   g_gfx.reset();
   radarDisplayDraw();
   const auto fresh = g_gfx.of(DrawOp::Triangle);
   TEST_ASSERT_TRUE_MESSAGE(!fresh.empty(), "precondition: a target was drawn");
-  const uint16_t fresh_colour = fresh.back().color;
+  TEST_ASSERT_EQUAL_MESSAGE(radar::kColorAircraft, fresh.back().color,
+                            "a fresh target must be drawn undimmed");
 
-  // Same target, same instant, same clocks -- only the server's feed is old.
   publishTargetsWithFeedAge(t, 1, 30.0f);
   g_gfx.reset();
   radarDisplayDraw();
   const auto stale = g_gfx.of(DrawOp::Triangle);
   TEST_ASSERT_TRUE_MESSAGE(!stale.empty(), "precondition: a target was drawn");
-  TEST_ASSERT_NOT_EQUAL_MESSAGE(fresh_colour, stale.back().color,
-                                "a stalled server feed must dim the targets");
+  TEST_ASSERT_EQUAL_MESSAGE(radar::kColorAircraftStale, stale.back().color,
+                            "a stalled feed must dim the targets");
 }
 
-/** And the three causes stay separate: summing them made targets blink. */
-static void test_a_fresh_feed_does_not_dim_a_fresh_target() {
+/**
+ * The other half, against the ABSOLUTE undimmed colour rather than against
+ * another sample. Comparing two healthy samples to each other passes even when
+ * every target is dimmed unconditionally -- verified: `stale = true` left the
+ * earlier version of this test green.
+ */
+static void test_a_fresh_feed_leaves_targets_undimmed() {
   Target t[] = {{5.0f, 0.0f, 200, 90, 0.1f, "FRESH"}};
-  publishTargetsWithFeedAge(t, 1, 1.0f);
-  g_gfx.reset();
-  radarDisplayDraw();
-  const auto a = g_gfx.of(DrawOp::Triangle);
-  publishTargetsWithFeedAge(t, 1, 2.0f);
-  g_gfx.reset();
-  radarDisplayDraw();
-  const auto b = g_gfx.of(DrawOp::Triangle);
-  TEST_ASSERT_TRUE(!a.empty() && !b.empty());
-  TEST_ASSERT_EQUAL_MESSAGE(a.back().color, b.back().color,
-                            "a healthy feed must not change the colour");
+  for (float age : {0.5f, 1.0f, 2.0f, 5.0f}) {
+    publishTargetsWithFeedAge(t, 1, age);
+    g_gfx.reset();
+    radarDisplayDraw();
+    const auto ops = g_gfx.of(DrawOp::Triangle);
+    TEST_ASSERT_TRUE_MESSAGE(!ops.empty(), "precondition: a target was drawn");
+    char m[96];
+    snprintf(m, sizeof(m), "feed_age %.1fs is healthy and must not dim", age);
+    TEST_ASSERT_EQUAL_MESSAGE(radar::kColorAircraft, ops.back().color, m);
+  }
 }
 
 int main(int, char**) {
@@ -1508,7 +1512,7 @@ int main(int, char**) {
   // Last: these draw, and drawing allocates the sprite. The sprite tests
   // assert they trigger the allocation themselves.
   RUN_TEST(test_a_moving_target_actually_moves_between_frames);
-  RUN_TEST(test_a_stalled_server_feed_dims_targets_while_scenes_stay_fresh);
-  RUN_TEST(test_a_fresh_feed_does_not_dim_a_fresh_target);
+  RUN_TEST(test_a_stalled_server_feed_dims_targets_through_their_own_age);
+  RUN_TEST(test_a_fresh_feed_leaves_targets_undimmed);
   return UNITY_END();
 }

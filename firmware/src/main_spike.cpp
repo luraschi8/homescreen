@@ -17,10 +17,14 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include <esp_heap_caps.h>
+
 #include "config.h"
+#include "hardware/display.h"
 #include "services/device_id.h"
 #include "services/scene_client.h"
 #include "services/server_config.h"
+#include "ui/radar_display.h"
 
 namespace {
 
@@ -28,9 +32,17 @@ unsigned long g_last_report = 0;
 unsigned g_polls = 0;
 
 void reportHeap(const char* stage) {
-  Serial.printf("heap %-18s free %6u  largest %6u\n", stage,
+  // largest_DMA is the number that decides whether the 115,204-byte sprite can
+  // be claimed: createSprite resolves to heap_caps_malloc(..., MALLOC_CAP_DMA),
+  // one contiguous block of internal SRAM, with no PSRAM fallback on this part.
+  // The "~55 KB post-TLS heap" figure everything was sized against came from
+  // the reference firmware, which HAD TLS. This one does not, and nobody had
+  // measured its real budget.
+  Serial.printf("heap %-20s free %6u  largest %6u  largest_DMA %6u\n", stage,
                 static_cast<unsigned>(ESP.getFreeHeap()),
-                static_cast<unsigned>(ESP.getMaxAllocHeap()));
+                static_cast<unsigned>(ESP.getMaxAllocHeap()),
+                static_cast<unsigned>(
+                    heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
 }
 
 }  // namespace
@@ -42,6 +54,15 @@ void setup() {
   Serial.println("=== HomeScreen headless spike ===");
   Serial.printf("fw %s  hw ", config::kFirmwareVersion);
   reportHeap("at boot");
+
+  // The reference's order, and the reason for it: the sprite needs 115 KB
+  // CONTIGUOUS, and the network stack fragments the heap. Claimed here it
+  // always succeeds; claimed after WiFi it may never succeed again.
+  displayInit();
+  reportHeap("after display");
+  const bool sprite = ui::radarDisplayReserveFrame();
+  Serial.printf("sprite: %s\n", sprite ? "RESERVED (115204 B)" : "FAILED");
+  reportHeap("after sprite");
 
   WiFi.mode(WIFI_STA);
   // Cap the TX power: OPS.md section 7 records that the Super Mini's regulator

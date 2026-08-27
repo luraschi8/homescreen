@@ -156,7 +156,12 @@ using LovyanGFX = LGFXBase;
 
 // --- the pieces include/hardware/lgfx_config.hpp constructs ---
 struct SpiCfg { int spi_host=0; uint32_t freq_write=0; int pin_sclk=-1, pin_mosi=-1, pin_miso=-1, pin_dc=-1; };
-struct PanelCfg { int pin_cs=-1, pin_rst=-1; bool invert=false, rgb_order=false; };
+struct PanelCfg {
+  // Real Panel_Device::Config has this and it defaults to TRUE, which is the
+  // whole point: a panel wired without MISO must set it false or every
+  // anti-aliased primitive issues a phantom RAMRD per scanline. A mock missing
+  // the field cannot see that bug.
+  bool readable = true; int pin_cs=-1, pin_rst=-1; bool invert=false, rgb_order=false; };
 class Bus_SPI { public: SpiCfg config() const { return cfg_; } void config(const SpiCfg& c) { cfg_ = c; } SpiCfg cfg_; };
 class Panel_GC9A01 {
  public:

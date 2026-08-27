@@ -29,6 +29,15 @@ public:
       cfg.pin_rst = static_cast<int>(config::kDisplayPinRst);
       cfg.invert = config::kDisplayInvert;
       cfg.rgb_order = config::kDisplayRgbOrder;
+      // Panel_Device::Config::readable defaults to TRUE, and nothing overrode
+      // it. With pin_miso = -1 that makes every anti-aliased primitive --
+      // fillSmoothCircle, drawWideLine, VLW glyphs -- route through readRect()
+      // once per scanline, issuing a real RAMRD with a clock-rate change over
+      // a bus that has no MISO wire. The pixels come back as zeros, so AA edges
+      // blend against black instead of the real background. The boot log says
+      // it out loud: "spiAttachMISO(): SPI Does not have default pins on
+      // ESP32C3!". Inherited from the reference; fixed here.
+      cfg.readable = false;
       _panel.config(cfg);
     }
     setPanel(&_panel);
