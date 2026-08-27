@@ -9,6 +9,21 @@ namespace config {
 /** Sent as `fw` on every request; shown in the fleet view. */
 constexpr char kFirmwareVersion[] = "hs-0.1";
 
+/**
+ * What this build tells the server it can draw, sent as `components=`.
+ *
+ * Here, not in ui/components.h, because two places need it -- the dispatcher
+ * that switches on it and the URL builder that declares it -- and they were
+ * allowed to disagree once already: the dispatcher grew `clock` while the URL
+ * still said `radar`, so the server dropped every clock component as
+ * undeclared and the panel showed nothing.
+ *
+ * `radar` is one bespoke renderer. Everything else arrives as an instruction
+ * list the firmware executes without knowing what it means, so adding a name
+ * here costs one word and no drawing code.
+ */
+constexpr char kDeclaredComponents[] = "radar,clock";
+
 // --- Wi-Fi portal ---
 constexpr char kPortalApName[] = "HomeScreen-Setup";
 constexpr char kPortalIp[] = "192.168.4.1";

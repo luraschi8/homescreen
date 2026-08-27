@@ -56,6 +56,8 @@ char s_etag[40] = {0};
 char s_scene[24] = {0};
 char s_component[16] = {0};
 char s_message[80] = {0};
+/** Verbatim `draw` array for a component that ships one. */
+char s_draw[768] = {0};
 bool s_assigned = false;
 bool s_feed_ok = false;
 float s_feed_age_s = -1.0f;
@@ -94,6 +96,7 @@ struct Parsed {
   char scene[24] = {0};
   char component[16] = {0};
   char message[80] = {0};
+  char draw[768] = {0};
 };
 
 void copyTrimmed(JsonObjectConst obj, const char* key, char* out, size_t len) {
@@ -151,6 +154,7 @@ void install(uint8_t back, const Parsed& p, unsigned long now) {
   memcpy(s_scene, p.scene, sizeof(s_scene));
   memcpy(s_component, p.component, sizeof(s_component));
   memcpy(s_message, p.message, sizeof(s_message));
+  memcpy(s_draw, p.draw, sizeof(s_draw));
   s_content_ms = now;
   s_contact_ms = now;
   s_ever_received = true;
@@ -177,10 +181,11 @@ void buildUrl(char* out, size_t len) {
   const int n = snprintf(
       out, len,
       "%s/api/device/%s/scene?w=%d&h=%d&depth=%d&max_items=%u"
-      "&components=radar&fw=%s&uptime=%lu&rssi=%d",
+      "&components=%s&fw=%s&uptime=%lu&rssi=%d",
       server::baseUrl(), deviceId(), config::kDisplayWidth,
       config::kDisplayHeight, config::kDisplayDepth,
-      static_cast<unsigned>(kMaxAircraft), config::kFirmwareVersion,
+      static_cast<unsigned>(kMaxAircraft), config::kDeclaredComponents,
+      config::kFirmwareVersion,
       millis() / 1000UL, WiFi.RSSI());
   if (n < 0 || static_cast<size_t>(n) >= len) {
     DEBUG_LOG("poll: URL truncated at %u bytes -- host too long?",
@@ -316,8 +321,27 @@ bool pollOnce() {
   Aircraft* out = s_buffers[back];
 
   for (JsonObjectConst comp : doc["components"].as<JsonArrayConst>()) {
-    if (!comp["c"].is<const char*>() ||
-        strcmp(comp["c"].as<const char*>(), "radar") != 0) {
+    if (!comp["c"].is<const char*>()) {
+      continue;
+    }
+    // A component that ships an instruction list needs no per-component code
+    // here: keep the list, and ui::drawlist executes it. That is the whole
+    // point of the vocabulary -- a new component is a server-side file, not a
+    // reflash.
+    if (comp["draw"].is<JsonArrayConst>()) {
+      copyTrimmed(comp, "c", p.component, sizeof(p.component));
+      const size_t wrote = serializeJson(comp["draw"], p.draw, sizeof(p.draw));
+      if (wrote == 0 || wrote >= sizeof(p.draw)) {
+        // Truncated JSON parses as garbage, and half a screen is worse than an
+        // honest empty one.
+        DEBUG_LOG("poll: draw list too large (%u B)",
+                  static_cast<unsigned>(wrote));
+        p.draw[0] = '\0';
+        p.component[0] = '\0';
+      }
+      break;
+    }
+    if (strcmp(comp["c"].as<const char*>(), "radar") != 0) {
       continue;                         // a component this build cannot draw
     }
     copyTrimmed(comp, "c", p.component, sizeof(p.component));
@@ -440,6 +464,7 @@ unsigned long pollIntervalMs() { return s_poll_ms; }
 bool assigned() { return s_assigned; }
 const char* sceneName() { return s_scene; }
 const char* componentName() { return s_component; }
+const char* drawJson() { return s_draw; }
 const char* message() { return s_message; }
 float radiusKm() { return s_radius_km; }
 bool feedOk() { return s_feed_ok; }
@@ -506,6 +531,7 @@ void resetForTest() {
   s_last_poll_ok = false;
   s_headers_registered = false;
   s_etag[0] = s_scene[0] = s_component[0] = s_message[0] = '\0';
+  s_draw[0] = '\0';
   s_assigned = false;
   s_feed_ok = false;
   s_feed_age_s = -1.0f;

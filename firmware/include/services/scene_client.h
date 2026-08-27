@@ -129,6 +129,15 @@ bool assigned();
 const char* sceneName();
 /** The `c` of the component we recognised -- what the dispatcher switches on. */
 const char* componentName();
+
+/**
+ * The component's instruction list, verbatim JSON, or "" if it carried none.
+ *
+ * Kept as text rather than parsed here on purpose: `ui::drawlist` owns the
+ * vocabulary and is pinned against the server's Python resolver, so this module
+ * has no opinion about what an instruction means. It only has to not lose it.
+ */
+const char* drawJson();
 /** Server-supplied Spanish text for an unassigned or failed scene. */
 const char* message();
 float radiusKm();

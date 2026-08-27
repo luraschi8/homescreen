@@ -1,5 +1,7 @@
 #pragma once
 
+#include "config.h"
+
 namespace ui {
 
 /**
@@ -13,9 +15,10 @@ namespace ui {
  * failure that rule exists to prevent. A test asserts the declared string is
  * what the client actually sends.
  */
-enum class ComponentKind { kNone, kRadar, kUnknown };
+enum class ComponentKind { kNone, kRadar, kDrawList, kUnknown };
 
-inline constexpr char kDeclaredComponents[] = "radar";
+/** Alias of config::kDeclaredComponents -- one definition, see the note there. */
+inline constexpr const char* kDeclaredComponents = config::kDeclaredComponents;
 
 ComponentKind componentKindFromName(const char* c);
 

@@ -19,6 +19,7 @@
 #include "../../src/hardware/display.cpp"
 #include "../../src/ui/radar_display.cpp"
 #include "../../src/ui/status_screens.cpp"
+#include "../../src/ui/draw_list.cpp"
 #include "../../src/ui/components.cpp"
 
 static bool poll(const char* body, int code = HTTP_CODE_OK) {
@@ -53,7 +54,9 @@ void tearDown(void) { g_mutex_on_give = nullptr; }
 // --- the declaration and the switch must never disagree ---------------------
 
 void test_the_declared_list_matches_what_we_can_actually_draw(void) {
-  TEST_ASSERT_EQUAL_STRING("radar", ui::kDeclaredComponents);
+  TEST_ASSERT_EQUAL_STRING("radar,clock", ui::kDeclaredComponents);
+  TEST_ASSERT_EQUAL_STRING(config::kDeclaredComponents,
+                           ui::kDeclaredComponents);
   TEST_ASSERT_EQUAL(ui::ComponentKind::kRadar,
                     ui::componentKindFromName("radar"));
   TEST_ASSERT_EQUAL(ui::ComponentKind::kUnknown,
@@ -186,8 +189,150 @@ void test_a_long_message_is_truncated_without_splitting_a_character(void) {
   }
 }
 
+
+// --- components drawn from an instruction list -------------------------------
+// The firmware does not know what a clock is. It executes what it is sent, and
+// homescreen/draw.py executes the same list for the preview -- which is the
+// only reason a preview is worth showing for a screen the server never draws.
+
+static const char* kClockScene =
+    "{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"clock\","
+    "\"components\":[{\"c\":\"clock\",\"draw\":["
+    "{\"t\":\"text\",\"slot\":\"center\",\"v\":\"22:53\",\"size\":\"xl\"},"
+    "{\"t\":\"text\",\"slot\":\"below\",\"v\":\"Madrid\",\"size\":\"sm\","
+    "\"tone\":\"dim\"}]}]}";
+
+void test_a_component_with_an_instruction_list_is_drawn_without_knowing_it(void) {
+  poll(kClockScene);
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  TEST_ASSERT_TRUE(g_gfx.textContains("22:53"));
+  TEST_ASSERT_TRUE(g_gfx.textContains("Madrid"));
+  TEST_ASSERT_FALSE_MESSAGE(g_gfx.textContains("SIN"),
+                            "a drawable component must not show a status screen");
+}
+
+void test_the_firmware_declares_it_can_draw_instruction_lists(void) {
+  // The declaration and the dispatcher must agree, or the server drops a
+  // component we could have drawn -- or sends one we cannot.
+  TEST_ASSERT_NOT_NULL(strstr(ui::kDeclaredComponents, "clock"));
+  TEST_ASSERT_NOT_NULL(strstr(ui::kDeclaredComponents, "radar"));
+  poll(kClockScene);
+  TEST_ASSERT_EQUAL(ui::ComponentKind::kDrawList,
+                    ui::componentKindFromName("clock"));
+}
+
+void test_instructions_land_where_the_resolver_says(void) {
+  // The dispatcher must not do layout of its own: a second opinion here is how
+  // the preview and the glass drift apart.
+  poll(kClockScene);
+  g_gfx.reset();
+  ui::renderScene();
+  ui::drawlist::Placement want[ui::drawlist::kMaxPlacements];
+  const size_t n = ui::drawlist::resolve(services::scene::drawJson(),
+                                         config::kDisplayWidth,
+                                         config::kDisplayHeight, want,
+                                         ui::drawlist::kMaxPlacements);
+  TEST_ASSERT_EQUAL_UINT(2, n);
+  for (size_t i = 0; i < n; ++i) {
+    bool found = false;
+    for (const auto& op : g_gfx.ops) {
+      if (op.kind == DrawOp::Text && op.text == want[i].text &&
+          op.x == want[i].x && op.y == want[i].y) {
+        found = true;
+        break;
+      }
+    }
+    char m[96];
+    snprintf(m, sizeof(m), "'%s' not drawn at (%d,%d)", want[i].text,
+             want[i].x, want[i].y);
+    TEST_ASSERT_TRUE_MESSAGE(found, m);
+  }
+}
+
+void test_tones_reach_the_pen(void) {
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"x\","
+       "\"components\":[{\"c\":\"x\",\"draw\":["
+       "{\"t\":\"text\",\"slot\":\"above\",\"v\":\"up\",\"tone\":\"good\"},"
+       "{\"t\":\"text\",\"slot\":\"below\",\"v\":\"dn\",\"tone\":\"bad\"}]}]}");
+  g_gfx.reset();
+  ui::renderScene();
+  uint16_t up = 0, dn = 0;
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind != DrawOp::Text) continue;
+    if (op.text == "up") up = op.color;
+    if (op.text == "dn") dn = op.color;
+  }
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(up, dn, "good and bad must not share a pen");
+}
+
+void test_an_empty_instruction_list_says_so_rather_than_blanking(void) {
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"x\","
+       "\"components\":[{\"c\":\"x\",\"draw\":[]}]}");
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  TEST_ASSERT_TRUE(g_gfx.textContains("escena vacia"));
+}
+
+void test_the_radar_is_untouched_by_any_of_this(void) {
+  // The whole point of keeping radar bespoke: it must still project and
+  // dead-reckon exactly as before.
+  poll(kWireAssigned);
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  TEST_ASSERT_EQUAL(ui::ComponentKind::kRadar,
+                    ui::componentKindFromName("radar"));
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Circle) > 0, "no rings");
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Triangle) > 0, "no aircraft");
+}
+
+void test_switching_between_a_drawlist_and_the_radar_leaves_no_residue(void) {
+  // The instruction list is file-static; a stale one after switching to radar
+  // would put a clock's text over the rings.
+  poll(kClockScene);
+  ui::renderScene();
+  poll(kWireAssigned);
+  g_gfx.reset();
+  ui::renderScene();
+  TEST_ASSERT_FALSE_MESSAGE(g_gfx.textContains("22:53"),
+                            "the previous component's text survived");
+  TEST_ASSERT_TRUE(g_gfx.count(DrawOp::Triangle) > 0);
+}
+
+void test_a_draw_list_too_large_to_hold_is_refused_not_truncated(void) {
+  // Truncated JSON parses as garbage, and half a screen is worse than an honest
+  // empty one.
+  std::string big = "{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"x\","
+                    "\"components\":[{\"c\":\"x\",\"draw\":[";
+  for (int i = 0; i < 60; ++i) {
+    if (i) big += ",";
+    big += "{\"t\":\"text\",\"slot\":\"center\",\"v\":\""
+           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":\"sm\"}";
+  }
+  big += "]}]}";
+  g_http.reset();
+  g_http.body = big;
+  g_http.code = HTTP_CODE_OK;
+  g_http.content_length_override = 1;
+  g_http.response_headers["ETag"] = "\"t\"";
+  g_http.response_headers["X-Poll-Seconds"] = "5";
+  TEST_ASSERT_TRUE(services::scene::pollOnce());
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  TEST_ASSERT_FALSE_MESSAGE(g_gfx.textContains("aaaa"),
+                            "a truncated list must not be drawn");
+}
+
 int main(void) {
   UNITY_BEGIN();
+  RUN_TEST(test_a_component_with_an_instruction_list_is_drawn_without_knowing_it);
+  RUN_TEST(test_the_firmware_declares_it_can_draw_instruction_lists);
+  RUN_TEST(test_instructions_land_where_the_resolver_says);
+  RUN_TEST(test_tones_reach_the_pen);
+  RUN_TEST(test_an_empty_instruction_list_says_so_rather_than_blanking);
+  RUN_TEST(test_the_radar_is_untouched_by_any_of_this);
+  RUN_TEST(test_switching_between_a_drawlist_and_the_radar_leaves_no_residue);
+  RUN_TEST(test_a_draw_list_too_large_to_hold_is_refused_not_truncated);
   RUN_TEST(test_the_declared_list_matches_what_we_can_actually_draw);
   RUN_TEST(test_the_declared_list_is_what_the_client_actually_sends);
   RUN_TEST(test_a_device_that_never_reached_the_server_says_so_with_the_address);
