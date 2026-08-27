@@ -34,6 +34,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from homescreen import surface
+
 log = logging.getLogger(__name__)
 
 # Phase-1 stand-in. Phase 2 replaces this with real scene discovery; that is
@@ -579,6 +581,13 @@ def clean_caps(raw) -> dict:
             continue
         if lo <= n <= hi:
             out[key] = n
+    # Shape is declared, not derived: 240x240 could be a square panel, and a
+    # server guessing wrong lays a layout across corners the glass lacks. An
+    # undeclared or unrecognised shape is simply absent, which `surface.describe`
+    # reads as the assumption that costs least.
+    shape = raw.get("shape")
+    if isinstance(shape, str) and shape.lower() in surface.SHAPES:
+        out["shape"] = shape.lower()
     for key in ("layouts", "components"):
         value = raw.get(key)
         if isinstance(value, list):

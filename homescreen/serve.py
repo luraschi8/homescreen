@@ -919,6 +919,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 caps[key] = args[key]
         if "w" not in caps or "h" not in caps:
             return caps
+        # Shape rides the same rule as the lists: only read alongside geometry,
+        # so a bare `?shape=round` cannot redefine a device on its own.
+        if isinstance(args.get("shape"), str):
+            caps["shape"] = args["shape"]
         for key in _CAP_LISTS:
             raw = args.get(key)
             if isinstance(raw, str) and raw.strip():

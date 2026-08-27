@@ -197,3 +197,24 @@ def test_a_views_options_are_the_ones_that_reach_the_device(tmp_path):
     # say Europe/Madrid. If the seam were decorative, this would read Madrid.
     assert any("Tokyo" in text for text in drawn), drawn
     assert not any("Madrid" in text for text in drawn), drawn
+
+
+def test_a_device_can_declare_its_shape_and_the_registry_keeps_it(tmp_path):
+    from homescreen import registry
+    client = _app(tmp_path)
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&shape=round"
+               "&components=radar,draw_list")
+    caps = registry.load(tmp_path)[HW]["caps"]
+    assert caps["shape"] == "round"
+    assert layout.templates_for(caps) == ("single",), \
+        "round glass is never offered a layout with corners"
+
+
+@pytest.mark.parametrize("declared", ["oval", "", "ROUND", "<script>", "1"])
+def test_an_unrecognised_shape_is_dropped_rather_than_stored(tmp_path, declared):
+    from homescreen import registry
+    client = _app(tmp_path)
+    client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&shape={declared}"
+               "&components=draw_list")
+    caps = registry.load(tmp_path)[HW]["caps"]
+    assert caps.get("shape") in (None, "round"), caps
