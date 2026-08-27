@@ -571,9 +571,15 @@ def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds) -> dict:
     if name is not None:
         rec["name"] = _check_name(data, hw_id, name)
     if scene is not None:
-        if scene not in ASSIGNABLE_SCENES:
+        # "unassigned" is how a device says it has no scene, and an operator
+        # must be able to put it back there -- to take a screen out of service,
+        # or to read its hardware id off the glass again. Rejecting it meant the
+        # only way back was DELETE, which throws away the name and the history
+        # with it. "error" stays unsettable: it is a state the server enters,
+        # not one an operator chooses.
+        if scene != "unassigned" and scene not in ASSIGNABLE_SCENES:
             raise ValueError(f"unknown scene {scene!r}; assignable: "
-                             f"{', '.join(ASSIGNABLE_SCENES)}")
+                             f"{', '.join(ASSIGNABLE_SCENES)}, unassigned")
         rec["scene"] = scene
     if poll_seconds is not None:
         try:
@@ -584,6 +590,13 @@ def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds) -> dict:
         if not 1.0 <= n <= 3600.0:
             raise ValueError(f"poll_seconds must be 1 to 3600, got {n}")
         rec["poll_seconds"] = n
+
+    if rec == data[hw_id]:
+        # Nothing changed, so nothing is written. The dashboard has an apply
+        # button and people press it twice; the poll path has had this guard
+        # since the beginning and this one did not. Validation above still ran,
+        # so a bad value is still refused -- this only skips the fsync.
+        return rec
 
     data[hw_id] = rec
     _save_unlocked(cache_dir, data)

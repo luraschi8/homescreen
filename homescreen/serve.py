@@ -12,7 +12,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request
+from flask import (Flask, Response, jsonify, redirect, request,
+                   url_for)
 
 from homescreen import overrides, registry, scenes, web
 from homescreen import render
@@ -354,7 +355,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     @app.get("/")
     @app.get("/home")
     def home():
-        return Response(web.render_home(_status()), mimetype="text/html")
+        return Response(
+            web.render_home(_status(), scene_names=scenes.names(),
+                            name_max=registry.NAME_MAX,
+                            notice=request.args.get("m", "")),
+            mimetype="text/html")
 
     @app.get("/api/config")
     def get_config():
@@ -575,6 +580,36 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # leaves an e-paper on the old one for up to half a poll interval.
         _last_cold.pop(hw, None)
         return jsonify(_fleet_entry(hw, rec, clock()))
+
+    @app.post("/home/device")
+    def home_device():
+        """The dashboard's form target.
+
+        Form-encoded rather than JSON, and a redirect rather than a body, so the
+        page works with no JavaScript at all -- the same constraint the scenes
+        live under. It is a thin shell over `registry.assign`, the identical
+        call the JSON PATCH makes, so there is exactly one place that decides
+        what a valid name or scene is.
+        """
+        hw = (request.form.get("hw") or "").strip()
+        name = (request.form.get("name") or "").strip()
+        scene = (request.form.get("scene") or "").strip()
+        if hw not in registry.load(cache_dir):
+            return redirect(url_for("home", m="unknown device"))
+        try:
+            rec = registry.assign(cache_dir, hw, name=name or None,
+                                  scene=scene or None)
+        except ValueError as exc:
+            return redirect(url_for("home", m=str(exc)))
+        except OSError as exc:
+            log.error("registry write failed for %s: %s", hw, exc)
+            return redirect(url_for("home", m="registry unavailable"))
+        # An operator just changed what this panel shows; that deliberately
+        # costs one render rather than waiting out the throttle.
+        _last_cold.pop(hw, None)
+        shown = rec.get("scene") or "unassigned"
+        who = rec.get("name") or hw
+        return redirect(url_for("home", m=f"{who} now shows {shown}"))
 
     @app.delete("/api/devices/<hw>")
     def delete_device(hw: str):

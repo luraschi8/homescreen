@@ -28,6 +28,16 @@ h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.09em;color:var(--di
       padding:.9rem 1.1rem;margin-bottom:.7rem}
 .row{display:flex;flex-wrap:wrap;gap:.5rem 1.5rem;align-items:baseline}
 .name{font-weight:600}
+.cfg{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;
+  margin-top:12px;padding-top:12px;border-top:1px solid #e8e8e8}
+.cfg label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#666}
+.cfg input,.cfg select{font:inherit;font-size:13px;padding:5px 7px;
+  border:1px solid #ccc;border-radius:5px;background:#fff}
+.cfg button{font:inherit;font-size:13px;padding:6px 14px;border:1px solid #333;
+  border-radius:5px;background:#333;color:#fff;cursor:pointer}
+.cfg button:hover{background:#000}
+.notice{margin:0 0 14px;padding:10px 12px;border-radius:6px;
+  background:#f0f6ff;border:1px solid #cfe0ff;font-size:13px}
 .tag{font-size:.7rem;color:var(--dim);border:1px solid var(--line);
      border-radius:99px;padding:.05rem .5rem}
 .ok{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}
@@ -48,7 +58,8 @@ def duration(seconds: float) -> str:
         return f"{s // 3600}h {(s % 3600) // 60}m"
     return f"{s // 86400}d {(s % 86400) // 3600}h"
 
-def render_home(st: dict) -> str:
+def render_home(st: dict, scene_names=(), name_max: int = 32,
+                notice: str = "") -> str:
     e = html.escape
 
     def esc(v):
@@ -106,6 +117,23 @@ def render_home(st: dict) -> str:
         if d.get("scene_error"):
             notes += ('<dt>scene</dt><dd class="bad">'
                       + e(str(d["scene_error"])) + "</dd>")
+        # A plain HTML form, not fetch(): no JavaScript and no CDN, the same
+        # constraint the scenes themselves live under. It keeps working from a
+        # phone on a bad connection, and it degrades to a page reload rather
+        # than to silence. The POST is backed by the same validation as the
+        # JSON PATCH, so an unknown scene is refused by one code path.
+        current = d.get("scene") or "unassigned"
+        options = "".join(
+            f'<option value="{e(s_)}"{" selected" if s_ == current else ""}>'
+            f'{e(s_)}</option>'
+            for s_ in (list(scene_names) + ["unassigned"]))
+        form = f"""<form class="cfg" method="post" action="/home/device">
+    <input type="hidden" name="hw" value="{esc(d.get("hw"))}">
+    <label>name <input name="name" value="{e(str(d.get("name") or ""))}"
+      maxlength="{name_max}" placeholder="unnamed"></label>
+    <label>shows <select name="scene">{options}</select></label>
+    <button type="submit">apply</button>
+  </form>"""
         fleet_rows.append(f"""<div class="card">
   <div class="row"><span class="name">{name}</span>
     <span class="tag">{esc(d.get("hw"))}</span>
@@ -116,7 +144,9 @@ def render_home(st: dict) -> str:
     {state}</div>
   <dl><dt>last seen</dt><dd>{esc(d.get("last_seen"))}</dd>
       <dt>first seen</dt><dd>{esc(d.get("first_seen"))}</dd>{tel_row}{notes}</dl>
+  {form}
 </div>""")
+    notice_html = (f'<div class="notice">{e(notice)}</div>' if notice else "")
     fleet_html = ("<h2>Fleet</h2>" + ("".join(fleet_rows)
                   or '<div class="card">no devices have called in yet</div>'))
 
@@ -139,6 +169,7 @@ def render_home(st: dict) -> str:
     <dt>fetch every</dt><dd>{esc(feed["fetch_seconds"])}s</dd>
   </dl></div>
 
+  {notice_html}
   {fleet_html}
 
   <h2>Devices (config)</h2>

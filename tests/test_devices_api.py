@@ -85,7 +85,6 @@ def test_patch_sets_name_and_scene(ctx):
 @pytest.mark.parametrize("body,why", [
     ({"scene": "no-such-scene"}, "unknown scene"),
     ({"scene": "error"}, "a server-chosen fallback, not an assignment"),
-    ({"scene": "unassigned"}, "same"),
     ({"name": "has/slash"}, "would break the URL alias"),
     ({"name": ""}, "empty"),
     ({"name": "x" * 100}, "absurd"),
@@ -514,3 +513,186 @@ def test_a_feed_going_down_changes_the_etag(ctx):
     env["ok"] = False
     p.write_text(_json.dumps(env))
     assert client.get(q, headers={"If-None-Match": etag}).status_code == 200
+
+
+def test_the_api_can_put_a_device_back_to_unassigned(ctx):
+    # The only route back used to be DELETE, which loses the name.
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    client.patch(f"/api/devices/{HW}", json={"name": "desk", "scene": "planes"})
+    r = client.patch(f"/api/devices/{HW}", json={"scene": "unassigned"})
+    assert r.status_code == 200
+    assert r.get_json()["scene"] == "unassigned"
+    assert r.get_json()["name"] == "desk"
+
+
+def test_an_unassigned_device_is_served_the_unassigned_scene_again(ctx):
+    # Round trip: the device must actually see the change, not just the record.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "planes"})
+    client.patch(f"/api/devices/{HW}", json={"scene": "unassigned"})
+    body = client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16"
+                      "&components=radar").get_json()
+    assert body["assigned"] is False
+    assert body["scene"] == "unassigned"
+    assert body["components"] == []
+    assert "message" in body
+
+
+# --- the dashboard as a control surface, not just a report -------------------
+# `/home` rendered the fleet and nothing else: changing what a screen showed
+# needed a curl, while the server told unassigned devices to "elige una escena
+# en el panel" -- a promise the panel did not keep.
+
+def _home(client, **q):
+    from urllib.parse import urlencode
+    return client.get("/home" + ("?" + urlencode(q) if q else "")).get_data(as_text=True)
+
+
+def test_the_dashboard_offers_every_assignable_scene_and_unassigned(ctx):
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    html = _home(client)
+    for scene in registry.ASSIGNABLE_SCENES:
+        assert f'<option value="{scene}"' in html, scene
+    assert '<option value="unassigned"' in html, \
+        "taking a screen out of service must not require DELETE"
+
+
+def test_the_current_scene_is_preselected(ctx):
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    registry.assign(cache, HW, name="salon", scene="planes")
+    html = _home(client)
+    assert '<option value="planes" selected>' in html
+    assert '<option value="clock" selected>' not in html
+
+
+def test_applying_a_scene_from_the_dashboard_changes_what_the_device_is_served(ctx):
+    # The whole point: the operator picks, and the device follows.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    r = client.post("/home/device",
+                    data={"hw": HW, "name": "salon", "scene": "planes"})
+    assert r.status_code in (302, 303), "a form POST must redirect, not render"
+    body = client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16"
+                      "&components=radar").get_json()
+    assert body["scene"] == "planes" and body["assigned"] is True
+    assert [c["c"] for c in body["components"]] == ["radar"]
+
+
+def test_the_dashboard_can_put_a_device_back_to_unassigned(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.post("/home/device", data={"hw": HW, "name": "salon", "scene": "planes"})
+    client.post("/home/device", data={"hw": HW, "name": "salon",
+                                      "scene": "unassigned"})
+    body = client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16"
+                      "&components=radar").get_json()
+    assert body["assigned"] is False
+    assert registry.load(cache)[HW]["name"] == "salon", "the name must survive"
+
+
+def test_renaming_from_the_dashboard_changes_what_the_name_route_serves(ctx):
+    # The name is what /api/display/<name>/ routes on, so this is not cosmetic.
+    client, cache, _ = ctx
+    client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    client.post("/home/device", data={"hw": HW, "name": "cocina", "scene": "planes"})
+    assert client.get("/api/display/cocina/health").status_code == 200
+
+
+def test_the_form_and_the_json_api_share_one_validator(ctx):
+    # Two write paths that disagreed about what a valid scene is would be two
+    # places to fix every time the rules change.
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    r = client.post("/home/device",
+                    data={"hw": HW, "name": "x", "scene": "../../etc/passwd"})
+    assert r.status_code in (302, 303)
+    assert registry.load(cache)[HW]["scene"] == "unassigned", "nothing was written"
+    assert "unknown scene" in _home(client, m="unknown scene 'x'")
+
+
+def test_a_rejected_apply_tells_the_operator_why(ctx):
+    # A silent redirect back to an unchanged page is indistinguishable from a
+    # save that worked.
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    r = client.post("/home/device", data={"hw": HW, "scene": "nosuchscene"})
+    assert "m=" in r.headers["Location"]
+    assert "unknown+scene" in r.headers["Location"] or \
+           "unknown%20scene" in r.headers["Location"]
+
+
+def test_an_apply_for_an_unknown_device_is_refused_not_created(ctx):
+    client, cache, _ = ctx
+    r = client.post("/home/device", data={"hw": "ghost", "scene": "planes"})
+    assert r.status_code in (302, 303)
+    assert "ghost" not in registry.load(cache), "a form must not register a device"
+
+
+def test_a_name_containing_a_slash_is_refused_outright(ctx):
+    # `/` would break /api/display/<name>/ routing, so _check_name rejects it --
+    # which also happens to stop `</script>`.
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    client.post("/home/device",
+                data={"hw": HW, "name": "<script>alert(1)</script>",
+                      "scene": "planes"})
+    assert registry.load(cache)[HW]["name"] is None
+
+
+def test_a_hostile_name_that_IS_accepted_cannot_reach_the_page_unescaped(ctx):
+    # The dangerous case is a payload with no slash in it, which _check_name
+    # accepts. It reaches the fleet card, the form's value= attribute, and the
+    # glass -- so escaping is the only thing between it and execution.
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    payload = "<img src=x onerror=alert(1)>"
+    client.post("/home/device", data={"hw": HW, "name": payload,
+                                      "scene": "planes"})
+    assert registry.load(cache)[HW]["name"] == payload, "precondition: accepted"
+    html = _home(client)
+    assert payload not in html
+    assert "&lt;img" in html
+    assert "onerror=alert(1)&gt;" in html or "&lt;img src=x onerror" in html
+
+
+def test_the_notice_is_escaped_too(ctx):
+    # It comes straight off the query string.
+    client, cache, _ = ctx
+    html = _home(client, m="<img src=x onerror=alert(1)>")
+    assert "<img src=x" not in html
+    assert "&lt;img" in html
+
+
+def test_the_form_needs_no_javascript(ctx):
+    # Same constraint the scenes live under: no JS, no CDN. It has to work from
+    # a phone on a bad connection, and degrade to a page reload.
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    html = _home(client)
+    assert "<form" in html and 'method="post"' in html
+    # External DEPENDENCIES, not any URL: the page legitimately renders the
+    # upstream feed's endpoint as text, and asserting on "https://" would
+    # flag that.
+    for bad in ("<script", "onclick=", "onsubmit=", "fetch(",
+                "addEventListener", "<link rel=\"stylesheet\"",
+                "src=\"http", "href=\"http"):
+        assert bad not in html, f"the dashboard must not need {bad!r}"
+
+
+def test_applying_the_same_values_does_not_rewrite_the_card(ctx):
+    # A form has an apply button and people press it twice. The poll path has a
+    # wear guard and this one did not, so every press wrote and fsynced the
+    # card. Lower stakes than a per-poll write -- it is human-paced -- but free
+    # to avoid, and "changing nothing writes nothing" is the rule everywhere
+    # else in this server.
+    import os
+    client, cache, _ = ctx
+    registry.touch(cache, HW, now=1000.0)
+    client.post("/home/device", data={"hw": HW, "name": "x", "scene": "planes"})
+    before = os.stat(registry.registry_path(cache)).st_mtime_ns
+    client.post("/home/device", data={"hw": HW, "name": "x", "scene": "planes"})
+    assert os.stat(registry.registry_path(cache)).st_mtime_ns == before

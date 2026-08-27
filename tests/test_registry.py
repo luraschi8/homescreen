@@ -89,7 +89,6 @@ def test_liveness_never_raises_on_a_damaged_record(rec):
     ({"name": "a" * 65}, "absurd length"),
     ({"scene": "no-such-scene"}, "unknown scene"),
     ({"scene": "error"}, "a server-chosen fallback, not an assignment"),
-    ({"scene": "unassigned"}, "same"),
     ({"poll_seconds": 0}, "would make liveness meaningless"),
     ({"poll_seconds": "soon"}, "not a number"),
     ({"poll_seconds": 99999}, "out of range"),
@@ -660,3 +659,28 @@ def test_a_nonsense_item_cap_is_dropped_like_any_other(tmp_path: Path, bad):
                                              "max_items": bad}, now=1000.0)
     assert "max_items" not in rec["caps"]
     assert rec["caps"]["w"] == 240, "and the good ones still land"
+
+
+def test_an_operator_can_put_a_device_back_to_unassigned(tmp_path: Path):
+    # Taking a screen out of service, or reading its hardware id off the glass
+    # again, must not require DELETE -- that throws away the name and the
+    # history with it. Found by using the thing: a device assigned once could
+    # never be un-assigned by any API call.
+    registry.touch(tmp_path, HW, now=1000.0)
+    registry.assign(tmp_path, HW, name="desk", scene="planes")
+    rec = registry.assign(tmp_path, HW, scene="unassigned")
+    assert rec["scene"] == "unassigned"
+    assert rec["name"] == "desk", "unassigning must not clear the name"
+
+
+def test_error_stays_unsettable_because_the_server_owns_it(tmp_path: Path):
+    # "error" is a state the server enters when a scene raises, not one an
+    # operator chooses. Setting it by hand would fake a fault.
+    registry.touch(tmp_path, HW, now=1000.0)
+    with pytest.raises(ValueError, match="unknown scene"):
+        registry.assign(tmp_path, HW, scene="error")
+
+
+def test_unassigning_a_device_that_was_never_assigned_is_harmless(tmp_path: Path):
+    registry.touch(tmp_path, HW, now=1000.0)
+    assert registry.assign(tmp_path, HW, scene="unassigned")["scene"] == "unassigned"
