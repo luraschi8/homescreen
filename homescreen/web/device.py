@@ -5,9 +5,7 @@ from __future__ import annotations
 from .fields import datalist_markup, option_group
 from .layout import dash, e, page, pill, scene_label, when
 
-#: The only script on the dashboard. Picking a component swaps its settings in
-#: without a round trip; with scripting off the saved component's settings are
-#: the ones on the page, which is the state that matters.
+#: Picking a component swaps its settings in without a round trip.
 SCRIPT = """
 document.querySelectorAll('[data-scene-picker]').forEach(function(sel){
   function sync(){

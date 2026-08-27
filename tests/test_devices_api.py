@@ -704,16 +704,23 @@ def test_the_notice_is_escaped_too(ctx):
 
 
 def test_the_dashboard_needs_nothing_it_cannot_serve_itself(ctx):
-    # Was: no JavaScript at all. The owner lifted that; scripting is allowed
-    # and the device page uses a little. What still holds is the reason the
-    # rule existed -- the dashboard is how you debug the network, so it must
-    # not need the network to render. Everything ships from the Pi.
+    # There was a "no JavaScript" test here, justified as "the same constraint
+    # the scenes live under". That was wrong: the scenes' constraint is about
+    # Chromium rendering a page into a 1-bit framebuffer, and it never applied
+    # to a dashboard viewed in a browser. Nobody asked for it.
+    #
+    # What this asserts instead is a choice, and a smaller one: the dashboard
+    # ships its own assets. It is the page you open when the network is
+    # misbehaving, so it should not need the network to draw itself -- and
+    # inlining is also the simplest option, with nothing to configure. Scripts
+    # are fine; fetching them from someone else is what this rules out.
     client, cache, _ = ctx
     registry.touch(cache, HW, now=1000.0)
     registry.set_approval(cache, HW, True)
-    # A real form, so every action still works if a script does not run. The
-    # fleet list carries one only when something is actionable (a screen asking
-    # to join); the device page always does.
+    # Real forms, because a form is the least code that does the job -- not
+    # because scripting is forbidden. The fleet list carries one only when
+    # something is actionable (a screen asking to join); the device page
+    # always does.
     assert '<form' in _device(client) and 'method="post"' in _device(client)
 
     # External DEPENDENCIES, not any URL: the page legitimately renders the
