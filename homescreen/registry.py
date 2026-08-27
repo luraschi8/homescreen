@@ -102,6 +102,10 @@ APPROVAL_FIELD = "approved"
 #: the configuration -- and the preview exists to invite exactly that.
 OPTIONS_MEMORY_FIELD = "options_by_scene"
 
+#: Views one screen may hold. Written from an unauthenticated page, so this is
+#: what stops a hand-edited file growing without limit.
+LAYOUT_MAX_VIEWS = 32
+
 #: What a device may be, from the fleet's point of view.
 PENDING, APPROVED = "pending", "approved"
 DEFAULT_POLL_SECONDS = 5
@@ -821,6 +825,41 @@ def pending(cache_dir: Path) -> dict:
     return {k: v for k, v in sorted(load(cache_dir).items(),
                                     key=lambda kv: kv[1].get("first_seen") or "")
             if not is_approved(v)}
+
+
+def set_layout(cache_dir: Path, hw_id: str, views: dict, plan: dict) -> dict:
+    """Store a screen's views and its schedule, atomically.
+
+    Both together, always: a schedule naming a view that the same write is
+    removing is the one inconsistency this record can hold, and writing them
+    separately is how you get it. Callers validate first (`layout.clean_view`,
+    `schedule.clean_schedule`); this stores what it is given and bounds it.
+    """
+    hw_id = _check_hw(hw_id)
+    if not isinstance(views, dict) or not views:
+        raise ValueError("a screen needs at least one view")
+    if len(views) > LAYOUT_MAX_VIEWS:
+        raise ValueError(f"at most {LAYOUT_MAX_VIEWS} views")
+    with _locked(cache_dir):
+        data = load_raw(cache_dir)
+        if hw_id not in data:
+            raise ValueError(f"unknown device: {hw_id}")
+        rec = dict(data[hw_id])
+        rec["views"] = views
+        rec["schedule"] = plan if isinstance(plan, dict) else {}
+        # `scene` stays the name of what is showing, so every reader that has
+        # not learned about views -- the fleet list, the API, the wire -- keeps
+        # working. One fact, one writer.
+        showing = (rec["schedule"].get("default")
+                   if rec["schedule"].get("default") in views
+                   else sorted(views)[0])
+        placements = (views.get(showing) or {}).get("placements") or []
+        if placements:
+            rec["scene"] = placements[0].get("component") or rec.get("scene")
+            rec["options"] = dict(placements[0].get("options") or {})
+        data[hw_id] = rec
+        _save_unlocked(cache_dir, data)
+        return rec
 
 
 def forget(cache_dir: Path, hw_id: str) -> bool:

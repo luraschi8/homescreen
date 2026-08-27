@@ -16,6 +16,7 @@ from flask import (Flask, Response, jsonify, redirect, request,
                    url_for)
 
 from homescreen import draw, layout, overrides, registry, scenes, web
+from homescreen import schedule as scheduling
 from homescreen import render
 from homescreen.render import (RenderBusy, RenderError, check_geometry as
                                render_check_geometry, render_frame)
@@ -856,6 +857,64 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         hw = (request.form.get("hw") or "").strip()
         return redirect(url_for("home", m=_apply_device_form(hw, request.form)))
 
+    @app.get("/api/devices/<hw>/schedule")
+    def device_schedule(hw: str):
+        rec = registry.load(cache_dir).get(hw)
+        if rec is None:
+            return jsonify({"error": f"unknown device: {hw}"}), 404
+        caps = registry.clean_caps(rec.get("caps") or {})
+        return jsonify({
+            "hw": hw,
+            "views": {name: layout.view_for(rec, name)
+                      for name in layout.view_names(rec)},
+            "schedule": rec.get("schedule") or {
+                "default": (layout.view_names(rec) or ("unassigned",))[0],
+                "slots": []},
+            "showing": scheduling.active_view(rec.get("schedule") or {}, clock()),
+            "templates": list(layout.templates_for(caps)),
+            "regions": {t: {r: v["rect"] for r, v in
+                            layout.regions(caps, t).items()}
+                        for t in layout.templates_for(caps)},
+        })
+
+    @app.put("/api/devices/<hw>/schedule")
+    def device_schedule_set(hw: str):
+        """Replace a screen's views and schedule in one write.
+
+        The whole thing, not a patch: a schedule is small, and partial edits of
+        an ordered list of slots are where lost updates live. Validated as a
+        whole -- every slot must name a view that exists AFTER this write, not
+        one that existed before it.
+        """
+        rec = registry.load(cache_dir).get(hw)
+        if rec is None:
+            return jsonify({"error": f"unknown device: {hw}"}), 404
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "expected a JSON object"}), 400
+        caps = registry.clean_caps(rec.get("caps") or {})
+        known = set(scenes.names())
+        raw_views = body.get("views")
+        if not isinstance(raw_views, dict) or not raw_views:
+            return jsonify({"error": "views must be a non-empty object"}), 400
+        views = {str(name)[:64]: layout.clean_view(view, caps, known)
+                 for name, view in list(raw_views.items())[:layout.MAX_VIEWS]}
+        views = {n: v for n, v in views.items() if v["placements"]}
+        if not views:
+            return jsonify({"error": "no view had a placement this screen "
+                                     "can draw"}), 400
+        plan = scheduling.clean_schedule(body.get("schedule"), views)
+        try:
+            registry.set_layout(cache_dir, hw, views, plan)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except OSError as exc:
+            log.error("registry write failed for %s: %s", hw, exc)
+            return jsonify({"error": "registry unavailable"}), 503
+        _last_cold.pop(hw, None)
+        return jsonify({"hw": hw, "views": views, "schedule": plan,
+                        "showing": scheduling.active_view(plan, clock())})
+
     @app.get("/api/devices/<hw>/membership")
     def device_membership(hw: str):
         rec = registry.load(cache_dir).get(hw)
@@ -955,8 +1014,21 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         return rec, None
 
     def _poll_seconds(rec: dict, scene=None) -> int:
-        return registry.poll_seconds(
-            rec, scene_poll_s=getattr(scene, "poll_s", None))
+        """When to tell this device to come back.
+
+        The component's own next change, or the moment its slot flips --
+        whichever comes first, because either changes the picture. A boundary
+        is a known future time, so a scheduled screen wakes when it matters
+        rather than polling to discover it. `poll_floor` still applies, so a
+        boundary cannot drive an e-paper below what its render queue sustains.
+        """
+        wants = getattr(scene, "poll_s", None)
+        boundary = scheduling.seconds_to_next_change(
+            rec.get("schedule") or {}, clock())
+        if boundary is not None:
+            boundary = max(1, int(boundary))
+            wants = boundary if wants is None else min(wants, boundary)
+        return registry.poll_seconds(rec, scene_poll_s=wants)
 
     def _poll_header(resp, rec, scene=None, hw=None):
         """Tell the device when to come back, and record the ceiling we implied.
@@ -992,7 +1064,8 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # view it always meant, so nothing here changes yet -- which is the
         # point: the record grows its new shape without a migration write and
         # without a behaviour change to debug at the same time.
-        placements = layout.view_for(rec)["placements"]
+        showing = scheduling.active_view(rec.get("schedule") or {}, clock())
+        placements = layout.view_for(rec, showing or None)["placements"]
         showing = (placements[0]["component"] if placements
                    else rec.get("scene") or "unassigned")
         name = ("pending" if not registry.is_approved(rec) else showing)
