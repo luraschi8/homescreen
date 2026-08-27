@@ -28,6 +28,20 @@ while read -r t; do
   fail=1
 done < <(printf '%s\n' "$table" | grep -oE '`test_[a-z0-9_]+`' | tr -d '`' | sort -u)
 
+# Working rule 2: every commit is green on BOTH envs. I broke this one commit
+# after writing it -- the spike's setup()/loop() collided with the production
+# main's, so `c3-spike` built fine while `c3` failed to link, and the spike is
+# the build that happens to be running on the board.
+if command -v pio >/dev/null 2>&1 || [ -x "$HOME/.platformio/penv/bin/pio" ]; then
+  PIO=$(command -v pio || echo "$HOME/.platformio/penv/bin/pio")
+  for env in c3 c3-spike; do
+    if ! (cd firmware && "$PIO" run -e "$env" >/dev/null 2>&1); then
+      echo "FAIL: firmware env '$env' does not build."
+      fail=1
+    fi
+  done
+fi
+
 if [ "$fail" -eq 0 ]; then
   n=$(printf '%s\n' "$table" | grep -oE '`test_[a-z0-9_]+`' | tr -d '`' | sort -u | wc -l | tr -d ' ')
   echo "plan ok: $fenced fenced lines, $n named tests all present"
