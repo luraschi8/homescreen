@@ -16,7 +16,7 @@ from flask import (Flask, Response, jsonify, redirect, request,
                    url_for)
 
 from homescreen import draw, layout, overrides, registry, scenes, secrets, web
-from homescreen import jobs, jobstore, providers
+from homescreen import jobs, jobstore, providers, reading
 from homescreen import schedule as scheduling
 from homescreen import render
 from homescreen.render import (RenderBusy, RenderError, check_geometry as
@@ -825,6 +825,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             built = scenes.build(scene, scenes.SceneContext(
                 cfg=_live(), cache_dir=cache_dir, caps=caps, now=clock(),
                 options=scenes.clean_options(scene, rec.get("options") or {}),
+                # The preview must see exactly what the device would, or it is
+                # a drawing of a hypothetical screen.
+                data=_scene_data,
                 device={"hw": hw, "id": rec.get("name") or hw,
                         "name": rec.get("name"), "feed": "adsb",
                         "max_aircraft": 20}))
@@ -1147,6 +1150,25 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                     rec, scene_max_s=getattr(scene, "poll_max_s", None)))
         return resp
 
+    def _scene_data(requirement):
+        """Resolve one component requirement to whatever was last fetched.
+
+        The component's side of the port: it hands back the requirement it
+        declared and receives a payload or None. It never learns that a job
+        exists, where the payload is cached, or whether the fetch succeeded --
+        a failed fetch keeps the last good payload, and deciding what to do
+        with old data is the component's business, not the cache's.
+        """
+        if not isinstance(requirement, dict):
+            return reading.Reading.nothing()
+        provider = requirement.get("provider")
+        try:
+            params = providers.clean_params(provider, requirement.get("params"))
+        except ValueError:
+            return reading.Reading.nothing()
+        env = jobstore.read(cache_dir, providers.key(provider, params))
+        return reading.Reading.from_envelope(env, now=clock())
+
     def _scene_for(hw: str, rec: dict, caps: dict | None = None):
         """(scene_name, Scene). An unassigned device gets a real scene telling
         a human what to do, never an error and never a blank.
@@ -1179,6 +1201,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             options=scenes.clean_options(
                 name, (placements[0]["options"] if placements
                        else rec.get("options")) or {}),
+            data=_scene_data,
             now=clock(),
             device={"hw": hw, "id": rec.get("name") or hw,
                     "name": rec.get("name"), "feed": "adsb",

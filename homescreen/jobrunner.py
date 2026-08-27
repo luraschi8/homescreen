@@ -31,7 +31,7 @@ def due(job, last_run: dict, now: float) -> bool:
 
 
 def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
-             session=None) -> int:
+             session=None, secrets_for=None) -> int:
     """Fetch every job that is due. Returns how many ran. Never raises.
 
     One failing provider must not stop the others: a stocks API being down is
@@ -47,7 +47,12 @@ def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
         last_run[job.key] = now
         ran += 1
         try:
-            payload = provider.fetch(job.params, session=session)
+            # Scoped per provider: a weather key must not be reachable from
+            # the quotes adapter. The narrow port makes that enforceable
+            # rather than a convention nobody checks.
+            creds = secrets_for(job.provider) if secrets_for else None
+            payload = provider.fetch(job.params, session=session,
+                                     secrets=creds)
         except Exception as exc:                        # noqa: BLE001
             log.warning("job %s failed: %s", job.key, exc)
             jobstore.record_failure(cache_dir, job.key, str(exc))
@@ -64,7 +69,8 @@ def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
 
 
 def run_forever(cfg_loader, records_loader, cache_dir, *, session=None,
-                sleep=time.sleep, clock=time.time, cycles: int | None = None):
+                sleep=time.sleep, clock=time.time, cycles: int | None = None,
+                secrets_for=None):
     """Re-derive the plan, fetch what is due, prune what nobody wants."""
     last_run: dict = {}
     last_reload = 0.0
@@ -81,7 +87,8 @@ def run_forever(cfg_loader, records_loader, cache_dir, *, session=None,
             for key in list(last_run):
                 if key not in plan:
                     last_run.pop(key, None)
-        run_once(cache_dir, plan, last_run, now=now, session=session)
+        run_once(cache_dir, plan, last_run, now=now, session=session,
+                 secrets_for=secrets_for)
         done += 1
         if cycles is None or done < cycles:
             sleep(_nap(plan, last_run, clock()))

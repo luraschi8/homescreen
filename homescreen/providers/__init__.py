@@ -32,8 +32,8 @@ MAX_INTERVAL_S = 6 * 3600
 
 
 def _modules() -> dict:
-    from homescreen.providers import adsb
-    return {adsb.NAME: adsb}
+    from homescreen.providers import adsb, openweather
+    return {m.NAME: m for m in (adsb, openweather)}
 
 
 def names() -> tuple[str, ...]:

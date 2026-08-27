@@ -19,6 +19,8 @@ from __future__ import annotations
 import dataclasses
 import logging
 import sys
+
+from homescreen import reading as _reading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -38,6 +40,16 @@ class SceneContext:
     #: different tickers, or a clock in different cities, and neither is a
     #: property of the component.
     options: dict = dataclasses.field(default_factory=dict)
+    #: Read what was fetched for one of this component's requirements.
+    #:
+    #: A PORT, injected by whoever builds the scene. A component asks with the
+    #: same requirement it declared in `needs()` and receives a `Reading` --
+    #: never None, because "nothing was fetched" is a Reading with no data and
+    #: every component has to handle that case anyway. It never learns where
+    #: data is cached, how it got there, or that a job exists. The default lets
+    #: a preview or a unit test build any scene with no daemon running.
+    data: object = dataclasses.field(
+        default=lambda requirement: _reading.Reading.nothing())
 
 
 #: Layout modes the wire protocol actually carries. `grid` is deferred (spec
@@ -212,8 +224,9 @@ def clean_poll_s(value):
 
 
 def _registry() -> dict:
-    from homescreen.scenes import clock, status, planes
-    return {"clock": clock.build, "status": status.build, "planes": planes.build}
+    from homescreen.scenes import clock, status, planes, weather
+    return {"clock": clock.build, "status": status.build,
+            "planes": planes.build, "weather": weather.build}
 
 
 def names() -> tuple[str, ...]:
