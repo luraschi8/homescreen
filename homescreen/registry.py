@@ -82,6 +82,21 @@ ASSIGNABLE_SCENES = _Assignable()
 NAME_MAX = 64
 HW_RE = re.compile(r"^[A-Za-z0-9_:.-]{1,128}$")
 OFFLINE_AFTER_POLLS = 3
+
+#: Record field: has an operator let this device into the fleet?
+#:
+#: Registration is unauthenticated by design -- anything on the LAN can POST a
+#: hardware id and appear. That is fine for discovery and wrong for trust: the
+#: fleet should be what someone CHOSE, not everything that ever spoke. So a new
+#: record arrives `pending` and is inert until approved.
+#:
+#: Records written before this field existed are treated as approved. A gate
+#: added later must not retroactively evict hardware that was already working;
+#: the alternative is every panel in the house going blank on one deploy.
+APPROVAL_FIELD = "approved"
+
+#: What a device may be, from the fleet's point of view.
+PENDING, APPROVED = "pending", "approved"
 DEFAULT_POLL_SECONDS = 5
 #: ADDENDUM: "An always-connected device can poll every 30s, receive 304 for a
 #: few bytes most of the time, and partial-refresh on the minute." 5s is the
@@ -175,6 +190,20 @@ def _epoch(stamp) -> float | None:
         return None
 
 
+def approval(rec) -> str:
+    """PENDING or APPROVED. Never raises; absent means approved (see above)."""
+    if not isinstance(rec, dict):
+        return PENDING
+    value = rec.get(APPROVAL_FIELD)
+    if value is None:
+        return APPROVED                  # pre-dates the gate: grandfathered
+    return APPROVED if value is True else PENDING
+
+
+def is_approved(rec) -> bool:
+    return approval(rec) == APPROVED
+
+
 def _valid_record(rec) -> bool:
     """A parseable file is not a valid one. Both consumers index these fields
     unguarded, and a wrong-typed value 500s the serve path."""
@@ -191,6 +220,8 @@ def _valid_record(rec) -> bool:
     if not isinstance(rec.get("telemetry", {}), dict):
         return False
     if not isinstance(rec.get("options", {}), dict):
+        return False
+    if not isinstance(rec.get(APPROVAL_FIELD, True), bool):
         return False
     poll = rec.get("poll_seconds", DEFAULT_POLL_SECONDS)
     if poll is None:
@@ -590,6 +621,10 @@ def _touch_locked(cache_dir, hw_id, fw, caps, telemetry, now) -> dict:
                         evictable[0])
             del data[evictable[0]]
         rec = {"name": None, "scene": "unassigned", "first_seen": stamp,
+               # A device that has never been let in. It still registers, so it
+               # appears in the pending tray and an operator can see what is
+               # asking -- but it is served nothing until someone says yes.
+               APPROVAL_FIELD: False,
                # None, not DEFAULT_POLL_SECONDS. Storing the default at
                # registration masked `default_poll_seconds` entirely: every
                # device carried an explicit 5, so a 1-bit panel was still told
@@ -720,6 +755,34 @@ def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds,
     data[hw_id] = rec
     _save_unlocked(cache_dir, data)
     return rec
+
+
+def set_approval(cache_dir: Path, hw_id: str, approved: bool) -> dict | None:
+    """Let a device into the fleet, or put it back outside. None if unknown.
+
+    Revoking does not delete: the record keeps its name, assignment and history
+    so letting it back in is one click rather than a re-setup. Deleting is
+    `forget`, and is a different decision.
+    """
+    hw_id = _check_hw(hw_id)
+    with _locked(cache_dir):
+        data = load_raw(cache_dir)
+        rec = data.get(hw_id)
+        if not isinstance(rec, dict):
+            return None
+        if rec.get(APPROVAL_FIELD) is bool(approved):
+            return rec                   # unchanged: no write, no fsync
+        rec[APPROVAL_FIELD] = bool(approved)
+        data[hw_id] = rec
+        _save_unlocked(cache_dir, data)
+        return rec
+
+
+def pending(cache_dir: Path) -> dict:
+    """Records waiting to be let in, oldest request first."""
+    return {k: v for k, v in sorted(load(cache_dir).items(),
+                                    key=lambda kv: kv[1].get("first_seen") or "")
+            if not is_approved(v)}
 
 
 def forget(cache_dir: Path, hw_id: str) -> bool:

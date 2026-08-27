@@ -147,11 +147,15 @@ def test_delete_forgets_a_retired_board(ctx):
 
 # --- the device-facing call -------------------------------------------------
 
-def test_first_contact_registers_and_says_it_is_unassigned(ctx):
+def test_first_contact_registers_and_says_it_is_waiting_to_be_let_in(ctx):
+    # Was: first contact reports "unassigned". Registration is unauthenticated,
+    # so anything on the LAN can appear; the fleet is what someone CHOSE, not
+    # everything that ever spoke. A device now arrives pending, and says so on
+    # its own glass rather than sitting on a scene nobody granted it.
     client, cache, _ = ctx
     body = client.get(f"/api/device/{HW}/scene?fw=0.2.0&rssi=-64&uptime=99").get_json()
     assert body["assigned"] is False
-    assert body["scene"] == "unassigned"
+    assert body["scene"] == "pending"
     assert body["hw"] == HW, "a newly flashed board can tell you its id"
     assert "message" in body
     rec = registry.load(cache)[HW]
@@ -162,6 +166,7 @@ def test_first_contact_registers_and_says_it_is_unassigned(ctx):
 def test_an_assigned_device_gets_its_scene(ctx):
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene")
+    registry.set_approval(cache, HW, True)
     registry.assign(cache, HW, name="radar", scene="planes")
     body = client.get(f"/api/device/{HW}/scene").get_json()
     assert (body["assigned"], body["scene"], body["name"]) == (True, "planes", "radar")
@@ -361,6 +366,7 @@ def test_a_dropped_component_shows_up_where_an_operator_looks(ctx):
     # by hand to learn the server had dropped something.
     client, cache, _ = ctx
     client.get("/api/device/rd/scene?w=240&h=240&components=text")
+    registry.set_approval(cache, "rd", True)
     client.patch("/api/devices/rd", json={"name": "rd", "scene": "planes"})
     client.get("/api/device/rd/scene?w=240&h=240&components=text")
     entry, = [d for d in client.get("/api/devices").get_json()["devices"]
@@ -372,10 +378,12 @@ def test_a_scene_that_raises_is_recorded_against_the_device(ctx, monkeypatch):
     client, cache, _ = ctx
     from homescreen.scenes import clock as clock_mod
     client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "clock"})
     monkeypatch.setattr(clock_mod, "build",
                         lambda c: (_ for _ in ()).throw(RuntimeError("boom")))
     client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    registry.set_approval(cache, HW, True)
     entry, = [d for d in client.get("/api/devices").get_json()["devices"]
               if d["hw"] == HW]
     assert "fallo en clock" in entry["scene_error"]
@@ -408,6 +416,7 @@ def test_every_route_agrees_on_the_window_silence_is_judged_against(ctx):
     # device actually obeys never exceeds it.
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "salon", "scene": "clock"})
 
     scene = client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
@@ -427,6 +436,7 @@ def test_every_route_agrees_on_the_window_silence_is_judged_against(ctx):
 def test_an_operator_cadence_reaches_every_route_too(ctx):
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
+    registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}",
                  json={"name": "salon2", "scene": "clock", "poll_seconds": 90})
     assert client.get("/api/display/salon2/data").headers["X-Poll-Seconds"] == "90"
@@ -470,6 +480,7 @@ def test_the_hidden_age_drift_is_bounded_by_one_bucket(ctx):
                                 "cs": "IBE1"}])
     q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
     client.get(q)
+    registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
     etag = client.get(q).headers["ETag"]
     clock.t += AGE_BUCKET_S * 2 + 0.1
@@ -486,6 +497,7 @@ def test_a_changed_sky_still_changes_the_etag_within_a_bucket(ctx):
                                 "cs": "IBE1"}])
     q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
     client.get(q)
+    registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
     etag = client.get(q).headers["ETag"]
     _seed_sky(cache, clock.t, [{"lat": 41.9, "lon": -3.6, "age": 1.0,
@@ -499,6 +511,7 @@ def test_a_new_aircraft_changes_the_etag(ctx):
                                 "cs": "IBE1"}])
     q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
     client.get(q)
+    registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
     etag = client.get(q).headers["ETag"]
     _seed_sky(cache, clock.t, [{"lat": 40.5, "lon": -3.6, "age": 1.0,
@@ -517,6 +530,7 @@ def test_a_feed_going_down_changes_the_etag(ctx):
                                 "cs": "IBE1"}])
     q = f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar"
     client.get(q)
+    registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
     etag = client.get(q).headers["ETag"]
     p = cache / "feed" / "adsb.json"
@@ -541,6 +555,7 @@ def test_an_unassigned_device_is_served_the_unassigned_scene_again(ctx):
     # Round trip: the device must actually see the change, not just the record.
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "planes"})
     client.patch(f"/api/devices/{HW}", json={"scene": "unassigned"})
     body = client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16"
@@ -584,6 +599,7 @@ def test_applying_a_scene_from_the_dashboard_changes_what_the_device_is_served(c
     # The whole point: the operator picks, and the device follows.
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    registry.set_approval(cache, HW, True)
     r = client.post("/home/device",
                     data={"hw": HW, "name": "salon", "scene": "planes"})
     assert r.status_code in (302, 303), "a form POST must redirect, not render"

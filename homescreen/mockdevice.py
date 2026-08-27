@@ -52,6 +52,21 @@ class MockDevice:
                  "uptime": str(int(time.time() - self.started)), "rssi": "-58"}
         return f"{self.server}{path}?{urllib.parse.urlencode(query)}"
 
+    def _post(self, path: str, payload: dict):
+        """Operator-side call. No capability query string -- this is not the
+        device speaking."""
+        req = urllib.request.Request(
+            f"{self.server}{path}", method="POST",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status, dict(resp.headers), resp.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, dict(exc.headers), exc.read()
+        except OSError as exc:
+            raise SystemExit(f"cannot reach {self.server}: {exc}")
+
     def _get(self, path: str, *, conditional: bool = False):
         req = urllib.request.Request(self._url(path))
         if conditional and self.etag:
@@ -67,6 +82,19 @@ class MockDevice:
         except OSError as exc:
             self.errors += 1
             raise SystemExit(f"cannot reach {self.server}: {exc}")
+
+    def approve(self) -> None:
+        """Admit this device, the way a human would from the dashboard.
+
+        A real device cannot do this -- that is the point of the gate. This is
+        the mock wearing the operator's hat so one command exercises the whole
+        contract.
+        """
+        status, _, body = self._post(f"/api/devices/{self.hw}/approval",
+                                     {"approved": True})
+        if status != 200:
+            raise SystemExit(f"approve -> HTTP {status}: "
+                             f"{body[:200].decode(errors='replace')}")
 
     def scene(self) -> dict:
         status, headers, body = self._get(f"/api/device/{self.hw}/scene")
@@ -109,10 +137,19 @@ def main(argv=None) -> int:
     ap.add_argument("--once", action="store_true", help="one cycle, then exit")
     ap.add_argument("--out", help="write the decoded frame here (pixel push)")
     ap.add_argument("--cycles", type=int, default=0, help="0 = forever")
+    ap.add_argument("--approve", action="store_true",
+                    help="also act as the operator and admit this device, so a "
+                         "run exercises assignment and scene delivery rather "
+                         "than stopping at the pending screen")
     args = ap.parse_args(argv)
 
     dev = MockDevice(args.server, args.hw, args.kind, args.fw)
     print(f"device {args.hw} ({args.kind}) -> {dev.server}")
+    if args.approve:
+        # Registration has to happen first: approval names a record, and this
+        # tool is the only thing that has created one.
+        dev.scene()
+        dev.approve()
     cycles = 1 if args.once else args.cycles
 
     n = 0

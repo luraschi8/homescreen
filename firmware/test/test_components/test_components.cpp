@@ -416,8 +416,25 @@ void test_small_type_stays_on_the_antialiased_face(void) {
                            "small type must stay on the smooth face");
 }
 
+
+void test_a_device_nobody_let_in_says_so_on_its_own_glass(void) {
+  // The gate has to be visible where someone is standing. Without this a panel
+  // plugged in by a guest shows the unassigned screen -- which invites them to
+  // pick a scene the server will never serve them -- or worse, whatever it was
+  // assigned before it was revoked.
+  poll(kWirePending);
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.textContains("esperando"),
+                           "the server's own words must reach the glass");
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.textContains("4827") ||
+                           g_gfx.textContains("aabb"),
+                           "and its id, so a human knows WHICH panel to admit");
+}
+
 int main(void) {
   UNITY_BEGIN();
+  RUN_TEST(test_a_device_nobody_let_in_says_so_on_its_own_glass);
   RUN_TEST(test_a_component_with_an_instruction_list_is_drawn_without_knowing_it);
   RUN_TEST(test_the_firmware_declares_it_can_draw_instruction_lists);
   RUN_TEST(test_instructions_land_where_the_resolver_says);

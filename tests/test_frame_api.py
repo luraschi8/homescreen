@@ -59,9 +59,11 @@ def real_chromium():
         pytest.skip("no chromium/chrome on this machine")
 
 
-def test_an_unassigned_device_gets_a_real_frame_not_an_error(client, needs_chromium):
+def test_an_unassigned_device_gets_a_real_frame_not_an_error(client, needs_chromium, tmp_path):
     # Spec §6.1: a newly flashed board must be able to tell you its id, not
     # sit blank or 404.
+    client.get(f"/api/device/{HW}/frame{EPAPER_Q}")     # first contact registers it
+    registry.set_approval(tmp_path, HW, True)
     r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
     assert r.status_code == 200
     assert r.headers["X-Scene"] == "unassigned"
@@ -79,6 +81,7 @@ def test_the_frame_is_exactly_the_declared_geometry(client, needs_chromium, tmp_
 
 def test_an_assigned_scene_is_the_one_rendered(client, needs_chromium, tmp_path):
     client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    registry.set_approval(tmp_path, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "desk", "scene": "clock"})
     r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
     assert r.headers["X-Scene"] == "clock"
@@ -127,11 +130,12 @@ def test_an_unreadable_dimension_is_refused_not_silently_replaced(client,
 
 
 def test_an_operator_scene_change_is_not_throttled(client, needs_chromium,
-                                                   cold_frame_cache):
+                                                   cold_frame_cache, tmp_path):
     # The cold-render throttle protects the render queue from strangers, not
     # from the operator. A scene change must reach the glass on the next poll,
     # not half a poll interval later -- which on an e-paper is 15 seconds.
     client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    registry.set_approval(tmp_path, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "clock"})
     r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
     assert r.status_code == 200 and r.headers["X-Scene"] == "clock"
@@ -190,20 +194,23 @@ def test_the_frame_decodes_back_to_a_readable_image(client, real_chromium,
     assert hist[0] > 0, "and there is actual ink on it"
 
 
-def test_a_data_push_only_scene_returns_409_not_a_blank_frame(client, monkeypatch):
+def test_a_data_push_only_scene_returns_409_not_a_blank_frame(client, monkeypatch, tmp_path):
     from homescreen import scenes
     real = scenes._registry()
     monkeypatch.setattr("homescreen.scenes._registry",
                         lambda: {**real,
                                  "clock": lambda c: scenes.Scene(components=({"c": "x"},))})
     client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
+    registry.set_approval(tmp_path, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "d", "scene": "clock"})
     r = client.get(f"/api/device/{HW}/frame{EPAPER_Q}")
     assert r.status_code == 409
 
 
-def test_the_scene_endpoint_carries_components_for_data_push(client):
+def test_the_scene_endpoint_carries_components_for_data_push(client, tmp_path):
     client.get("/api/device/ccdd44556677/scene?w=240&h=240&components=radar")
+    registry.set_approval(tmp_path, HW, True)
+    registry.set_approval(tmp_path, "ccdd44556677", True)
     client.patch("/api/devices/ccdd44556677", json={"name": "r", "scene": "planes"})
     body = client.get("/api/device/ccdd44556677/scene?w=240&h=240").get_json()
     assert body["layout"] == "fill"
@@ -241,18 +248,20 @@ def test_a_device_is_told_a_default_cadence_before_it_is_assigned(client):
     assert r.headers["X-Poll-Seconds"] == "5"
 
 
-def test_components_the_device_did_not_declare_are_dropped_and_reported(client):
+def test_components_the_device_did_not_declare_are_dropped_and_reported(client, tmp_path):
     # ADDENDUM §5.5: the device never receives something it cannot draw, and
     # the substitution is reported rather than silent.
     client.get("/api/device/RR/scene?w=240&h=240&components=text")
+    registry.set_approval(tmp_path, "RR", True)
     client.patch("/api/devices/RR", json={"name": "r", "scene": "planes"})
     body = client.get("/api/device/RR/scene?w=240&h=240&components=text").get_json()
     assert body["components"] == []
     assert body["unsupported"] == ["radar"]
 
 
-def test_a_device_that_declares_the_component_still_gets_it(client):
+def test_a_device_that_declares_the_component_still_gets_it(client, tmp_path):
     client.get("/api/device/RR2/scene?w=240&h=240&components=radar,text")
+    registry.set_approval(tmp_path, "RR2", True)
     client.patch("/api/devices/RR2", json={"name": "r2", "scene": "planes"})
     body = client.get("/api/device/RR2/scene?w=240&h=240&components=radar").get_json()
     assert [c["c"] for c in body["components"]] == ["radar"]

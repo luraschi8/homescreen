@@ -430,6 +430,7 @@ def test_every_in_memory_map_stays_bounded_under_a_flood(client, monkeypatch):
     for i in range(registry.MAX_DEVICES * 2 + 20):
         hw = f"sub{i}"
         client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.post(f"/api/devices/{hw}/approval", json={"approved": True})
         client.patch(f"/api/devices/{hw}", json={"scene": "planes"})
         client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
 
@@ -468,6 +469,7 @@ def test_a_note_about_a_device_that_no_longer_exists_is_dropped(client,
     for i in range(registry.MAX_DEVICES):
         hw = f"note{i}"
         client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.post(f"/api/devices/{hw}/approval", json={"approved": True})
         client.patch(f"/api/devices/{hw}", json={"scene": "planes"})
         client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
     assert client.get("/api/status").get_json()["memory"]["serve_notes"] \
@@ -478,6 +480,7 @@ def test_a_note_about_a_device_that_no_longer_exists_is_dropped(client,
     for i in range(3):                                       # any later serve
         hw = f"fresh{i}"
         client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
+        client.post(f"/api/devices/{hw}/approval", json={"approved": True})
         client.patch(f"/api/devices/{hw}", json={"scene": "planes"})
         client.get(f"/api/device/{hw}/scene?w=240&h=240&depth=16&components=text")
     assert client.get("/api/status").get_json()["memory"]["serve_notes"] <= 4

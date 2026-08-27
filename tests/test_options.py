@@ -25,6 +25,7 @@ Q = "w=240&h=240&depth=16&components=clock"
 def ctx(tmp_path):
     client = create_app(CFG, tmp_path, version="t").test_client()
     client.get(f"/api/device/{HW}/scene?{Q}")
+    registry.set_approval(tmp_path, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "desk", "scene": "clock"})
     return client, tmp_path
 

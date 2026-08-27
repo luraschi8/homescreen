@@ -54,6 +54,11 @@ def build(out_path: pathlib.Path) -> None:
     client = app.test_client()
     _write_feed(cache_dir, NOW)
 
+    # First contact: registered, but nobody has let it into the fleet yet.
+    pending = client.get(f"/api/device/{HW}/scene?{QUERY}")
+    client.post(f"/api/devices/{HW}/approval", json={"approved": True})
+    # Admitted, but not yet given a job. A different screen and a different
+    # message, and the firmware has to tell them apart -- so both are pinned.
     unassigned = client.get(f"/api/device/{HW}/scene?{QUERY}")
     client.patch(f"/api/devices/{HW}", json={"name": "radar", "scene": "planes"})
     assigned = client.get(f"/api/device/{HW}/scene?{QUERY}")
@@ -86,6 +91,7 @@ def build(out_path: pathlib.Path) -> None:
         "",
         f"inline constexpr char kWireAssigned[] = R\"JSON({body(assigned)})JSON\";",
         f"inline constexpr char kWireUnassigned[] = R\"JSON({body(unassigned)})JSON\";",
+        f"inline constexpr char kWirePending[] = R\"JSON({body(pending)})JSON\";",
         f"inline constexpr char kWireDropped[] = R\"JSON({body(dropped)})JSON\";",
         "",
         "// ok:false, data fresh -- a single upstream timeout. Must NOT blank.",

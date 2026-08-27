@@ -726,6 +726,27 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         who = rec.get("name") or hw
         return redirect(url_for("home", m=f"{who} now shows {shown}"))
 
+    @app.post("/api/devices/<hw>/approval")
+    def device_approval(hw: str):
+        """Let a device into the fleet, or put it back outside.
+
+        Separate from PATCH: naming and assigning are edits to a device that is
+        already a member, while this decides membership. Folding it into the
+        same route would mean an operator changing a name could grant admission
+        by accident.
+        """
+        body = request.get_json(silent=True) or {}
+        wanted = body.get("approved", True)
+        if not isinstance(wanted, bool):
+            return jsonify({"error": "approved must be true or false"}), 400
+        try:
+            rec = registry.set_approval(cache_dir, hw, wanted)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if rec is None:
+            return jsonify({"error": f"unknown device: {hw}"}), 404
+        return jsonify({"hw": hw, "approved": registry.is_approved(rec)})
+
     @app.delete("/api/devices/<hw>")
     def delete_device(hw: str):
         try:
@@ -814,7 +835,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         from THIS request, so a scene is never laid out for a geometry a
         stranger wrote into the record.
         """
-        name = rec.get("scene") or "unassigned"
+        # A device nobody has let in gets a scene of its own rather than
+        # whatever it was last assigned: the gate has to be visible ON THE
+        # GLASS, or someone plugs a panel in, sees a clock, and never learns
+        # the fleet does not consider it a member.
+        name = ("pending" if not registry.is_approved(rec)
+                else rec.get("scene") or "unassigned")
         ctx = scenes.SceneContext(
             cfg=_live(), cache_dir=cache_dir,
             # Sanitised once here: a hand-edited devices.json could otherwise
@@ -834,7 +860,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                     # at exactly the busiest time of day.
                     "max_items": registry.clean_caps(
                         rec.get("caps") or {}).get("max_items")})
-        if name in ("unassigned", "error"):
+        if name in ("unassigned", "error", "pending"):
             return name, scenes.without_cadence(scenes.safe_build("status", ctx))
         return name, scenes.safe_build(name, ctx)
 
@@ -845,7 +871,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return err
         name, scene = _scene_for(hw, rec)
         scene_error = scene.error
-        assigned = name not in ("unassigned", "error")
+        assigned = name not in ("unassigned", "error", "pending")
         # ADDENDUM §5.5: a device never receives a component it did not
         # declare, so it needs no error path for one. The substitution is
         # reported rather than silent.
@@ -863,7 +889,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             body["unsupported"] = sorted(set(dropped))
         _note(hw, **({"unsupported": sorted(set(dropped))} if dropped else {}),
               **({"scene_error": scene_error} if scene_error else {}))
-        if not assigned:
+        if name == "pending":
+            body["message"] = "esperando aprobación · apruébalo en el panel"
+        elif not assigned:
             body["message"] = "sin asignar · elige una escena en el panel"
         # Spec §6.3/§7.1: a device holds its last good scene, and sends
         # If-None-Match here. /frame carried an ETag and this did not, so the

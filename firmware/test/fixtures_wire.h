@@ -7,6 +7,7 @@
 
 inline constexpr char kWireAssigned[] = R"JSON({"assigned":true,"components":[{"c":"radar","feed_age_s":0.0,"feed_ok":true,"items":[{"age":3.1,"alt":"3675 ft","cs":"IBE3221","dst":7.4,"gs":400.0,"lat":40.49556,"lon":-3.67836,"nose":90.0,"trk":91.0,"ty":"A320","ve":0.13,"vn":-0.17},{"age":0.4,"alt":"12000 ft","cs":"RYR44BQ","dst":12.9,"gs":250.0,"lat":40.41556,"lon":-3.73836,"nose":270.0,"trk":271.0,"ty":"B738","ve":-0.09,"vn":0.02}],"radius_km":60.0}],"hw":"aabb00112233","layout":"fill","name":"radar","scene":"planes"})JSON";
 inline constexpr char kWireUnassigned[] = R"JSON({"assigned":false,"components":[],"hw":"aabb00112233","layout":"fill","message":"sin asignar · elige una escena en el panel","name":null,"scene":"unassigned"})JSON";
+inline constexpr char kWirePending[] = R"JSON({"assigned":false,"components":[],"hw":"aabb00112233","layout":"fill","message":"esperando aprobación · apruébalo en el panel","name":null,"scene":"pending"})JSON";
 inline constexpr char kWireDropped[] = R"JSON({"assigned":true,"components":[],"hw":"aabb00112233","layout":"fill","name":"radar","scene":"planes","unsupported":["radar"]})JSON";
 
 // ok:false, data fresh -- a single upstream timeout. Must NOT blank.

@@ -178,7 +178,15 @@ def wired(tmp_path, monkeypatch):
             else req.full_url.split("://", 1)[-1].split("/", 1)[-1]
         if not path.startswith("/"):
             path = "/" + path
-        r = client.get(path, headers=dict(req.header_items()))
+        # The method matters: this fake answered every call with GET, so the
+        # first POST the tool learned to make came back 405 from a route that
+        # exists and accepts it.
+        method = (req.get_method() or "GET").upper()
+        headers = dict(req.header_items())
+        if method == "GET":
+            r = client.get(path, headers=headers)
+        else:
+            r = client.open(path, method=method, data=req.data, headers=headers)
         if r.status_code >= 300:
             import urllib.error
             raise urllib.error.HTTPError(req.full_url, r.status_code, "",
@@ -208,7 +216,7 @@ def test_main_runs_a_full_epaper_cycle(wired, capsys, tmp_path):
         pytest.skip("no chromium/chrome on this machine")
     out = tmp_path / "frame.png"
     rc = mockdevice.main(["--server", "http://127.0.0.1:8080", "--hw", "e1",
-                          "--kind", "epaper", "--once", "--out", str(out)])
+                          "--kind", "epaper", "--once", "--approve", "--out", str(out)])
     printed = capsys.readouterr().out
     assert rc == 0
     assert "scene=unassigned assigned=False" in printed
@@ -225,7 +233,7 @@ def test_main_reports_components_for_a_round_device(wired, capsys):
     client, _ = wired
     client.get("/api/device/r1/scene?w=240&h=240&depth=16&components=radar")
     client.patch("/api/devices/r1", json={"name": "r1", "scene": "planes"})
-    rc = mockdevice.main(["--hw", "r1", "--kind", "round", "--once"])
+    rc = mockdevice.main(["--hw", "r1", "--kind", "round", "--once", "--approve"])
     printed = capsys.readouterr().out
     assert rc == 0 and "component radar" in printed
 
@@ -234,7 +242,7 @@ def test_main_says_so_when_a_scene_is_pixel_push_only(wired, capsys):
     client, _ = wired
     client.get("/api/device/r2/scene?w=240&h=240&depth=16&components=radar")
     client.patch("/api/devices/r2", json={"name": "r2", "scene": "clock"})
-    mockdevice.main(["--hw", "r2", "--kind", "round", "--once"])
+    mockdevice.main(["--hw", "r2", "--kind", "round", "--once", "--approve"])
     assert "no components" in capsys.readouterr().out
 
 
@@ -259,7 +267,7 @@ def test_main_reports_an_http_error_without_pretending_it_is_a_frame(
         raise render.RenderError("chromium exploded")
 
     monkeypatch.setattr("homescreen.serve.render_frame", boom)
-    mockdevice.main(["--hw", "e4", "--kind", "epaper", "--once"])
+    mockdevice.main(["--hw", "e4", "--kind", "epaper", "--once", "--approve"])
     printed = capsys.readouterr().out
     assert "frame -> HTTP 503" in printed
     assert "render failed" in printed
