@@ -9,7 +9,7 @@ for the defaults underneath them.
 
 from __future__ import annotations
 
-from .layout import dash, e, page
+from .layout import dash, e, page, when
 
 
 def _health(dev: dict) -> tuple[str, str]:
@@ -17,7 +17,7 @@ def _health(dev: dict) -> tuple[str, str]:
     feed = dev.get("feed") or {}
     detail = (f'<dt>aviones</dt><dd>{e(feed.get("aircraft"))}</dd>'
               f'<dt>antigüedad</dt><dd>{e(feed.get("age_s"))}s</dd>'
-              f'<dt>última consulta</dt><dd>{dash(feed.get("fetched_at"))}</dd>')
+              f'<dt>última consulta</dt><dd>{when(feed.get("fetched_at"))}</dd>')
     if feed.get("fetched_at") is None:
         return '<span class="pill bad">nunca consultado</span>', ""
     if feed.get("ok"):

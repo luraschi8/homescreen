@@ -376,3 +376,10 @@ def test_a_scene_the_server_no_longer_knows_is_flagged_not_silently_replaced():
     # stays a rename.
     assert '<option value="" selected>' in html
     assert '<option value="clock" selected>' not in html
+
+
+def test_every_page_reads_a_timestamp_the_same_way():
+    # The settings page kept raw ISO with microseconds while the others had
+    # been switched to ages -- the same fact rendered two ways in one product.
+    html = web.render_settings({}, devices=[_source()])
+    assert "2026-08-26T10:00:00" not in html
