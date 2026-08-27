@@ -21,6 +21,8 @@ so "dull" is a feature: every clever thing here is a thing to get wrong twice.
 
 from __future__ import annotations
 
+import math
+
 #: Vertical position of each slot, as a fraction of panel height.
 #:
 #: Fractions, not pixels, because the same component has to land sensibly on a
@@ -48,16 +50,30 @@ TONES = ("normal", "dim", "good", "bad")
 MIN_TEXT_PX = 10
 
 
+def _round_half_up(value: float) -> int:
+    """Round halves AWAY FROM ZERO, which is what C's roundf() does.
+
+    Python's built-in round() is banker's rounding -- it breaks ties to even --
+    so `round(120.5)` is 120 while `roundf(120.5f)` is 121. A 241px panel puts
+    the centre slot exactly on that tie, and the two resolvers disagreed by one
+    pixel. Caught by the parity fixture on its first run, which is the entire
+    reason that fixture exists.
+
+    Every fraction and extent here is positive, so this is exact.
+    """
+    return int(math.floor(value + 0.5))
+
+
 def size_px(token: str, w: int, h: int) -> int:
     """Resolve a size token to pixels for this panel."""
     frac = SIZES.get(str(token), SIZES["md"])
-    return max(MIN_TEXT_PX, int(round(frac * min(int(w), int(h)))))
+    return max(MIN_TEXT_PX, _round_half_up(frac * min(int(w), int(h))))
 
 
 def slot_y(slot: str, h: int) -> int:
     """Resolve a slot to a baseline-centre y for this panel."""
     frac = SLOTS.get(str(slot), SLOTS["center"])
-    return int(round(frac * int(h)))
+    return _round_half_up(frac * int(h))
 
 
 def resolve(draw: list, w: int, h: int) -> list:

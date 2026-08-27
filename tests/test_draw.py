@@ -118,3 +118,26 @@ def test_tones_are_visually_distinct():
     good = draw.to_svg([draw.text("center", "up", tone="good")], 240, 240)
     bad = draw.to_svg([draw.text("center", "down", tone="bad")], 240, 240)
     assert good != bad, "good and bad must not render identically"
+
+
+# --- the two resolvers must round identically -------------------------------
+
+def test_ties_round_away_from_zero_like_c_does():
+    # Python's round() is banker's rounding and C's roundf() is not, so a 241px
+    # panel put the centre slot exactly on a tie and the two resolvers disagreed
+    # by a pixel. The parity fixture caught it on its first run; this pins the
+    # rule so nobody "simplifies" it back to round().
+    assert draw.slot_y("center", 241) == 121, "0.50 * 241 = 120.5 -> 121"
+    assert round(0.50 * 241) == 120, "...which built-in round() would give"
+
+
+@pytest.mark.parametrize("h", range(200, 260))
+def test_no_panel_height_makes_the_two_resolvers_disagree(h):
+    # Every fraction times every plausible height, checked against the same
+    # arithmetic the C++ does: floor(x + 0.5) on positives.
+    import math
+    for slot, frac in draw.SLOTS.items():
+        assert draw.slot_y(slot, h) == math.floor(frac * h + 0.5)
+    for size, frac in draw.SIZES.items():
+        assert draw.size_px(size, h, h) == max(
+            draw.MIN_TEXT_PX, math.floor(frac * h + 0.5))
