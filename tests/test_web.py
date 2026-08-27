@@ -13,6 +13,7 @@ about a source and lives with the source. What each test protects is unchanged.
 import pytest
 
 from homescreen import web
+import homescreen.web.layout  # noqa: F401  (when() is asserted directly)
 
 
 # --- duration(): every boundary, since a fleet view is mostly ages ----------
@@ -81,8 +82,16 @@ def _device_page(screen, **kw):
 # --- the source's real numbers reach a human --------------------------------
 
 def test_the_aircraft_count_is_the_real_one():
+    # The old test warned in its own comment that a bare substring check
+    # "held with zero aircraft". I replaced it with `assert "17" in html`,
+    # which the palette satisfies on its own -- `--panel:#17191d`. Assert the
+    # rendered FIELD, and that a different feed renders differently.
     html = web.render_settings(_status()["feed"], devices=[_source()])
-    assert "17" in html
+    assert "<dd>17</dd>" in html
+    other = web.render_settings(_status()["feed"], devices=[
+        _source(feed={"ok": True, "age_s": 2.4, "aircraft": 42,
+                      "fetched_at": "x", "error": None})])
+    assert "<dd>42</dd>" in other and "<dd>17</dd>" not in other
 
 
 def test_a_healthy_feed_and_a_stale_one_render_differently():
@@ -94,6 +103,24 @@ def test_a_healthy_feed_and_a_stale_one_render_differently():
     assert "caducado" in stale and "timeout" in stale
 
 
+def test_a_failure_with_no_reason_does_not_render_a_dangling_dash():
+    # ok:false with error:null is reachable -- an unparseable `fetched_at`
+    # gets there -- and "caducado — " reads as a truncated message.
+    html = web.render_settings({}, devices=[
+        _source(feed={"ok": False, "age_s": 1, "aircraft": 0,
+                      "fetched_at": "garbage", "error": None})])
+    assert "caducado" in html
+    assert "caducado \u2014 <" not in html and "caducado \u2014 " not in html
+
+
+def test_an_absent_value_renders_as_a_dash_not_as_its_entity():
+    # dash()/when() feed pill(), which escapes, so returning "&mdash;" put the
+    # literal text "&mdash;" on screen. Same bug class as the geometry one.
+    html = web.render_fleet(_status(fleet=[
+        _screen(approved=False, name=None, first_seen=None)]))
+    assert "&amp;mdash;" not in html and "&mdash;" not in html
+
+
 def test_a_feed_that_never_fetched_says_so():
     html = web.render_settings({}, devices=[
         _source(feed={"ok": False, "age_s": None, "aircraft": 0,
@@ -101,14 +128,31 @@ def test_a_feed_that_never_fetched_says_so():
     assert "nunca consultado" in html
 
 
-def test_a_pixel_push_device_is_not_reported_as_a_dead_feed():
-    html = web.render_settings({}, devices=[_source(feed=None)])
+def test_a_pixel_push_device_is_shown_but_not_as_a_dead_feed():
+    # Asserting only the NEGATIVE would pass on a blank page -- and it did:
+    # the renderer skipped these entirely, so a configured screen vanished
+    # from the only page that lists sources.
+    html = web.render_settings({}, devices=[_source(id="kitchen", feed=None)])
+    assert "kitchen" in html, "a screen with no feed of its own is still listed"
+    assert "sin fuente propia" in html
     assert "caducado" not in html and "nunca consultado" not in html
 
 
 def test_the_upstream_feed_block_shows_provider_endpoint_and_cadence():
+    # `"3" in html` was vacuous too -- true with fetch_seconds=None.
     html = web.render_settings(_status()["feed"], devices=[])
-    assert "adsb.fi" in html and "https://x" in html and "3" in html
+    assert "adsb.fi" in html and 'value="https://x"' in html
+    assert 'value="3"' in html
+    blank = web.render_settings({"source": "adsb.fi", "endpoint": None,
+                                 "fetch_seconds": None}, devices=[])
+    assert 'value="3"' not in blank
+
+
+def test_where_a_source_is_served_is_shown_somewhere():
+    # The old fleet page answered "where is the data served" and the page split
+    # dropped it with nowhere to land. It belongs with the source.
+    html = web.render_settings({}, devices=[_source()])
+    assert "/api/display/radar/data" in html
 
 
 def test_the_version_and_uptime_are_rendered():
@@ -271,3 +315,64 @@ def test_the_fleet_page_renders_with_everything_missing():
 
 def test_the_device_page_renders_with_everything_missing():
     assert web.render_device({"hw": "aa"}, options=[], schemas={}, name_max=32)
+
+
+# --- timestamps a person can read -------------------------------------------
+
+def test_a_recent_contact_reads_as_an_age_not_a_timestamp():
+    # The column exists to answer "is this thing alive?". Six digits of
+    # microseconds and a date is noise while the answer is "seconds ago".
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    assert web.layout.when((now - timedelta(seconds=5)).isoformat()) == "hace 5s"
+    assert web.layout.when((now - timedelta(minutes=4)).isoformat()) == "hace 4 min"
+
+
+def test_an_older_contact_falls_back_to_a_clock_then_a_date():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    today = web.layout.when((now - timedelta(hours=2)).isoformat())
+    assert ":" in today and "hace" not in today
+    older = web.layout.when((now - timedelta(days=2)).isoformat())
+    assert "/" in older
+
+
+def test_a_stamp_from_the_future_does_not_render_a_negative_age():
+    # A Pi 4 has no RTC and jumps when NTP lands, so stamps ahead of now are
+    # real. "hace -3s" is worse than useless.
+    from datetime import datetime, timedelta, timezone
+    ahead = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    assert "-" not in web.layout.when(ahead)
+
+
+@pytest.mark.parametrize("bad", [None, "", "not-a-date", 12345, [], {}])
+def test_an_unreadable_stamp_is_shown_rather_than_crashing(bad):
+    # devices.json is hand-editable; this runs on the page an operator opens
+    # to find out what is wrong.
+    assert web.layout.when(bad)
+
+
+def test_destructive_actions_ask_first():
+    # Both of these are one click away from losing a screen's configuration.
+    fleet = web.render_fleet(_status(fleet=[_screen(approved=False, name=None)]))
+    assert "confirm(" in fleet
+    page = _device_page(_screen())
+    assert "confirm(" in page
+
+
+def test_the_navigation_is_in_one_language():
+    html = web.render_fleet(_status())
+    assert ">Flota<" in html and ">Fleet<" not in html
+
+
+def test_a_scene_the_server_no_longer_knows_is_flagged_not_silently_replaced():
+    # With no matching option the browser selects the first one, so pressing
+    # Guardar to rename a screen also reassigned it -- with nothing on the page
+    # saying the stored assignment had gone unrecognised.
+    html = _device_page(_screen(scene="ghostscene"),
+                        options=[("clock", True, ""), ("planes", True, "")])
+    assert "ya no" in html and "ghostscene" in html, "the operator is told"
+    # An empty value means "leave the scene alone" downstream, so a rename
+    # stays a rename.
+    assert '<option value="" selected>' in html
+    assert '<option value="clock" selected>' not in html

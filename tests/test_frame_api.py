@@ -275,10 +275,11 @@ def test_telemetry_does_not_swallow_capability_or_firmware_keys(client, tmp_path
     assert rec["fw"] == "1.2"
 
 
-def test_a_named_registry_device_is_reachable_by_its_friendly_name(client):
+def test_a_named_registry_device_is_reachable_by_its_friendly_name(client, tmp_path):
     # ADDENDUM §4.5. Without the alias the fleet view lists devices you cannot
     # curl -- resolve_name existed and was wired to no route.
     client.get("/api/device/aa99bb88cc77/scene?w=240&h=240")
+    registry.set_approval(tmp_path, "aa99bb88cc77", True)
     client.patch("/api/devices/aa99bb88cc77", json={"name": "kitchen",
                                                     "scene": "planes"})
     assert client.get("/api/display/kitchen/health").status_code == 200

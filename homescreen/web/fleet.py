@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .layout import dash, duration, e, page, pill, scene_label
+from .layout import dash, duration, e, page, pill, scene_label, when
 
 
 def _state(dev: dict) -> str:
@@ -28,13 +28,14 @@ def _pending_card(dev: dict) -> str:
     return f"""<div class="panel"><div class="pad">
   <div class="pills" style="margin-bottom:.6rem">
     <strong style="font-family:var(--mono)">{hw}</strong>
-    {pill(shape)}{pill(comps)}{pill("visto " + dash(dev.get("first_seen")))}
+    {pill(shape)}{pill(comps)}{pill("visto " + when(dev.get("first_seen")))}
   </div>
   <div class="actions">
     <form method="post" action="/device/{hw}/approval">
       <input type="hidden" name="approved" value="1">
       <button type="submit">Añadir a la flota</button></form>
-    <form method="post" action="/device/{hw}/remove">
+    <form method="post" action="/device/{hw}/remove"
+          onsubmit="return confirm('¿Descartar {hw}? Si sigue encendida volverá a aparecer.')">
       <button class="danger" type="submit">Descartar</button></form>
   </div>
 </div></div>"""
@@ -49,7 +50,7 @@ def render_fleet(st: dict, notice: str = "") -> str:
   {_name_cell(d)}
   <td>{e(scene_label(d.get("scene")))}</td>
   <td>{_state(d)}</td>
-  <td class="meta">{dash(d.get("last_seen"))}</td>
+  <td class="meta">{when(d.get("last_seen"))}</td>
   <td class="meta">{e(d.get("poll_seconds"))}s</td>
 </tr>""" for d in members)
 

@@ -234,6 +234,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             if hw is None:
                 return None
             rec = registry.load(cache_dir).get(hw) or {}
+            if not registry.is_approved(rec):
+                # The gate lived in _scene_for and this path never learned it.
+                # Revoking KEEPS the name by design, so a revoked screen went
+                # on being served live feed content under the name it was
+                # given -- the whole data-push contract, ungated.
+                return None
             dev = {"id": device_id, "hw": hw, "feed": "adsb",
                    "render": DATA_RENDER,
                    # The DERIVED cadence, not the raw field. The raw field is
@@ -385,7 +391,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     @app.post("/device/<hw>/approval")
     def device_page_approval(hw: str):
         wanted = request.form.get("approved") == "1"
-        rec = registry.set_approval(cache_dir, hw, wanted)
+        try:
+            rec = registry.set_approval(cache_dir, hw, wanted)
+        except ValueError as exc:
+            # The JSON sibling wraps this; this one did not, so a hardware id
+            # that fails HW_RE was a 500 on a page instead of a message.
+            return redirect(url_for("home", m=str(exc)))
         if rec is None:
             return redirect(url_for("home", m=f"no existe ninguna pantalla {hw}"))
         name = rec.get("name") or hw
@@ -410,6 +421,28 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                                 notice=request.args.get("m", ""),
                                 version=version),
             mimetype="text/html")
+
+    @app.post("/settings")
+    def settings_apply():
+        """Change a feed's endpoint or cadence.
+
+        The fetch daemon re-reads the override file every cycle, so this takes
+        effect without restarting anything -- the same path `max_aircraft`
+        already travels. `source` and `api_key` are deliberately not settable:
+        one selects which fetcher module runs, and the other is a secret this
+        page must never render back.
+        """
+        try:
+            changed = overrides.set_feed(cache_dir, "adsb", request.form)
+        except ValueError as exc:
+            return redirect(url_for("settings_page", m=str(exc)))
+        except OSError as exc:
+            log.error("overrides write failed: %s", exc)
+            return redirect(url_for("settings_page",
+                                    m="no se pudo guardar en disco"))
+        if not changed:
+            return redirect(url_for("settings_page", m="sin cambios"))
+        return redirect(url_for("settings_page", m="fuente actualizada"))
 
     @app.get("/api/config")
     def get_config():
@@ -535,7 +568,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         last = _last_cold.get(hw)
         if last is not None and now - last < interval:
             return False
-        configured = rec.get("scene") not in (None, "", "unassigned")
+        # Approved AND assigned. The exemption's whole justification is "an
+        # operator chose every one of them", and approval is now what records
+        # that choice -- while revoking deliberately keeps the scene, so the
+        # old test exempted exactly the devices an operator had just ejected.
+        configured = (registry.is_approved(rec)
+                      and rec.get("scene") not in (None, "", "unassigned"))
         if not configured and not _peer_allows_cold(peer):
             return False
         _last_cold[hw] = now
@@ -623,7 +661,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                  "online": registry.is_online(rec, now),
                  "last_seen": rec.get("last_seen"),
                  "first_seen": rec.get("first_seen"),
-                 "caps": rec.get("caps", {}) or {},
+                 # Sanitised, like every other read of this field on the serve
+                 # path. Raw, a hand-edited `components: 5` made the RENDERER
+                 # iterate an int -- taking down the fleet page, which is the
+                 # page you would open to remove the bad record.
+                 "caps": registry.clean_caps(rec.get("caps") or {}),
                  "options": rec.get("options", {}) or {},
                  "option_schema": list(scenes.option_schema(
                      rec.get("scene") or "")),
@@ -742,7 +784,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         place that decides what a valid name, scene or option is -- and it is
         the same `registry.assign` the JSON PATCH calls.
         """
-        name = (form.get("name") or "").strip()
+        # `None` (field absent) and `""` (field present and cleared) mean
+        # different things: leave the name alone, versus remove it.
+        raw_name = form.get("name")
+        name = raw_name.strip() if raw_name is not None else None
         scene = (form.get("scene") or "").strip()
         known = registry.load(cache_dir)
         if hw not in known:
@@ -757,7 +802,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         options = (scenes.clean_options(target, raw_options)
                    if raw_options else None)
         try:
-            rec = registry.assign(cache_dir, hw, name=name or None,
+            rec = registry.assign(cache_dir, hw, name=name,
                                   scene=scene or None, options=options)
         except ValueError as exc:
             return str(exc)
@@ -790,7 +835,13 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         by accident.
         """
         body = request.get_json(silent=True) or {}
-        wanted = body.get("approved", True)
+        # No default. This defaulted a MISSING field to the privileged value,
+        # so anything on the LAN admitted itself with one bodyless POST and the
+        # pending state was decorative. Membership must be stated, not assumed
+        # -- and the direction that is assumed must never be the granting one.
+        if "approved" not in body:
+            return jsonify({"error": "approved must be true or false"}), 400
+        wanted = body["approved"]
         if not isinstance(wanted, bool):
             return jsonify({"error": "approved must be true or false"}), 400
         try:
@@ -1059,7 +1110,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
 
     def _status() -> dict:
         now = clock()
-        feed = feed_config(cfg)
+        # The LIVE overlay, not the file on disk. This read the raw config, so
+        # a runtime override was invisible here: the dashboard and /api/status
+        # reported an endpoint the fetch daemon had already stopped using.
+        live = _live()
+        feed = feed_config(live)
         return {
             "service": "homescreen",
             "version": version,
@@ -1068,7 +1123,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             "feed": {
                 # Named keys only -- never the whole feed dict, which may hold
                 # an api_key (SPEC §7.4) on an unauthenticated LAN endpoint.
-                "source": _source_label(cfg),
+                "source": _source_label(live),
                 "endpoint": feed.get("endpoint"),
                 "fetch_seconds": feed.get("fetch_seconds"),
             },

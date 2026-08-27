@@ -384,6 +384,7 @@ def test_a_configured_panel_sharing_an_address_with_a_flood_is_still_served(
     render.clear_cache()
     client.get("/api/device/deskx/scene?w=800&h=480&depth=1",
                environ_base={"REMOTE_ADDR": "10.0.0.99"})
+    client.post("/api/devices/deskx/approval", json={"approved": True})
     client.patch("/api/devices/deskx", json={"name": "deskx", "scene": "clock"})
     _flood(client, monkeypatch, "10.0.0.99", n=80)
     r = client.get("/api/device/deskx/frame?w=800&h=480",

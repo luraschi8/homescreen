@@ -9,6 +9,7 @@ stylesheet that cannot be fetched is a dashboard that cannot be read.
 from __future__ import annotations
 
 import html
+from datetime import datetime
 
 #: Kept local rather than pulled from a CDN. The dashboard's job is to tell you
 #: what the fleet is doing, and the moment it needs the internet to render, it
@@ -86,7 +87,9 @@ dl.facts dd{margin:0;font-family:var(--mono);word-break:break-word}
 form.stack{display:flex;flex-direction:column;gap:.9rem}
 label.field{display:flex;flex-direction:column;gap:.28rem;font-size:.82rem;
   color:var(--dim);max-width:32rem}
-label.field .hint{font-size:.75rem;color:var(--faint)}
+label.field .hint{font-size:.75rem;color:var(--faint);margin-top:.1rem}
+form.stack>label.field,form.stack>label.check{margin-bottom:.15rem}
+fieldset.optgroup .stack{gap:1rem}
 input[type=text],input[type=number],input[type=url],select,textarea{
   font:inherit;font-size:.9rem;padding:.45rem .6rem;color:var(--fg);
   background:var(--bg);border:1px solid var(--line);border-radius:7px;width:100%}
@@ -128,8 +131,14 @@ def e(value) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
 
+#: What an absent value looks like. A literal character, NOT an entity: this
+#: gets passed to pill(), which escapes, and "&mdash;" came out as "&amp;mdash;"
+#: on screen. Anything that returns display text must be safe to escape twice.
+EMPTY = "\u2014"
+
+
 def dash(value) -> str:
-    return e(value) if value not in (None, "") else "&mdash;"
+    return e(value) if value not in (None, "") else EMPTY
 
 
 def duration(seconds: float) -> str:
@@ -154,6 +163,33 @@ def scene_label(scene) -> str:
     return _SCENE_LABELS.get(scene, str(scene))
 
 
+def when(stamp, now: float | None = None) -> str:
+    """An ISO stamp as something a person can read at a glance.
+
+    The raw value is `2026-08-27T17:31:07.315886+02:00`. Six digits of
+    microseconds in a column you scan to answer "is this thing alive?" is
+    noise, and the date is noise too while the answer is "seconds ago".
+    """
+    if not stamp:
+        return EMPTY
+    try:
+        moment = datetime.fromisoformat(str(stamp))
+    except (TypeError, ValueError):
+        return e(stamp)                  # unparseable: show it rather than lie
+    reference = (datetime.now(moment.tzinfo) if now is None
+                 else datetime.fromtimestamp(now, moment.tzinfo))
+    delta = (reference - moment).total_seconds()
+    if delta < 0:
+        return e(moment.strftime("%H:%M:%S"))   # clock skew; do not say "in -3s"
+    if delta < 90:
+        return f"hace {int(delta)}s"
+    if delta < 3600:
+        return f"hace {int(delta // 60)} min"
+    if reference.date() == moment.date():
+        return e(moment.strftime("%H:%M"))
+    return e(moment.strftime("%d/%m %H:%M"))
+
+
 def pill(text: str, kind: str = "") -> str:
     return f'<span class="pill{" " + kind if kind else ""}">{e(text)}</span>'
 
@@ -163,7 +199,7 @@ def page(title: str, body: str, *, active: str = "", meta: str = "",
     """The whole document. One place decides what a dashboard page looks like."""
     nav = "".join(
         f'<a href="{href}"{" class=\"on\"" if key == active else ""}>{e(label)}</a>'
-        for key, href, label in (("fleet", "/", "Fleet"),
+        for key, href, label in (("fleet", "/", "Flota"),
                                  ("settings", "/settings", "Ajustes")))
     notice_html = f'<div class="notice">{e(notice)}</div>' if notice else ""
     script_html = f"<script>{script}</script>" if script else ""

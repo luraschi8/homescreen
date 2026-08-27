@@ -25,6 +25,25 @@ log = logging.getLogger(__name__)
 SETTABLE_KEYS = ("max_aircraft", "radius_km", "poll_seconds", "show_ground",
                  "home.lat", "home.lon")
 
+#: Reserved top-level key holding FEED settings rather than a device's.
+#:
+#: The sigil is deliberate: this file is keyed by device id, and a bare "feeds"
+#: could collide with a device someone actually named that. Nothing in
+#: config.yaml gives a device an id starting with "@".
+FEEDS_KEY = "@feeds"
+
+#: What an operator may change about a feed from the dashboard.
+#:
+#: Not the whole feed block: `source` selects which fetcher module runs and
+#: `api_key` is a secret that must never be rendered back (CLAUDE.md §7.4), so
+#: neither is settable from an unauthenticated page.
+FEED_SETTABLE_KEYS = ("endpoint", "fetch_seconds")
+
+#: Bounds. The endpoint is fetched by a daemon on a loop, so a value that is
+#: not a URL is a tight failure loop rather than a typo.
+MAX_ENDPOINT_LEN = 500
+FETCH_SECONDS_RANGE = (1.0, 3600.0)
+
 
 def overrides_path(cache_dir: Path) -> Path:
     return cache_dir / "overrides.json"
@@ -131,4 +150,62 @@ def apply(cfg: dict, cache_dir: Path, *, _data: dict | None = None) -> dict:
         merged.append(copy)
     out = dict(cfg)
     out["devices"] = merged
+    feeds = data.get(FEEDS_KEY)
+    if isinstance(feeds, dict) and isinstance(cfg.get("feeds"), dict):
+        # The fetch daemon re-reads this every cycle, so an endpoint changed on
+        # the dashboard reaches it without a restart -- the same route
+        # max_aircraft already takes.
+        merged_feeds = {}
+        for name, block in cfg["feeds"].items():
+            over = feeds.get(name)
+            if isinstance(block, dict) and isinstance(over, dict):
+                block = {**block, **{k: v for k, v in over.items()
+                                     if k in FEED_SETTABLE_KEYS}}
+            merged_feeds[name] = block
+        out["feeds"] = merged_feeds
     return out
+
+
+def clean_feed_settings(raw: dict) -> dict:
+    """Coerce a dashboard form into storable feed settings, or raise ValueError.
+
+    Raises rather than dropping: this one is a human pressing Save and waiting
+    to be told whether it worked. Silently ignoring a typo would leave them
+    staring at a value the daemon is not using.
+    """
+    out = {}
+    endpoint = raw.get("endpoint")
+    if endpoint is not None:
+        endpoint = str(endpoint).strip()
+        if not endpoint:
+            raise ValueError("el endpoint no puede estar vacío")
+        if len(endpoint) > MAX_ENDPOINT_LEN:
+            raise ValueError(f"el endpoint supera {MAX_ENDPOINT_LEN} caracteres")
+        if not endpoint.startswith(("http://", "https://")):
+            raise ValueError("el endpoint debe empezar por http:// o https://")
+        out["endpoint"] = endpoint
+    every = raw.get("fetch_seconds")
+    if every is not None and str(every).strip() != "":
+        try:
+            n = float(every)
+        except (TypeError, ValueError):
+            raise ValueError("la cadencia debe ser un número") from None
+        low, high = FETCH_SECONDS_RANGE
+        if not low <= n <= high:
+            raise ValueError(f"la cadencia debe estar entre {int(low)} y "
+                             f"{int(high)} segundos")
+        out["fetch_seconds"] = int(n) if n.is_integer() else n
+    return out
+
+
+def set_feed(cache_dir: Path, name: str, values: dict) -> dict:
+    """Persist feed settings. Raises ValueError on anything unusable."""
+    cleaned = clean_feed_settings(values)
+    if not cleaned:
+        return {}
+    data = load(cache_dir)
+    feeds = dict(data.get(FEEDS_KEY) or {})
+    feeds[str(name)] = {**(feeds.get(str(name)) or {}), **cleaned}
+    data[FEEDS_KEY] = feeds
+    save(cache_dir, data)
+    return cleaned

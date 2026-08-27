@@ -95,6 +95,11 @@ OFFLINE_AFTER_POLLS = 3
 #: the alternative is every panel in the house going blank on one deploy.
 APPROVAL_FIELD = "approved"
 
+#: Record field: each component's settings for THIS screen, kept while another
+#: component is showing. Without it, trying a component out and going back lost
+#: the configuration -- and the preview exists to invite exactly that.
+OPTIONS_MEMORY_FIELD = "options_by_scene"
+
 #: What a device may be, from the fleet's point of view.
 PENDING, APPROVED = "pending", "approved"
 DEFAULT_POLL_SECONDS = 5
@@ -222,6 +227,10 @@ def _valid_record(rec) -> bool:
     if not isinstance(rec.get("options", {}), dict):
         return False
     if not isinstance(rec.get(APPROVAL_FIELD, True), bool):
+        return False
+    memory = rec.get(OPTIONS_MEMORY_FIELD, {})
+    if not isinstance(memory, dict) or any(not isinstance(v, dict)
+                                           for v in memory.values()):
         return False
     poll = rec.get("poll_seconds", DEFAULT_POLL_SECONDS)
     if poll is None:
@@ -707,7 +716,10 @@ def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds,
     rec = dict(data[hw_id])
 
     if name is not None:
-        rec["name"] = _check_name(data, hw_id, name)
+        # An EMPTY name clears it. The field carries placeholder="sin nombre",
+        # which invites exactly that, and there was no path -- form or PATCH --
+        # to un-name a screen short of deleting it and losing its history.
+        rec["name"] = _check_name(data, hw_id, name) if str(name).strip() else None
     if scene is not None:
         # "unassigned" is how a device says it has no scene, and an operator
         # must be able to put it back there -- to take a screen out of service,
@@ -718,11 +730,28 @@ def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds,
         if scene != "unassigned" and scene not in ASSIGNABLE_SCENES:
             raise ValueError(f"unknown scene {scene!r}; assignable: "
                              f"{', '.join(ASSIGNABLE_SCENES)}, unassigned")
-        if scene != rec.get("scene") and options is None:
+        if scene != rec.get("scene"):
             # A different component takes different options. Carrying the old
             # ones forward would leave a clock configured with a stock ticker's
             # settings -- present, meaningless, and invisible in the form.
-            rec["options"] = {}
+            #
+            # But dropping them was worse than it looked: trying a component
+            # out and going back lost the configuration for good, and trying
+            # components out is exactly what the preview invites. So the
+            # outgoing component's settings are REMEMBERED against its name,
+            # and coming back restores them. Still per assignment -- two
+            # screens showing a clock keep their own cities -- just no longer
+            # amnesiac about the screen's own past.
+            remembered = dict(rec.get(OPTIONS_MEMORY_FIELD) or {})
+            previous = rec.get("scene")
+            if previous and rec.get("options"):
+                remembered[previous] = dict(rec["options"])
+            # Bounded by the scenes that exist, so a hand-edited file cannot
+            # grow this without limit.
+            rec[OPTIONS_MEMORY_FIELD] = {k: v for k, v in remembered.items()
+                                         if k in ASSIGNABLE_SCENES}
+            if options is None:
+                rec["options"] = dict(remembered.get(scene) or {})
         rec["scene"] = scene
     if poll_seconds is not None:
         try:

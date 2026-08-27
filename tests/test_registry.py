@@ -83,8 +83,6 @@ def test_liveness_never_raises_on_a_damaged_record(rec):
 # --- assignment -------------------------------------------------------------
 
 @pytest.mark.parametrize("kwargs,why", [
-    ({"name": ""}, "empty"),
-    ({"name": "   "}, "whitespace"),
     ({"name": "has/slash"}, "would break the URL alias"),
     ({"name": "a" * 65}, "absurd length"),
     ({"scene": "no-such-scene"}, "unknown scene"),
@@ -684,3 +682,34 @@ def test_error_stays_unsettable_because_the_server_owns_it(tmp_path: Path):
 def test_unassigning_a_device_that_was_never_assigned_is_harmless(tmp_path: Path):
     registry.touch(tmp_path, HW, now=1000.0)
     assert registry.assign(tmp_path, HW, scene="unassigned")["scene"] == "unassigned"
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_an_empty_name_clears_it_rather_than_being_refused(tmp_path, blank):
+    # Was: rejected. There was then no path -- form or PATCH -- to un-name a
+    # screen, though the field carries placeholder="sin nombre" and invites
+    # exactly that. The only way back was DELETE, which throws away the
+    # screen's history to change a label.
+    registry.touch(tmp_path, HW, now=1000.0)
+    registry.assign(tmp_path, HW, name="salon", scene="clock")
+    rec = registry.assign(tmp_path, HW, name=blank)
+    assert rec["name"] is None
+    assert rec["scene"] == "clock", "clearing a name must not touch the job"
+
+
+def test_clearing_a_name_frees_it_for_another_screen(tmp_path):
+    other = "bb00000000ff"
+    registry.touch(tmp_path, HW, now=1000.0)
+    registry.touch(tmp_path, other, now=1000.0)
+    registry.assign(tmp_path, HW, name="salon")
+    registry.assign(tmp_path, HW, name="")
+    registry.assign(tmp_path, other, name="salon")
+    assert registry.load(tmp_path)[other]["name"] == "salon"
+
+
+def test_a_name_left_out_entirely_is_still_left_alone(tmp_path):
+    # The distinction the form depends on: absent means "do not touch".
+    registry.touch(tmp_path, HW, now=1000.0)
+    registry.assign(tmp_path, HW, name="salon", scene="clock")
+    registry.assign(tmp_path, HW, scene="planes")
+    assert registry.load(tmp_path)[HW]["name"] == "salon"

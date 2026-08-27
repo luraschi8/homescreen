@@ -22,8 +22,12 @@ def _health(dev: dict) -> tuple[str, str]:
         return '<span class="pill bad">nunca consultado</span>', ""
     if feed.get("ok"):
         return '<span class="pill ok">al día</span>', detail
-    return (f'<span class="pill bad">caducado — {e(feed.get("error"))}</span>',
-            detail)
+    # The error can be absent while ok is false -- an unparseable or future
+    # `fetched_at` reaches here with error still null -- and a dangling em-dash
+    # reads as a truncated message.
+    why = feed.get("error")
+    label = f"caducado — {e(why)}" if why else "caducado"
+    return f'<span class="pill bad">{label}</span>', detail
 
 
 def _sources(devices) -> str:
@@ -35,15 +39,31 @@ def _sources(devices) -> str:
     rows = []
     for dev in devices or ():
         if dev.get("feed") is None:
-            continue                     # pixel push: no feed of its own
+            # Shown, not skipped. Dropping it made a configured screen vanish
+            # from the only page that lists sources, which reads as "not
+            # configured" rather than "has no feed of its own".
+            rows.append(
+                '<div class="panel"><div class="pad">'
+                '<div class="pills">'
+                f'<strong>{e(dev.get("id"))}</strong>'
+                f'<span class="pill">{e(dev.get("kind"))}</span>'
+                '<span class="pill">sin fuente propia — se dibuja en el Pi</span>'
+                '</div></div></div>')
+            continue
         state, detail = _health(dev)
+        # Where this source is actually served. The old page rendered these and
+        # the split dropped them with nowhere to land -- so "how do I curl this
+        # thing?" had no answer on any page.
+        links = "".join(
+            f'<dt>{e(k)}</dt><dd><a href="{e(v)}">{e(v)}</a></dd>'
+            for k, v in (dev.get("endpoints") or {}).items() if v)
         rows.append(
             '<div class="panel"><div class="pad">'
             '<div class="pills" style="margin-bottom:.6rem">'
             f'<strong>{e(dev.get("id"))}</strong>'
             f'<span class="pill">{e(dev.get("kind"))}</span>'
             f'<span class="pill">{e(dev.get("render"))}</span>{state}</div>'
-            f'<dl class="facts">{detail}</dl></div></div>')
+            f'<dl class="facts">{detail}{links}</dl></div></div>')
     if not rows:
         return ('<div class="panel"><div class="pad empty">'
                 'Ninguna fuente configurada.</div></div>')

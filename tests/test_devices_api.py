@@ -86,7 +86,6 @@ def test_patch_sets_name_and_scene(ctx):
     ({"scene": "no-such-scene"}, "unknown scene"),
     ({"scene": "error"}, "a server-chosen fallback, not an assignment"),
     ({"name": "has/slash"}, "would break the URL alias"),
-    ({"name": ""}, "empty"),
     ({"name": "x" * 100}, "absurd"),
     ({"poll_seconds": 0}, "liveness would be meaningless"),
     ({"poll_seconds": "soon"}, "not a number"),
@@ -634,6 +633,7 @@ def test_renaming_from_the_dashboard_changes_what_the_name_route_serves(ctx):
     # The name is what /api/display/<name>/ routes on, so this is not cosmetic.
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=240&h=240&depth=16&components=radar")
+    registry.set_approval(cache, HW, True)
     client.post("/home/device", data={"hw": HW, "name": "cocina", "scene": "planes"})
     assert client.get("/api/display/cocina/health").status_code == 200
 
@@ -703,20 +703,27 @@ def test_the_notice_is_escaped_too(ctx):
     assert "&lt;img" in html
 
 
-def test_the_form_needs_no_javascript(ctx):
-    # Same constraint the scenes live under: no JS, no CDN. It has to work from
-    # a phone on a bad connection, and degrade to a page reload.
+def test_the_dashboard_needs_nothing_it_cannot_serve_itself(ctx):
+    # Was: no JavaScript at all. The owner lifted that; scripting is allowed
+    # and the device page uses a little. What still holds is the reason the
+    # rule existed -- the dashboard is how you debug the network, so it must
+    # not need the network to render. Everything ships from the Pi.
     client, cache, _ = ctx
     registry.touch(cache, HW, now=1000.0)
-    html = _home(client)
-    assert "<form" in html and 'method="post"' in html
+    registry.set_approval(cache, HW, True)
+    # A real form, so every action still works if a script does not run. The
+    # fleet list carries one only when something is actionable (a screen asking
+    # to join); the device page always does.
+    assert '<form' in _device(client) and 'method="post"' in _device(client)
+
     # External DEPENDENCIES, not any URL: the page legitimately renders the
     # upstream feed's endpoint as text, and asserting on "https://" would
     # flag that.
-    for bad in ("<script", "onclick=", "onsubmit=", "fetch(",
-                "addEventListener", "<link rel=\"stylesheet\"",
-                "src=\"http", "href=\"http"):
-        assert bad not in html, f"the dashboard must not need {bad!r}"
+    for html in (_home(client), _device(client),
+                 client.get("/settings").get_data(as_text=True)):
+        for bad in ('src="http', 'href="http', "@import",
+                    '<link rel="stylesheet"', "//fonts."):
+            assert bad not in html, f"the dashboard must not fetch {bad!r}"
 
 
 def test_applying_the_same_values_does_not_rewrite_the_card(ctx):
