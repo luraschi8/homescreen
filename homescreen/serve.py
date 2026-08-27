@@ -15,7 +15,7 @@ from pathlib import Path
 from flask import (Flask, Response, jsonify, redirect, request,
                    url_for)
 
-from homescreen import draw, overrides, registry, scenes, web
+from homescreen import draw, layout, overrides, registry, scenes, web
 from homescreen import render
 from homescreen.render import (RenderBusy, RenderError, check_geometry as
                                render_check_geometry, render_frame)
@@ -958,15 +958,25 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # whatever it was last assigned: the gate has to be visible ON THE
         # GLASS, or someone plugs a panel in, sees a clock, and never learns
         # the fleet does not consider it a member.
-        name = ("pending" if not registry.is_approved(rec)
-                else rec.get("scene") or "unassigned")
+        # The view this screen is showing, read through the layout model so
+        # the seam exists before there is anything composed to put through it.
+        # A record written before views existed reads as the single-placement
+        # view it always meant, so nothing here changes yet -- which is the
+        # point: the record grows its new shape without a migration write and
+        # without a behaviour change to debug at the same time.
+        placements = layout.view_for(rec)["placements"]
+        showing = (placements[0]["component"] if placements
+                   else rec.get("scene") or "unassigned")
+        name = ("pending" if not registry.is_approved(rec) else showing)
         ctx = scenes.SceneContext(
             cfg=_live(), cache_dir=cache_dir,
             # Sanitised once here: a hand-edited devices.json could otherwise
             # put a string in `w`, and every scene does int(caps["w"]).
             caps=registry.clean_caps(caps if caps is not None
                                      else rec.get("caps") or {}),
-            options=scenes.clean_options(name, rec.get("options") or {}),
+            options=scenes.clean_options(
+                name, (placements[0]["options"] if placements
+                       else rec.get("options")) or {}),
             now=clock(),
             device={"hw": hw, "id": rec.get("name") or hw,
                     "name": rec.get("name"), "feed": "adsb",
