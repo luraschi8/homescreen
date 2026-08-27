@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The plan claims each decision is defended by a named test. This checks that
-# the claim is true -- the mechanism that stops the document drifting from the
-# code again. Run it before committing a plan change.
+# The plan claims each decision is defended by a named test. This checks the
+# claim is true -- the mechanism that stops the document drifting from the code
+# again. Run it before committing a plan change.
 set -u
 PLAN=docs/superpowers/plans/2026-08-26-round-screen-firmware.md
 fail=0
@@ -14,13 +14,22 @@ if [ "$fenced" -gt 40 ]; then
   fail=1
 fi
 
-# Every backticked test_* name in the decision table must exist somewhere.
-grep -oE '`test_[a-z0-9_]+`' "$PLAN" | tr -d '`' | sort -u | while read -r t; do
+# Only the DECISION TABLE makes present-tense claims. Acceptance criteria below
+# it describe work not yet done and may name tests that do not exist yet.
+# Extracted with a process substitution, not a pipe: a `while` in a pipeline
+# runs in a subshell, so its exit and its variables never reach the parent --
+# which is why the first version of this script could not fail.
+table=$(sed -n '/^## Decisions/,/^## Server prerequisites/p' "$PLAN")
+while read -r t; do
+  [ -z "$t" ] && continue
   if grep -rq "RUN_TEST($t)" firmware/test/ 2>/dev/null; then continue; fi
   if grep -rq "def $t" tests/ 2>/dev/null; then continue; fi
-  echo "FAIL: the plan says '$t' defends a decision; no such test exists."
-  exit 1
-done || fail=1
+  echo "FAIL: the decision table says '$t' defends a decision; it does not exist."
+  fail=1
+done < <(printf '%s\n' "$table" | grep -oE '`test_[a-z0-9_]+`' | tr -d '`' | sort -u)
 
-[ "$fail" -eq 0 ] && echo "plan ok: $fenced fenced lines, every named test exists"
+if [ "$fail" -eq 0 ]; then
+  n=$(printf '%s\n' "$table" | grep -oE '`test_[a-z0-9_]+`' | tr -d '`' | sort -u | wc -l | tr -d ' ')
+  echo "plan ok: $fenced fenced lines, $n named tests all present"
+fi
 exit "$fail"
