@@ -390,6 +390,32 @@ void test_the_largest_size_token_still_fits_the_round_panel(void) {
   TEST_ASSERT_TRUE(seen);
 }
 
+
+void test_large_type_is_not_stretched_from_the_smallest_face(void) {
+  // The complaint this exists for: "the time looks very pixeled". The SIZE was
+  // right the whole time -- 62px is 62px -- but it was reached by enlarging a
+  // 15px face 4.1x, so every glyph pixel became a 4x4 block. Tests that assert
+  // where text lands and how tall it ends up cannot see that; only how far the
+  // face had to be stretched to get there can.
+  g_font_is_smooth = true;
+  displayFontSetPixelHeight(tft, 62);
+  char m[96];
+  snprintf(m, sizeof(m), "62px was reached by stretching a face %.2fx",
+           tft.textSize());
+  TEST_ASSERT_TRUE_MESSAGE(tft.textSize() <= 2.0f, m);
+}
+
+void test_small_type_stays_on_the_antialiased_face(void) {
+  // The other half of the trade: the VLW is the only face with antialiasing,
+  // and under a mild stretch smooth edges beat a closer-fitting 1-bit face.
+  // Without this, "pick whatever is nearest the size" would quietly move the
+  // radar's small labels onto bitmaps and make them look worse.
+  g_font_is_smooth = true;
+  displayFontSetPixelHeight(tft, 18);
+  TEST_ASSERT_NULL_MESSAGE(tft.currentFont(),
+                           "small type must stay on the smooth face");
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_a_component_with_an_instruction_list_is_drawn_without_knowing_it);
@@ -398,6 +424,8 @@ int main(void) {
   RUN_TEST(test_text_is_drawn_at_the_pixel_height_the_resolver_asked_for);
   RUN_TEST(test_nothing_a_component_draws_overflows_the_panel);
   RUN_TEST(test_the_largest_size_token_still_fits_the_round_panel);
+  RUN_TEST(test_large_type_is_not_stretched_from_the_smallest_face);
+  RUN_TEST(test_small_type_stays_on_the_antialiased_face);
   RUN_TEST(test_tones_reach_the_pen);
   RUN_TEST(test_an_empty_instruction_list_says_so_rather_than_blanking);
   RUN_TEST(test_the_radar_is_untouched_by_any_of_this);

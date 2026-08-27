@@ -109,6 +109,9 @@ class LGFXBase {
   void setTextColor(uint16_t fg, uint16_t /*bg*/) { text_color_ = fg; }
   void setTextSize(float s) { text_size_ = s > 0.0f ? s : 1.0f; }
   void setFont(const GFXfont* f) { font_ = f; }
+  /** For assertions about face selection: which face, stretched how far. */
+  const GFXfont* currentFont() const { return font_; }
+  float textSize() const { return text_size_; }
   const IFont* getFont() const { return nullptr; }
   bool loadFont(const uint8_t*, IFont::font_type_t) { return true; }
 
