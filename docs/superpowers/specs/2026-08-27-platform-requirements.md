@@ -758,10 +758,12 @@ for that grid as the way overlap precedence is seen rather than reasoned about. 
 simple" is the constraint — inline, dependency-free, in the file it belongs to, like the
 existing option-group swap.
 
-### 5.4 Migration — one flash, two changes
+### 5.4 Migration — one flash, three changes
 
-Two things need a reflash: the `draw_list` capability (item 1) and the scene path. **They
-ship as one firmware release**, so the fleet is flashed once.
+Three changes need a reflash: the `draw_list` capability, the canonical scene path, and
+unbinding the BOOT short press (§4.7). **They ship as one firmware release** — not because
+flashing is expensive (it is one command over USB) but because there is no reason to cut
+three.
 
 The server serves both surfaces during the window. **The first half shipped in `462be45`:**
 
@@ -812,7 +814,7 @@ Sizes: **S** one focused session, **M** a few, **L** a week or more.
 
 ---
 
-### 1. One firmware release: `draw_list` and the canonical path — **S/M** — DO THIS FIRST
+### 1. One firmware release: `draw_list`, the canonical path, an inert button — **S/M** — DO THIS FIRST
 
 **Goal.** Adding a component to the Pi makes it available on every round screen immediately,
 with no firmware release — and the fleet is on the canonical API path.
@@ -1268,39 +1270,41 @@ the Pi and an org-wide rather than personal figure.
 scheduled** — I have not checked it against current docs. If an admin key on a LAN box is not
 acceptable, drop the component rather than fake it.
 
-### New, created by these decisions
+### Answered, and where the answer lives
 
-**Q9 — Does a schedule apply to a whole screen, or per region?**
-"Weather in the right column in the morning, the calendar there in the evening" is a
-different feature from "the whole panel changes at 21:00". Per-region schedules multiply the
-config surface by the region count and make "what is showing" a per-region answer.
-→ **Recommend whole-screen views.** All three of the owner's examples are whole-screen, and
-a per-region schedule is expressible today by making two views that differ in one placement —
-more clicks, but no new concept and no new failure mode. Revisit only if the e-paper is in
-daily use and two views differing by one region becomes a chore.
+| | Question | Answer | Now in |
+|---|---|---|---|
+| Q1 | Where do secrets live | the dashboard writes them, write-only | §3.6, item 7 |
+| Q3 | Rotation scope | replaced by a schedule | §4 |
+| Q4 | Retire `config.yaml devices:` for the radar | yes, migrate | item 10 |
+| Q6 | Composed dashboards on the big panel | yes, per SPEC §9 | §4, items 3 and 14 |
+| Q9 | Schedule per screen or per region | **per screen** | §4.3, §4.4 |
+| Q10 | What replaces rotation for multiple tickers | **the component adapts to the surface** | §2.3, item 9 |
+| Q11 | What the BOOT short press means | **nothing; buttons become a capability** | §4.7, item 13 |
 
-**Q10 — Rotation was the answer for multiple tickers. What replaces it?**
-The owner's original example was "one ticker on the round screen, and if more are added it
-rotates every x seconds". A schedule is coarse — minutes and hours — so it does not serve
-that: nobody wants AAPL from 09:00 and NVDA from 09:05. With rotation withdrawn, a round
-screen shows **one** symbol. The options are (a) one symbol per screen, more symbols means
-more screens; (b) a component-internal cycle that is not the platform's business — the
-component asks for a short `poll_s` and returns a different symbol each time; (c) revive a
-narrow rotation just for within-component pages.
-→ **Recommend (b).** It needs no platform feature at all: a component that wants to cycle
-already has the mechanism, because `poll_s` lets it ask to be woken whenever it likes and it
-decides what to draw when it is. `poll_floor` still protects the e-paper, and the schedule
-stays the only *platform* notion of time. If that feels like rotation smuggled back in — it
-is, but confined to one component's own code rather than a field in every schema.
+Q10's answer turned out to be the more general one and was folded into the component contract
+rather than into the stocks item: a component declares which surfaces it draws on *and* is
+responsible for expressing its data well on each. Cycling is one way of doing that, on small
+glass, decided by the component.
 
-**Q11 — What does the BOOT short press mean now?**
-"Next page now" is meaningless without pages, and range is moving to the dashboard (item 10).
-Long press stays the WiFi portal. Candidates: nothing, "poll now", or keep range cycling.
-→ **Recommend "poll now" — fetch the scene immediately and redraw.** It is useful on every
-component, it is one meaning fleet-wide, and it is exactly what you press after changing
-something on the dashboard rather than waiting out a 30s e-paper cadence. It also gives the
-button a purpose on a screen whose component has no notion of pages or range, which "keep
-range cycling" does not.
+### New, created by these answers
+
+**Q12 — Can a button ever do something only the server can do?**
+The v1 action vocabulary (§4.7) is deliberately all-local — `refrescar`, `identificar` —
+because devices only ever `GET` today and keeping it that way is what makes the extension
+small. But the obvious fourth action is "show me the next ticker now", and with Q10's answer
+the *server* decides which ticker is showing, from the clock. So that press cannot be served
+locally: it needs either a device→server write (`POST /api/devices/{hw}/events`, the first
+thing a device ever writes) or the component shipping every page in the payload for the device
+to cycle through — which is the rotation design that was just withdrawn.
+→ **Recommend deferring, and shipping §4.7 with the two local actions.** Neither branch is
+cheap, and nobody has yet wanted the button badly enough to say which. `identificar` and
+`refrescar` are useful on their own, and the declaration shape (`buttons=`, per-device
+bindings, `inputs` in the scene payload) is unchanged by whichever way this later goes — a
+third action is a row in a table, not a redesign. If it does come up, my inclination is the
+events endpoint over pages-in-payload: one device write is a smaller thing to own than a
+second rotation mechanism, and it is the same shape a future "I pressed something" would take
+anyway.
 
 ---
 
@@ -1316,8 +1320,16 @@ range cycling" does not.
 - **Not a cloud service.** No account, no telemetry leaving the house, no remote config.
 - **Not a browser kiosk.** Devices are HTTP clients that draw; Chromium is a rasteriser
   invoked per frame, not a runtime, and there is no per-device JavaScript.
-- **The dashboard is not a single-page app.** Forms and redirects. It must work with
-  scripting off, because it is how you debug the network (§5.3).
+- **The dashboard is not a single-page app.** Forms and redirects, because that is the least
+  machinery that does the job (§5.3). Scripts are allowed and the schedule editor is expected
+  to use them; **assets are always local** — no CDN, no bundler, no webfont fetched at boot.
+- **The BOOT long press is not bindable, ever.** It opens the WiFi portal and that is the only
+  recovery path for a board on the wrong network — the one gesture that must work when
+  nothing else does, including when the binding that would have changed it cannot be reached.
+  It is not offered in `buttons=`, not listed in the dashboard, and not in the action
+  vocabulary.
+- **Buttons do not actuate anything off the screen.** No chords, no double-taps, no
+  press-and-hold ramps, and nothing that reaches past the device it is attached to.
 - **Not a historian.** No time-series database, no retention, no charts over months. The
   cache holds the latest envelope per job and a 7-day prune. The SD card is 15 GB and
   unmitigated for wear.
