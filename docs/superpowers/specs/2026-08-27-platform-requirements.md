@@ -809,7 +809,8 @@ Sizes: **S** one focused session, **M** a few, **L** a week or more.
 | **NEW** item 3 — the record becomes a layout | Q6 settled composed dashboards; shaping the record now is what avoids a migration later, and schedules cannot be built on `scene` + `options` |
 | Old item 4 "settings that save" → **item 7, shrunk** | `POST /settings`, `set_feed()` and `@feeds` shipped in `634de6a`. Only the secret store remains |
 | Old item 6 "rotation" → **deleted** | Replaced by item 6, schedules |
-| Loop-under-test moved up to 5 | Schedules change what a device is told to wake for; do not build that on an untested loop. Landed as `88a8565` while this was being written; item 5 is now the remainder |
+| Loop-under-test moved up to 5 | Schedules change what a device is told to wake for; do not build that on an untested loop. Landed as `88a8565`; item 5 is now the remainder |
+| Item 6's resolver landed as `ec2be47` | Item 6 is now the wiring, the storage and the editor |
 | Old item 12 "scene builder" **split** | The record shape (item 3) lands now; the e-paper compositor (item 13) still waits on hardware |
 
 ---
@@ -979,37 +980,39 @@ proved nothing. Two mutations in opposite directions each fail two tests. 266 fi
 
 ---
 
-### 6. Schedules — **L**
+### 6. Schedules — **L** — RESOLUTION DONE (`ec2be47`)
 
 **Goal.** A screen shows the radar in the afternoon, a clock overnight, and weather on
 weekend mornings, without anyone touching it.
 
-**Acceptance criteria**
-- The record accepts §4.3's shape; `PUT /api/devices/{hw}/schedule` validates it whole:
-  `default` present, every slot's `view` resolvable, `days` ⊆ 1..7, `HH:MM` well-formed,
-  region capacities respected. Invalid ⇒ 400 with a Spanish reason and **nothing written**.
-- Resolution: last matching slot wins; no match ⇒ default. One test per rule, plus a table
-  test over a whole week for the owner's three examples.
-- A wrapping window (`23:00`→`09:00`) is active at 02:00 on the following day and inactive at
-  22:00 on the same day.
-- Timezone: slots evaluate in `schedule.tz`, defaulting to `config.yaml location.timezone`.
-- **DST:** a slot boundary inside the skipped spring-forward hour never fires, and the
-  correct view is served at the first instant after it; a slot spanning the repeated
-  fall-back hour is active in both passes. Assert with a frozen clock at Europe/Madrid's
-  actual transition instants.
-- **Cadence:** `X-Poll-Seconds` is `min(component next change, seconds to boundary)` after
-  the existing precedence; `poll_max_s` is unchanged by the schedule. Assert both directly.
-- **The floor holds:** a boundary 3s away on a `depth: 1` device still advertises 30s.
-  Assert it.
-- A boundary further out than `POLL_MAX_S` clamps to 600 and re-evaluates; assert a boundary
-  six hours away advertises 600, not 21,600.
-- The week strip renders 7×24 with the winning view per cell and `ahora` marked; the preview
-  accepts `at` and resolves against it.
-- Removing the last slot leaves the default showing — never a blank panel.
-- A schedule change takes effect on the device within one advertised poll; assert
-  `_last_cold` is invalidated as a scene change already does.
+**Shipped in `ec2be47`** — `homescreen/schedule.py`: `slot_contains`, `active_view`,
+`seconds_to_next_change`, `clean_schedule`, bounded at `MAX_SLOTS`/`MAX_VIEWS` because the
+page that writes them is unauthenticated. Last-match-wins, midnight wrapping, and both
+Madrid DST transitions pinned at real dates. `seconds_to_next_change` walks boundaries and
+tests membership at each rather than doing arithmetic on the current slot — with overlapping
+slots the next change is not this slot's end, and two back-to-back slots on one view have a
+seam that is not a change and must not wake a panel for a frame nobody can see. Three
+mutations caught. 958 tests.
 
-**Dependencies.** Items 3 and 5.
+**Remaining — the wiring, the storage and the editor**
+- The device record carries the schedule; `GET/PUT /api/devices/{hw}/schedule` validates it
+  whole through `clean_schedule` and writes nothing on a 400.
+- Region capacities are enforced on write (§4.2), which `clean_schedule` does not yet know
+  about because item 3 has not defined placements.
+- `_scene_for` resolves through `active_view` instead of `rec["scene"]`; a screen with no
+  schedule keeps behaving exactly as today.
+- **Cadence:** `X-Poll-Seconds` is `min(component next change, seconds_to_next_change)` after
+  the existing precedence; `poll_max_s` unchanged. Assert both directly on the route, not
+  only on the helper.
+- **The floor holds:** a boundary 3s away on a `depth: 1` device still advertises 30s.
+- A boundary six hours out advertises 600, not 21,600 — the `POLL_MAX_S` clamp on the route.
+- The week strip renders 7×24 with the winning view per cell and `ahora` marked; the preview
+  accepts `at`.
+- Removing the last slot leaves the default showing — never a blank panel.
+- A schedule change takes effect within one advertised poll; `_last_cold` is invalidated as a
+  scene change already does.
+
+**Dependencies.** Item 3 for placements; item 5's remainder for the boundary redraw.
 
 ---
 
