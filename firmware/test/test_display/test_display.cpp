@@ -1,0 +1,1514 @@
+// Exercises the real radar_display.cpp and runway_overlay.cpp against a
+// recording canvas: what was drawn, where, in what colour, in what order.
+// These two files produced most of this project's shipped bugs and had no
+// coverage at all.
+#include <Arduino.h>
+#include <unity.h>
+#include <cmath>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <map>
+#include <string>
+
+#include "../mocks/mock_globals.h"
+#include "../../src/services/radar_location.cpp"
+#include "../../src/ui/radar_range.cpp"
+#include "../../src/ui/radar_geo.cpp"
+#include "../../src/hardware/display.cpp"
+#include "../../src/data/large_airports_data.cpp"
+#include "../../src/ui/runway_overlay.cpp"
+#include "../../src/ui/radar_display.cpp"
+#include "../../src/services/device_id.cpp"
+#include "../../src/services/server_config.cpp"
+#include "../../src/services/scene_client.cpp"
+
+using namespace ui;
+using namespace ui::radar;
+
+static constexpr double kLat = 40.445564;
+static constexpr double kLon = -3.698361;
+
+/** Build a payload placing aircraft at chosen offsets in km from the centre. */
+struct Target {
+  float east_km, north_km, gs_kt, track_deg, seen_pos;
+  const char* callsign;
+};
+static constexpr float kTestKnotsToKmPerSec = 1.852f / 3600.0f;
+static constexpr float kTestDegToRad = 0.01745329252f;
+
+static std::string payloadFor(const Target* t, int n) {
+  // The km -> lat/lon projection is KEPT. All ~54 call sites in this file give
+  // target positions as offsets in km from the radar centre; without it they
+  // land at lat = east_km, lon = north_km -- hundreds of kilometres off the
+  // dial, clipped by every geometry test, and the suite stays green while
+  // testing nothing.
+  const double cos_lat = cos(kLat * M_PI / 180.0);
+  std::string s =
+      "{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"planes\","
+      "\"components\":[{\"c\":\"radar\",\"feed_ok\":true,"
+      "\"feed_age_s\":1.0,\"radius_km\":60.0,\"items\":[";
+  for (int i = 0; i < n; ++i) {
+    const double lat = kLat + t[i].north_km / 111.0;
+    const double lon = kLon + t[i].east_km / (111.0 * cos_lat);
+    // The server resolves track+gs into east/north km/s once per fetch, and the
+    // firmware reads ve/vn rather than recomputing. Do the same arithmetic here
+    // or every dead-reckoning test in this file runs against a target whose
+    // velocity is zero -- green, and meaningless.
+    const float gs_km_s = t[i].gs_kt * kTestKnotsToKmPerSec;
+    const float trk_rad = t[i].track_deg * kTestDegToRad;
+    char b[400];
+    snprintf(b, sizeof(b),
+             "%s{\"lat\":%.6f,\"lon\":%.6f,\"nose\":%.1f,\"trk\":%.1f,"
+             "\"gs\":%.1f,\"ve\":%.6f,\"vn\":%.6f,\"age\":%.2f,"
+             "\"dst\":-1.0,\"cs\":\"%s\",\"ty\":\"B738\","
+             "\"alt\":\"3000 ft\"}",
+             i ? "," : "", lat, lon, t[i].track_deg, t[i].track_deg,
+             t[i].gs_kt, gs_km_s * sinf(trk_rad), gs_km_s * cosf(trk_rad),
+             t[i].seen_pos, t[i].callsign);
+    s += b;
+  }
+  return s + "]}]}";
+}
+
+static void publishTargets(const Target* t, int n) {
+  const std::string p = payloadFor(t, n);
+  g_http.reset();
+  g_http.body = p;
+  g_http.code = HTTP_CODE_OK;
+  g_http.response_headers["ETag"] = "\"t\"";
+  g_http.response_headers["X-Poll-Seconds"] = "5";
+  TEST_ASSERT_TRUE(services::scene::pollOnce());
+}
+
+/** Same targets, but with the server's own feed reported as N seconds stale. */
+static void publishTargetsWithFeedAge(const Target* t, int n, float feed_age_s) {
+  std::string p = payloadFor(t, n);
+  const std::string from = "\"feed_age_s\":1.0";
+  char to[48];
+  snprintf(to, sizeof(to), "\"feed_age_s\":%.1f", feed_age_s);
+  p.replace(p.find(from), from.size(), to);
+  g_http.reset();
+  g_http.body = p;
+  g_http.code = HTTP_CODE_OK;
+  g_http.response_headers["ETag"] = "\"t\"";
+  g_http.response_headers["X-Poll-Seconds"] = "5";
+  TEST_ASSERT_TRUE(services::scene::pollOnce());
+}
+
+/**
+ * Font metrics are computed once and latched in file-statics, so the smooth-font
+ * path is unreachable after any test has run the bitmap path. These live in
+ * anonymous namespaces inside the included .cpp, so this TU can clear them.
+ */
+static void useFont(bool smooth) {
+  g_font_is_smooth = smooth;
+  ui::s_label_metrics_ready = false;
+  ui::s_tag_label_metrics_ready = false;
+  ui::runway::s_runway_label_ready = false;
+}
+
+void setUp() {
+  g_nvs.reset(); g_gfx.resetAll(); mockSetMs(500000); g_mutex_take_fails = 0; useFont(false);
+  Preferences seed; seed.begin("planeradar", false); seed.putUChar("rangeIdx", 1); seed.end();
+  rangeInit();
+  services::location::saveFromStrings("40.445564", "-3.698361");
+}
+void tearDown() {}
+
+// ---------------------------------------------------------------- tags -----
+
+struct Rect { int x, y, w, h; };
+
+/**
+ * Resolve a recorded text op to its actual pixel box. The datum decides which
+ * corner x/y refer to; treating every op as top-left silently mislocates
+ * anything drawn with a centre or right datum (the scale label, the cardinals,
+ * the runway ICAOs).
+ */
+static Rect textRect(const DrawOp& o) {
+  int left = o.x, top = o.y;
+  switch (o.datum) {
+    case top_center: case middle_center: case bottom_center: left = o.x - o.w / 2; break;
+    case top_right:  case middle_right:  case bottom_right:  left = o.x - o.w;     break;
+    default: break;
+  }
+  switch (o.datum) {
+    case middle_left: case middle_center: case middle_right: top = o.y - o.h / 2; break;
+    case bottom_left: case bottom_center: case bottom_right: top = o.y - o.h;     break;
+    default: break;
+  }
+  return {left, top, o.w, o.h};
+}
+static bool overlaps(const Rect& a, const Rect& b) {
+  return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
+}
+/**
+ * Aircraft tag lines only. The recorded text also contains cardinal letters,
+ * the range label, and runway ICAOs -- and a runway ICAO is deliberately drawn
+ * three times at 1 px offsets to fake bold, so counting those as tags makes the
+ * overlap assertion fail against correct code.
+ */
+static bool isTagText(const std::string& t) {
+  return t.rfind("AAA", 0) == 0 || t.rfind("BBB", 0) == 0 || t.rfind("CCC", 0) == 0 ||
+         t.rfind("DDD", 0) == 0 || t.rfind("NEAR", 0) == 0 || t.rfind("MID", 0) == 0 ||
+         t.rfind("FAR", 0) == 0 || t.rfind("MOVER", 0) == 0 || t.rfind("OLDFIX", 0) == 0 ||
+         t.rfind("FRESH", 0) == 0 || t.rfind("STALE", 0) == 0 ||
+         t == "B738" || t == "3000 ft";
+}
+static std::vector<Rect> tagBlocks() {
+  std::vector<Rect> out;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (o.text.empty() || !isTagText(o.text)) continue;
+    out.push_back(textRect(o));
+  }
+  return out;
+}
+
+/**
+ * tagBlocks() returns one rect per text LINE. A tag is three lines, so its last
+ * line legitimately sits ~29 px from its symbol -- which is why a per-line
+ * adjacency gate has to be loose enough to be useless. Group the lines back
+ * into whole tags (same left edge, vertically contiguous) so the gate can be
+ * tight enough to catch a displaced tag.
+ */
+static std::vector<Rect> tagGroups() {
+  std::vector<Rect> lines = tagBlocks();
+  std::sort(lines.begin(), lines.end(), [](const Rect& a, const Rect& b) {
+    return a.y == b.y ? a.x < b.x : a.y < b.y;
+  });
+  std::vector<Rect> out;
+  for (const auto& l : lines) {
+    bool merged = false;
+    for (auto& g : out) {
+      const bool same_column = abs(g.x - l.x) <= 2 || abs((g.x + g.w) - (l.x + l.w)) <= 2;
+      const bool contiguous = l.y >= g.y && l.y <= g.y + g.h + 4;
+      if (same_column && contiguous) {
+        const int right = std::max(g.x + g.w, l.x + l.w);
+        const int bottom = std::max(g.y + g.h, l.y + l.h);
+        g.x = std::min(g.x, l.x); g.y = std::min(g.y, l.y);
+        g.w = right - g.x; g.h = bottom - g.y;
+        merged = true; break;
+      }
+    }
+    if (!merged) out.push_back(l);
+  }
+  return out;
+}
+
+// THE OVERPRINT BUG: nearby traffic drew three-line blocks on top of each other.
+static void test_tags_never_overlap_each_other() {
+  saveRunwaysFromPortal("");   // isolate the traffic layer
+  Target t[] = {{2.0f, 0.2f, 200, 90, 0.1f, "AAA111"},
+                {2.0f, 0.0f, 200, 90, 0.1f, "BBB222"},
+                {2.1f, -0.2f, 200, 90, 0.1f, "CCC333"},
+                {2.0f, -0.4f, 200, 90, 0.1f, "DDD444"}};
+  publishTargets(t, 4);
+  radarDisplayDraw();
+  const auto blocks = tagBlocks();
+  TEST_ASSERT_TRUE_MESSAGE(blocks.size() >= 6,
+      "precondition: tags must actually be drawn, or this passes vacuously");
+  for (size_t i = 0; i < blocks.size(); ++i)
+    for (size_t j = i + 1; j < blocks.size(); ++j) {
+      char m[128];
+      snprintf(m, sizeof(m), "tag %zu (%d,%d %dx%d) overlaps tag %zu (%d,%d %dx%d)",
+               i, blocks[i].x, blocks[i].y, blocks[i].w, blocks[i].h,
+               j, blocks[j].x, blocks[j].y, blocks[j].w, blocks[j].h);
+      TEST_ASSERT_FALSE_MESSAGE(overlaps(blocks[i], blocks[j]), m);
+    }
+}
+
+// THE DISPLACEMENT BUG: tags were nudged by whole blocks (~51 px), far enough
+// from their symbol to read as belonging to a different aircraft.
+static void test_a_tag_stays_next_to_its_own_symbol() {
+  saveRunwaysFromPortal("");   // isolate the traffic layer
+  // 2 km apart, not 0.2: measured, that is the separation at which a vertical
+  // slot (line_dy = -1) is actually ACCEPTED rather than merely tried. Packed
+  // tighter, every offset candidate still collides and the tag is dropped
+  // instead, so a mutation that doubles the slot displacement is invisible.
+  Target t[] = {{2.0f, 2.0f, 200, 90, 0.1f, "AAA111"},
+                {2.0f, 0.0f, 200, 90, 0.1f, "BBB222"},
+                {2.0f, -2.0f, 200, 90, 0.1f, "CCC333"}};
+  publishTargets(t, 3);
+  radarDisplayDraw();
+  // Every triangle is a symbol; every tag block must sit near one of them.
+  const auto tris = g_gfx.of(DrawOp::Triangle);
+  TEST_ASSERT_TRUE(tris.size() >= 3);
+  // Measure from the tag's NEAR edge to the symbol, not from its centre, and
+  // do not add the block width -- doing both made the effective gate ~100 px on
+  // a 240 px panel, wide enough to accept the ~51 px displacement bug this test
+  // exists to catch. Adding the block height back on the y axis reopened a
+  // narrower version of the same hole: a 30 px shift still passed.
+  const auto groups = tagGroups();
+  TEST_ASSERT_TRUE_MESSAGE(groups.size() >= 3,
+      "precondition: tags must actually be drawn, or this passes vacuously");
+  // A legitimate slot displaces the whole tag by at most ONE line. Measuring
+  // per line instead forced a ~2.5-line gate, which admitted the very bug this
+  // test exists to catch.
+  const int max_dy = g_gfx.line_height + 6;
+  const int max_dx = 34;   // symbol half-width + gap + a little slack
+  for (const auto& b : groups) {
+    bool near_a_symbol = false;
+    for (const auto& tri : tris) {
+      const int near_edge = (b.x + b.w / 2 < tri.x) ? (b.x + b.w) : b.x;
+      const int cy = b.y + b.h / 2;
+      if (abs(near_edge - tri.x) <= max_dx && abs(cy - tri.y) <= max_dy)
+        near_a_symbol = true;
+    }
+    char m[96];
+    snprintf(m, sizeof(m), "tag at (%d,%d) is not adjacent to any symbol", b.x, b.y);
+    TEST_ASSERT_TRUE_MESSAGE(near_a_symbol, m);
+  }
+}
+
+// When space runs out the NEAREST aircraft keeps its label.
+static void test_the_nearest_aircraft_keeps_its_label() {
+  saveRunwaysFromPortal("");   // isolate the traffic layer
+  Target t[] = {{1.0f, 0.0f, 200, 90, 0.1f, "NEAR11"},
+                {1.05f, 0.05f, 200, 90, 0.1f, "MID222"},
+                {1.1f, 0.1f, 200, 90, 0.1f, "FAR333"},
+                {1.15f, 0.15f, 200, 90, 0.1f, "FAR444"},
+                {1.2f, 0.2f, 200, 90, 0.1f, "FAR555"}};
+  publishTargets(t, 5);
+  radarDisplayDraw();
+  bool near_labelled = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) if (o.text == "NEAR11") near_labelled = true;
+  TEST_ASSERT_TRUE_MESSAGE(near_labelled,
+      "with tags contending, the closest target must be the one that keeps its label");
+  // and every symbol is still drawn even when its label was dropped
+  TEST_ASSERT_EQUAL_INT_MESSAGE(5, (int)g_gfx.count(DrawOp::Triangle),
+      "a dropped label must not drop the aircraft");
+}
+
+// ------------------------------------------------------- dead reckoning -----
+
+static int symbolX(const char* callsign_unused) {
+  const auto tris = g_gfx.of(DrawOp::Triangle);
+  return tris.empty() ? -1 : tris[0].x;
+}
+
+static void test_target_advances_along_its_track_between_fetches() {
+  Target t[] = {{0.0f, 0.0f, 400, 90, 0.0f, "MOVER1"}};   // due east, fast
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  const int x0 = symbolX("MOVER1");
+  g_gfx.reset();
+  mockAdvanceMs(6000);                                     // 6 s later
+  radarDisplayDraw();
+  const int x1 = symbolX("MOVER1");
+  TEST_ASSERT_TRUE_MESSAGE(x1 > x0,
+      "an eastbound target must move right as dead reckoning advances it");
+}
+
+// The clamp must cap seen_pos + our own age, not just our own age.
+static void test_extrapolation_is_clamped_on_the_total_age() {
+  Target near_horizon[] = {{0.0f, 0.0f, 400, 90, 11.0f, "OLDFIX"}};
+  publishTargets(near_horizon, 1);
+  radarDisplayDraw();
+  const int x_at_11 = symbolX("OLDFIX");
+  g_gfx.reset();
+  mockAdvanceMs(8000);      // total age 19 s, well past the 12 s horizon
+  radarDisplayDraw();
+  const int x_later = symbolX("OLDFIX");
+  // 11 s of the horizon was already consumed by seen_pos, so at most 1 s more.
+  const float px_per_km = pxPerKm();
+  const int one_second_px = (int)(400.0f * 1.852f / 3600.0f * px_per_km) + 2;
+  char m[128];
+  snprintf(m, sizeof(m), "moved %d px after the clamp; at most %d expected",
+           x_later - x_at_11, one_second_px);
+  TEST_ASSERT_TRUE_MESSAGE(x_later - x_at_11 <= one_second_px, m);
+}
+
+static void test_a_stale_fix_is_dimmed_not_hidden() {
+  Target fresh[] = {{2.0f, 0.0f, 200, 90, 0.1f, "FRESH1"}};
+  publishTargets(fresh, 1);
+  radarDisplayDraw();
+  const uint16_t live_colour = g_gfx.of(DrawOp::Triangle)[0].color;
+
+  g_gfx.reset();
+  Target stale[] = {{2.0f, 0.0f, 200, 90, 30.0f, "STALE1"}};   // fix 30 s old
+  publishTargets(stale, 1);
+  radarDisplayDraw();
+  const auto tris = g_gfx.of(DrawOp::Triangle);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)tris.size(), "a stale target is still shown");
+  TEST_ASSERT_TRUE_MESSAGE(tris[0].color != live_colour,
+      "a fix older than the horizon must be visually distinguishable");
+}
+
+// A stalled feed must dim EVERYTHING, then clear it entirely at expiry.
+static void test_a_stalled_feed_dims_then_clears() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  const uint16_t live = g_gfx.of(DrawOp::Triangle)[0].color;
+
+  g_gfx.reset(); mockAdvanceMs(20000);          // 20 s: past the DR horizon
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT(1, (int)g_gfx.count(DrawOp::Triangle));
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.of(DrawOp::Triangle)[0].color != live,
+      "a stalled feed must dim every target, not present them as live");
+
+  g_gfx.reset(); mockAdvanceMs(50000);          // 70 s total: expired
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Triangle),
+      "past the expiry window the traffic layer must be gone entirely");
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Circle) > 0,
+      "...but the grid must still be drawn");
+}
+
+// ------------------------------------------------------------- frame -------
+
+static void test_a_normal_frame_is_blitted_once() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  TEST_ASSERT_TRUE(radarDisplayDraw());
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)g_gfx.count(DrawOp::Push),
+      "the composed frame must reach the panel exactly once");
+}
+
+static void test_sprite_failure_falls_back_to_direct_drawing() {
+  g_gfx.sprite_alloc_fails = true;
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  TEST_ASSERT_TRUE_MESSAGE(radarDisplayDraw(),
+      "without a sprite the panel is written directly, so the frame IS shown");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Push), "nothing to blit");
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Triangle) > 0, "traffic still drawn");
+}
+
+// A 115 KB allocation must not be retried every frame on a starved heap.
+static void test_sprite_allocation_is_not_retried_every_frame() {
+  // Advance past any backoff a previous test may have armed, or this measures
+  // inherited state instead of its own.
+  mockAdvanceMs(60000);
+  g_gfx.sprite_alloc_fails = true;
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  const int after_first = g_gfx.sprite_alloc_attempts;
+  TEST_ASSERT_TRUE_MESSAGE(after_first > 0,
+      "this test must itself trigger an allocation attempt, not inherit one");
+  for (int i = 0; i < 20; ++i) { mockAdvanceMs(100); radarDisplayRefreshAircraft(); }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(after_first, g_gfx.sprite_alloc_attempts,
+      "inside the backoff window the allocation must not be attempted again");
+  mockAdvanceMs(6000);
+  radarDisplayRefreshAircraft();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.sprite_alloc_attempts > after_first,
+      "after the backoff it should try once more");
+}
+
+// --------------------------------------------------------------- grid ------
+
+// The crosshairs cost 25.9 ms/frame as anti-aliased wide lines; they are
+// axis-aligned so they must be plain rectangles.
+static void test_crosshairs_are_rectangles_not_antialiased_lines() {
+  Target none[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(none, 1);
+  radarDisplayDraw();
+  int full_span_wide_lines = 0;
+  for (const auto& o : g_gfx.of(DrawOp::WideLine))
+    if (abs(o.x - o.x2) > 150 || abs(o.y - o.y2) > 150) ++full_span_wide_lines;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, full_span_wide_lines,
+      "a full-diameter drawWideLine is the 25.9 ms crosshair regression");
+  bool h = false, v = false;
+  for (const auto& o : g_gfx.of(DrawOp::FillRect)) {
+    if (o.w > 200 && o.h <= 4) h = true;
+    if (o.h > 200 && o.w <= 4) v = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(h && v, "both spokes must be drawn as fillRect");
+}
+
+static void test_grid_has_the_expected_rings() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  int outer = 0;
+  for (const auto& o : g_gfx.of(DrawOp::Circle)) if (o.r == kGridOuterRadius) ++outer;
+  TEST_ASSERT_TRUE_MESSAGE(outer > 0, "the outer ring must be drawn at kGridOuterRadius");
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Circle) >= (size_t)kRingCount,
+                           "every ring must be drawn");
+}
+
+// ------------------------------------------------------- runway overlay ----
+
+/** Madrid-Barajas: four runways, and the airport this device actually sees. */
+static constexpr double kLemdLat = 40.4719;
+static constexpr double kLemdLon = -3.5626;
+
+static void atAirport() {
+  char a[32], b[32];
+  snprintf(a, sizeof(a), "%.6f", kLemdLat);
+  snprintf(b, sizeof(b), "%.6f", kLemdLon);
+  services::location::saveFromStrings(a, b);
+  saveRunwaysFromPortal("T");
+}
+/** Runway strips are the teal wide lines; aircraft vectors are magenta. */
+static int runwayStrips() {
+  int n = 0;
+  for (const auto& o : g_gfx.of(DrawOp::WideLine))
+    if (o.color == kColorRunway) ++n;
+  return n;
+}
+static bool drewLabel(const char* icao) {
+  for (const auto& o : g_gfx.of(DrawOp::Text)) if (o.text == icao) return true;
+  return false;
+}
+
+static void test_runways_are_drawn_at_a_real_airport() {
+  atAirport();
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(runwayStrips() > 0, "LEMD's strips must be drawn");
+  TEST_ASSERT_TRUE_MESSAGE(drewLabel("LEMD"), "the ICAO label must be drawn");
+}
+
+static void test_no_runways_when_the_overlay_is_switched_off() {
+  atAirport();
+  saveRunwaysFromPortal("");
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, runwayStrips(), "the toggle must suppress the overlay");
+  TEST_ASSERT_FALSE_MESSAGE(drewLabel("LEMD"), "and its labels");
+}
+
+static void test_no_runways_in_the_middle_of_the_ocean() {
+  services::location::saveFromStrings("0.0", "-140.0");   // South Pacific
+  saveRunwaysFromPortal("T");
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, runwayStrips(), "no airport is anywhere near");
+}
+
+// The cache exists because rescanning 1706 segments per frame cost ~34 ms. It
+// must survive repeated frames unchanged, and must rebuild when the view moves.
+static void test_cached_geometry_is_stable_across_frames() {
+  atAirport();
+  radarDisplayDraw();
+  std::vector<DrawOp> first = g_gfx.of(DrawOp::WideLine);
+  g_gfx.reset();
+  radarDisplayDraw();
+  std::vector<DrawOp> second = g_gfx.of(DrawOp::WideLine);
+  TEST_ASSERT_EQUAL_INT_MESSAGE((int)first.size(), (int)second.size(),
+                                "the same view must draw the same strips");
+  for (size_t i = 0; i < first.size(); ++i) {
+    TEST_ASSERT_EQUAL_INT(first[i].x, second[i].x);
+    TEST_ASSERT_EQUAL_INT(first[i].y, second[i].y);
+  }
+}
+
+static void test_cache_rebuilds_when_the_range_changes() {
+  atAirport();
+  radarDisplayDraw();
+  int before_x = -1;
+  for (const auto& o : g_gfx.of(DrawOp::WideLine)) if (o.color == kColorRunway) { before_x = o.x; break; }
+  TEST_ASSERT_TRUE(before_x >= 0);
+  g_gfx.reset();
+  rangeNext();                       // a different scale: geometry must move
+  radarDisplayDraw();
+  int after_x = -1;
+  for (const auto& o : g_gfx.of(DrawOp::WideLine)) if (o.color == kColorRunway) { after_x = o.x; break; }
+  TEST_ASSERT_TRUE(after_x >= 0);
+  TEST_ASSERT_TRUE_MESSAGE(before_x != after_x,
+      "a stale cache would keep drawing the previous preset's geometry");
+}
+
+static void test_cache_rebuilds_when_the_location_changes() {
+  atAirport();
+  radarDisplayDraw();
+  const int strips_at_airport = runwayStrips();
+  TEST_ASSERT_TRUE(strips_at_airport > 0);
+  g_gfx.reset();
+  services::location::saveFromStrings("0.0", "-140.0");
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, runwayStrips(),
+      "moving the radar centre must invalidate the cached screen geometry");
+}
+
+// Strips are capped; labels must still be collected for every in-range airport
+// so a dropped strip never costs an airport its identity.
+// The caps are only safe because no point on Earth has that many large-airport
+// strips within the widest preset's fetch disc. Scan the shipped dataset and
+// prove it, rather than assuming: regenerating the table with medium airports
+// would silently start truncating.
+static void test_the_shipped_dataset_never_reaches_the_caps() {
+  using namespace data::large_airports;
+  int runways_per_airport[kAirportCount] = {0};
+  for (size_t i = 0; i < kRunwayCount; ++i) {
+    TEST_ASSERT_TRUE_MESSAGE(kRunways[i].airport_idx < kAirportCount,
+        "a runway indexes an airport that does not exist -- out-of-bounds read");
+    ++runways_per_airport[kRunways[i].airport_idx];
+  }
+  // Derived from the preset table, not hardcoded: adding a wider preset must
+  // widen this scan too, or the test that exists to catch silent truncation
+  // would itself go quietly out of date.
+  float radius_km = 0.0f;
+  for (size_t i = 0; i < kRangePresetCount; ++i) {
+    Preferences sp; sp.begin("planeradar", false); sp.putUChar("rangeIdx", (uint8_t)i); sp.end();
+    rangeInit();
+    if (fetchRadiusKm() > radius_km) radius_km = fetchRadiusKm();
+  }
+  TEST_ASSERT_TRUE_MESSAGE(radius_km > 30.0f, "sanity: widest fetch disc should exceed 30 km");
+  int worst_strips = 0, worst_airports = 0;
+  for (size_t c = 0; c < kAirportCount; ++c) {
+    const float clat = kAirports[c].lat_e7 * 1e-7f;
+    const float clon = kAirports[c].lon_e7 * 1e-7f;
+    const float cosl = cosf(clat * 0.01745329252f);
+    int strips = 0, airports = 0;
+    for (size_t j = 0; j < kAirportCount; ++j) {
+      const float dy = (kAirports[j].lat_e7 * 1e-7f - clat) * 111.0f;
+      const float dx = (kAirports[j].lon_e7 * 1e-7f - clon) * 111.0f * cosl;
+      if (dx * dx + dy * dy <= radius_km * radius_km) {
+        ++airports; strips += runways_per_airport[j];
+      }
+    }
+    if (strips > worst_strips) worst_strips = strips;
+    if (airports > worst_airports) worst_airports = airports;
+  }
+  char m[160];
+  snprintf(m, sizeof(m), "worst case %d strips vs cap %d -- truncation is now reachable",
+           worst_strips, (int)ui::runway::kMaxCachedSegments);
+  TEST_ASSERT_TRUE_MESSAGE(worst_strips <= (int)ui::runway::kMaxCachedSegments, m);
+  snprintf(m, sizeof(m), "worst case %d airports vs label cap %d",
+           worst_airports, (int)ui::runway::kMaxAirportLabels);
+  TEST_ASSERT_TRUE_MESSAGE(worst_airports <= (int)ui::runway::kMaxAirportLabels, m);
+}
+
+// Sanity only: an in-range airport is both drawn and identified. The cap is
+// unreachable with the shipped dataset, so the label-before-cap ORDERING is
+// pinned in test_runway_cap, which forces the cap to 1.
+static void test_an_in_range_airport_is_drawn_and_identified() {
+  atAirport();
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(runwayStrips() > 0 && drewLabel("LEMD"),
+      "an in-range airport must be both drawn and identified");
+}
+
+// ------------------------------- silently-deletable draw paths -------------
+// Each of the following could be removed entirely without any test failing.
+
+static void test_speed_vectors_are_drawn_for_moving_traffic() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{2.0f, 0.0f, 300, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  int vectors = 0;
+  for (const auto& o : g_gfx.of(DrawOp::WideLine))
+    if (o.color == kColorTrackVector) ++vectors;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, vectors, "a moving target must show its track vector");
+}
+
+static void test_a_stationary_target_has_no_speed_vector() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{2.0f, 0.0f, 0, 90, 0.1f, "AAA111"}};   // gs = 0
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  for (const auto& o : g_gfx.of(DrawOp::WideLine))
+    TEST_ASSERT_TRUE_MESSAGE(o.color != kColorTrackVector,
+        "a stationary target must not draw a vector");
+}
+
+// Traffic outside the ring is shown as a bearing cue on the screen rim.
+static void test_beyond_ring_traffic_becomes_a_rim_dot() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{60.0f, 60.0f, 300, 45, 0.1f, "FARNE1"}};   // NE, far outside
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Triangle),
+      "a target past the ring is not drawn as a symbol");
+  int dots = 0, dx = 0, dy = 0;
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle)) {
+    if (o.r != kBeyondRingDotRadiusPx) continue;   // skip the centre dot
+    ++dots; dx = o.x - kCenterX; dy = o.y - kCenterY;
+  }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, dots, "exactly one rim dot for one distant target");
+  TEST_ASSERT_TRUE_MESSAGE(dx > 0 && dy < 0, "a NE target must sit NE on the rim");
+  const int r = (int)sqrtf((float)(dx * dx + dy * dy));
+  TEST_ASSERT_INT_WITHIN_MESSAGE(2, kCenterX - kBeyondRingScreenMarginPx, r,
+      "the dot must sit on the screen rim, not at the target's true distance");
+}
+
+static void test_tag_lines_carry_their_distinct_colours() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  bool callsign = false, type = false, alt = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (o.text == "AAA111" && o.color == kColorLabel) callsign = true;
+    if (o.text == "B738"   && o.color == kColorTagType) type = true;
+    if (o.text == "3000 ft" && o.color == kColorTagAltitude) alt = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(callsign, "callsign line missing or wrong colour");
+  TEST_ASSERT_TRUE_MESSAGE(type, "type line missing or wrong colour");
+  TEST_ASSERT_TRUE_MESSAGE(alt, "altitude line missing or wrong colour");
+}
+
+static void test_crosshairs_are_centred_on_the_radar_origin() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  bool v = false, h = false;
+  for (const auto& o : g_gfx.of(DrawOp::FillRect)) {
+    if (o.h > 200 && o.w <= 4 && abs(o.x - kCenterX) <= 1) v = true;
+    if (o.w > 200 && o.h <= 4 && abs(o.y - kCenterY) <= 1) h = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(v, "the vertical spoke must pass through the centre");
+  TEST_ASSERT_TRUE_MESSAGE(h, "the horizontal spoke must pass through the centre");
+}
+
+static void test_cardinal_labels_are_in_the_right_places() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  int ny = 999, sy = -999, wx = 999, ex = -999;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (o.text == "N") ny = o.y;
+    if (o.text == "S") sy = o.y;
+    if (o.text == "W") wx = o.x;
+    if (o.text == "E") ex = o.x;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(ny < kCenterY, "N must be in the upper half");
+  TEST_ASSERT_TRUE_MESSAGE(sy > kCenterY, "S must be in the lower half");
+  TEST_ASSERT_TRUE_MESSAGE(wx < kCenterX, "W must be on the left");
+  TEST_ASSERT_TRUE_MESSAGE(ex > kCenterX, "E must be on the right");
+}
+
+static void test_the_scale_label_follows_the_range_and_units() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  bool km = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) if (o.text == "10km") km = true;
+  TEST_ASSERT_TRUE_MESSAGE(km, "the 10 km preset must label ring 3 as 10km");
+  g_gfx.reset();
+  saveMilesFromPortal("T");
+  radarDisplayDraw();
+  bool mi = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) if (o.text == "6mi") mi = true;
+  TEST_ASSERT_TRUE_MESSAGE(mi, "with miles selected the same ring reads 6mi");
+  saveMilesFromPortal("");
+}
+
+// The producer of blitted==false: if the aircraft list cannot be locked, the
+// frame must NOT be pushed, or every target flashes off for a frame.
+static void test_a_locked_aircraft_list_suppresses_the_blit() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  // aircraftLock() short-circuits to true when no mutex exists, so the lock
+  // path is only reachable once the fetch task has been started.
+  TEST_ASSERT_TRUE_MESSAGE(services::scene::startPollTask(),
+                           "need a real mutex for the lock to be able to fail");
+  g_gfx.reset();
+  g_mutex_take_fails = 1;
+  const bool blitted = radarDisplayRefreshAircraft();
+  TEST_ASSERT_FALSE_MESSAGE(blitted, "a frame missing its traffic must report not-drawn");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Push),
+      "pushing it would flash every target off for a frame");
+}
+
+static void test_the_grid_is_cleared_every_frame() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::FillScreen) >= 1,
+      "without a clear, the previous frame's traffic ghosts");
+}
+
+// ------------------------------- smooth (VLW) font path --------------------
+// The device ships the VLW font as its PRIMARY path; the bitmap font is only a
+// fallback for when the embedded blob fails to load. Everything above runs the
+// fallback, so these re-run the layout invariants with smooth metrics selected.
+
+static void test_smooth_font_is_actually_selected() {
+  useFont(true);
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(ui::s_cardinal_use_vlw,
+      "with a smooth font available the cardinal labels must use it");
+  TEST_ASSERT_TRUE_MESSAGE(ui::s_tag_use_vlw, "and so must the aircraft tags");
+}
+
+// findVlwSizeForHeight binary-searches a scale to hit a target cap height.
+static void test_the_vlw_size_search_converges_on_the_target_height() {
+  useFont(true);
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(ui::s_cardinal_vlw_size > 0.25f && ui::s_cardinal_vlw_size < 1.2f,
+      "the search must land inside its own bracket, not on an endpoint");
+  // Applying that size must reproduce roughly the requested cap height.
+  displayFontSetSmoothSize(tft, ui::s_cardinal_vlw_size);
+  TEST_ASSERT_INT_WITHIN_MESSAGE(3, kCardinalLabelHeightPx, tft.fontHeight(),
+      "the chosen scale must actually produce the target height");
+}
+
+static void test_the_scale_label_is_smaller_than_the_cardinals() {
+  useFont(true);
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(ui::s_scale_vlw_size < ui::s_cardinal_vlw_size,
+      "the range label is deliberately set shorter than N/S/E/W");
+}
+
+static void test_tags_never_overlap_with_the_smooth_font_either() {
+  useFont(true);
+  saveRunwaysFromPortal("");
+  Target t[] = {{2.0f, 0.2f, 200, 90, 0.1f, "AAA111"},
+                {2.0f, 0.0f, 200, 90, 0.1f, "BBB222"},
+                {2.1f, -0.2f, 200, 90, 0.1f, "CCC333"},
+                {2.0f, -0.4f, 200, 90, 0.1f, "DDD444"}};
+  publishTargets(t, 4);
+  radarDisplayDraw();
+  const auto blocks = tagBlocks();
+  TEST_ASSERT_TRUE_MESSAGE(blocks.size() >= 6, "precondition: tags must be drawn");
+  for (size_t i = 0; i < blocks.size(); ++i)
+    for (size_t j = i + 1; j < blocks.size(); ++j)
+      TEST_ASSERT_FALSE_MESSAGE(overlaps(blocks[i], blocks[j]),
+          "collision avoidance must hold for the smooth font too");
+}
+
+static void test_runway_labels_render_with_the_smooth_font() {
+  useFont(true);
+  atAirport();
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(ui::runway::s_runway_label_use_vlw,
+      "runway ICAOs must use the smooth font when it is available");
+  TEST_ASSERT_TRUE_MESSAGE(drewLabel("LEMD"), "and still be drawn");
+}
+
+// --------------------------------- nothing may be drawn off-panel ----------
+
+static void test_no_text_or_rect_is_drawn_outside_the_panel() {
+  atAirport();
+  Target t[] = {{2.0f, 1.5f, 200, 90, 0.1f, "WWMM88"},    // wide glyphs, near rim
+                {-2.0f, -1.5f, 200, 270, 0.1f, "IIll11"}};
+  publishTargets(t, 2);
+  radarDisplayDraw();
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    // The N/S/E/W bezel labels are deliberately nudged past the edge
+    // (kCardinalNorthOffsetY = -1 etc.) to sit against the rim of the round
+    // panel, so they are exempt. Everything else must be fully visible.
+    if (o.text.size() == 1 && strchr("NSEW", o.text[0])) continue;
+    const Rect r = textRect(o);
+    char m[176];
+    snprintf(m, sizeof(m), "text '%s' spans x[%d,%d] y[%d,%d] -- outside the 240x240 panel",
+             o.text.c_str(), r.x, r.x + r.w, r.y, r.y + r.h);
+    TEST_ASSERT_TRUE_MESSAGE(r.x >= 0 && r.x + r.w <= kSize && r.y >= 0 &&
+                             r.y + r.h <= kSize, m);
+  }
+  // Filled rectangles too -- label backings are positioned from text metrics
+  // and can run off the edge independently of the glyphs.
+  for (const auto& o : g_gfx.of(DrawOp::FillRect)) {
+    if (o.w > 200 || o.h > 200) continue;        // the full-span crosshairs
+    char m[160];
+    snprintf(m, sizeof(m), "fillRect x[%d,%d] y[%d,%d] is outside the 240x240 panel",
+             o.x, o.x + o.w, o.y, o.y + o.h);
+    TEST_ASSERT_TRUE_MESSAGE(o.x >= -2 && o.x + o.w <= kSize + 2 && o.y >= -2 &&
+                             o.y + o.h <= kSize + 2, m);
+  }
+  // The cardinals are exempt from the bounds check, but must still be close to
+  // the edge rather than arbitrarily off-panel.
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (!(o.text.size() == 1 && strchr("NSEW", o.text[0]))) continue;
+    char m[128];
+    const Rect r = textRect(o);
+    snprintf(m, sizeof(m), "cardinal '%s' box y[%d,%d] is more than a few px off-panel",
+             o.text.c_str(), r.y, r.y + r.h);
+    TEST_ASSERT_TRUE_MESSAGE(r.y > -6 && r.y + r.h < kSize + 6, m);
+  }
+}
+
+// --------------------------------------------- pure geometry helpers ------
+
+// The whole point of segmentIntersectsDisc is the chord case: BOTH endpoints
+// outside the disc but the segment crossing it. Driven through rebuildCache it
+// only ever sees the trivial inside/far-away cases.
+static void test_segment_disc_intersection_handles_the_chord_case() {
+  using ui::runway::segmentIntersectsDisc;
+  const int cx = kCenterX, cy = kCenterY, r = kGridOuterRadius;
+  TEST_ASSERT_TRUE_MESSAGE(segmentIntersectsDisc(cx - 400, cy, cx + 400, cy),
+      "a line straight through the centre must intersect");
+  TEST_ASSERT_TRUE_MESSAGE(segmentIntersectsDisc(cx, cy, cx + 400, cy),
+      "an endpoint inside must intersect");
+  TEST_ASSERT_FALSE_MESSAGE(segmentIntersectsDisc(cx - 400, cy + r + 40, cx + 400, cy + r + 40),
+      "a line passing well clear must not");
+  TEST_ASSERT_FALSE_MESSAGE(segmentIntersectsDisc(cx + 400, cy, cx + 500, cy),
+      "a segment entirely beyond the disc must not, even though its infinite "
+      "line would cross");
+  TEST_ASSERT_FALSE_MESSAGE(segmentIntersectsDisc(cx + 400, cy, cx + 400, cy),
+      "a degenerate zero-length segment outside must not");
+}
+
+static void test_speed_vector_length_boundaries() {
+  using ui::speedLineLengthPx;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, speedLineLengthPx(0.0f),
+      "a stationary target has no vector");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, speedLineLengthPx(-5.0f),
+      "a negative ground speed must not produce a vector");
+  TEST_ASSERT_TRUE_MESSAGE(speedLineLengthPx(3.0f) >= kAircraftSpeedLineMinPx,
+      "a barely-moving target still gets the minimum visible stub");
+  TEST_ASSERT_TRUE_MESSAGE(speedLineLengthPx(500.0f) > speedLineLengthPx(200.0f),
+      "faster targets must draw longer vectors");
+}
+
+// The centre dot and the palette could both be deleted with the suite green.
+
+static void test_the_centre_dot_is_drawn() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  bool found = false;
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle))
+    if (o.r == kCenterDotRadius && o.x == kCenterX && o.y == kCenterY) found = true;
+  TEST_ASSERT_TRUE_MESSAGE(found, "the white dot marking your own position must be drawn");
+}
+
+// GC9A01 modules are wired BGR, so initPalette() swaps R and B for the aircraft
+// colour: "logical red renders red on screen". Comparing drawn ops against the
+// same mutable global initPalette writes would prove nothing, so this pins the
+// literal encoding.
+static void test_the_aircraft_colour_is_bgr_swapped_for_this_panel() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  const uint16_t expected = config::kDisplayRgbOrder
+      ? lgfx::LGFXBase::color565(kAircraftB, kAircraftG, kAircraftR)
+      : lgfx::LGFXBase::color565(kAircraftR, kAircraftG, kAircraftB);
+  TEST_ASSERT_EQUAL_HEX16_MESSAGE(expected, kColorAircraft,
+      "dropping the R/B swap makes every aircraft render blue on the panel");
+  TEST_ASSERT_EQUAL_HEX16_MESSAGE(expected, g_gfx.of(DrawOp::Triangle)[0].color,
+      "and the symbol must actually be drawn in it");
+}
+
+// Rim dots are painted far-first so nearer contacts sit on top where they
+// overlap. Every rim dot is clipped to the SAME circle, so comparing the dots'
+// own distance-from-centre is a tautology -- both are exactly the ring radius.
+// The real invariant is paint ORDER against each target's source distance, so
+// match each dot back to its aircraft by bearing.
+static void test_rim_dots_are_painted_far_first() {
+  saveRunwaysFromPortal("");
+  // Same bearing family is useless here; put them on clearly distinct bearings
+  // so each dot is attributable, at clearly different distances.
+  Target t[] = {{40.0f, 40.0f, 300, 45, 0.1f, "NEARER"},     // ~56 km, NE
+                {-90.0f, 90.0f, 300, 315, 0.1f, "FARTHER"}}; // ~127 km, NW
+  publishTargets(t, 2);
+  radarDisplayDraw();
+
+  int near_idx = -1, far_idx = -1;
+  for (size_t i = 0; i < g_gfx.ops.size(); ++i) {
+    const auto& o = g_gfx.ops[i];
+    if (o.kind != DrawOp::SmoothCircle || o.r != kBeyondRingDotRadiusPx) continue;
+    if (o.x > kCenterX) near_idx = (int)i;      // NE dot -> the nearer target
+    else far_idx = (int)i;                      // NW dot -> the farther target
+  }
+  TEST_ASSERT_TRUE_MESSAGE(near_idx >= 0 && far_idx >= 0,
+      "precondition: both distant targets must produce an attributable rim dot");
+  char m[192];
+  snprintf(m, sizeof(m), "the farther contact was painted at op %d, the nearer at "
+           "%d; far must come first so the nearer one wins any overlap",
+           far_idx, near_idx);
+  TEST_ASSERT_TRUE_MESSAGE(far_idx < near_idx, m);
+}
+
+// ------------------------------------------------- lock balance -----------
+// A host mutex never blocks, so a path that takes the lock and returns without
+// giving it back passes every other assertion in this file. On the device it
+// strands the render task's lock forever and the fetch task never publishes
+// again -- the radar freezes. g_mutex_outstanding is the only way to see it.
+
+static void test_every_draw_path_gives_the_aircraft_lock_back() {
+  struct Case { const char* what; void (*run)(); };
+  // 1. the ordinary path, 2. the expired-data early return, 3. no traffic.
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+
+  publishTargets(t, 1);
+  g_mutex_outstanding = 0;
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mutex_outstanding,
+      "the normal draw path leaked the aircraft lock");
+
+  publishTargets(t, 1);
+  mockAdvanceMs((services::scene::kContactExpirySec + 5) * 1000UL);
+  g_mutex_outstanding = 0;
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mutex_outstanding,
+      "the expired-data early return leaked the aircraft lock -- on the device "
+      "the fetch task blocks on it forever and the radar never updates again");
+
+  publishTargets(nullptr, 0);
+  g_mutex_outstanding = 0;
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mutex_outstanding,
+      "the empty-sky path leaked the aircraft lock");
+
+  publishTargets(t, 1);
+  g_mutex_outstanding = 0;
+  radarDisplayRefreshAircraft();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mutex_outstanding,
+      "the aircraft-only refresh leaked the aircraft lock");
+}
+
+// --------------------------------------------------- geometry bounds ------
+// The bounds test above covers text and rects. Triangles, speed vectors and
+// rim dots are positioned by entirely separate clipping code.
+static void test_no_geometry_is_drawn_outside_the_panel() {
+  // Centre stays at kLat/kLon so these offsets are measured from the origin the
+  // payload builder uses; atAirport() would move it ~14 km away and turn every
+  // symbol into a rim dot.
+  saveRunwaysFromPortal("");
+  Target t[] = {{8.0f, 8.0f, 600, 45, 0.1f, "FAST01"},     // long vector, near rim
+                {-8.0f, -8.0f, 600, 225, 0.1f, "FAST02"}};
+  publishTargets(t, 2);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Triangle) >= 2 &&
+                           g_gfx.count(DrawOp::WideLine) >= 2,
+      "precondition: symbols and speed vectors must be drawn, or this is vacuous");
+  auto inside = [](int x, int y) { return x >= -2 && x <= kSize + 2 &&
+                                          y >= -2 && y <= kSize + 2; };
+  char m[176];
+  for (const auto& o : g_gfx.of(DrawOp::Triangle)) {
+    snprintf(m, sizeof(m), "symbol at (%d,%d) is off-panel", o.x, o.y);
+    TEST_ASSERT_TRUE_MESSAGE(inside(o.x, o.y), m);
+  }
+  for (const auto& o : g_gfx.of(DrawOp::WideLine)) {
+    snprintf(m, sizeof(m), "line (%d,%d)-(%d,%d) leaves the panel", o.x, o.y, o.x2, o.y2);
+    TEST_ASSERT_TRUE_MESSAGE(inside(o.x, o.y) && inside(o.x2, o.y2), m);
+  }
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle)) {
+    if (o.r > 20) continue;                     // rings, not point markers
+    snprintf(m, sizeof(m), "dot at (%d,%d) r=%d is off-panel", o.x, o.y, o.r);
+    TEST_ASSERT_TRUE_MESSAGE(inside(o.x, o.y), m);
+  }
+}
+
+// Speed vectors specifically: unclipped, a 600 kt target near the rim throws a
+// line well past the outer ring.
+static void test_speed_vectors_are_clipped_to_the_outer_ring() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{8.0f, 8.0f, 600, 45, 0.1f, "FAST01"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  const auto lines = g_gfx.of(DrawOp::WideLine);
+  TEST_ASSERT_TRUE_MESSAGE(lines.size() >= 1, "precondition: a vector must be drawn");
+  for (const auto& o : lines) {
+    const int d = radar::distSqFromCenter(o.x2, o.y2);
+    char m[160];
+    snprintf(m, sizeof(m), "vector tip (%d,%d) is %d px from centre; the ring is %d",
+             o.x2, o.y2, (int)lroundf(sqrtf((float)d)), kGridOuterRadius);
+    TEST_ASSERT_TRUE_MESSAGE(d <= (kGridOuterRadius + 2) * (kGridOuterRadius + 2), m);
+  }
+}
+
+// ------------------------------------------------- runway label detail -----
+// drewLabel() is presence-only, so an ICAO drawn four times over (dedup gone)
+// looks identical to one drawn once. The count is the assertion.
+// drawBoldRunwayLabel() paints the ident three times at 1 px offsets to fake a
+// bold face; that is the expected per-label count.
+static constexpr int kIcaoFakeBoldPasses = 3;
+
+static void test_each_airport_label_is_drawn_exactly_once() {
+  atAirport();               // LEMD: four runways, so four chances to overprint
+  radarDisplayDraw();
+  int drawn = 0;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) if (o.text == "LEMD") ++drawn;
+  char m[200];
+  snprintf(m, sizeof(m), "'LEMD' drawn %d times; expected exactly %d (fake bold is "
+           "three 1 px-offset passes). LEMD has four runways, so without the "
+           "per-airport dedup this is 12 -- invisible to a presence-only check, "
+           "and it silently eats the airport-label cap too", drawn, kIcaoFakeBoldPasses);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(kIcaoFakeBoldPasses, drawn, m);
+}
+
+// Airports between the outer ring and the fetch radius are cached and drawn;
+// their labels have to be pulled back onto the ring or they land off-panel.
+// An airport beyond the outer ring has its label anchor clipped onto the ring,
+// and the ring runs within ~13 px of the panel edge. The label is drawn upward
+// from the anchor and centred on it, so at the top it is cut off vertically and
+// at the sides horizontally -- three independent clamps. Driving this through
+// rebuildCache() would depend on which airports happen to sit at which bearing
+// from a chosen centre, so the anchor positions are exercised directly.
+static void test_a_label_anchored_on_the_ring_stays_on_the_panel() {
+  const int cx = kCenterX, cy = kCenterY, r = kGridOuterRadius;
+  struct Spot { int x, y; const char* where; };
+  const Spot spots[] = {{cx, cy - r, "top"},    {cx, cy + r, "bottom"},
+                        {cx - r, cy, "left"},   {cx + r, cy, "right"}};
+  for (const auto& sp : spots) {
+    g_gfx.reset();
+    lgfx::LGFXBase canvas;              // every op lands in the g_gfx log
+    ui::runway::drawBoldRunwayLabel(canvas, "LEMD", sp.x, sp.y);
+    const auto texts = g_gfx.of(DrawOp::Text);
+    TEST_ASSERT_TRUE_MESSAGE(!texts.empty(), "precondition: the label must be drawn");
+    for (const auto& o : texts) {
+      const Rect tr = textRect(o);
+      char m[208];
+      snprintf(m, sizeof(m), "a label anchored at the %s of the ring spans x[%d,%d] "
+               "y[%d,%d] -- outside the 240x240 panel; it must be clamped",
+               sp.where, tr.x, tr.x + tr.w, tr.y, tr.y + tr.h);
+      TEST_ASSERT_TRUE_MESSAGE(tr.x >= 0 && tr.x + tr.w <= kSize && tr.y >= 0 &&
+                               tr.y + tr.h <= kSize, m);
+    }
+    for (const auto& o : g_gfx.of(DrawOp::FillRect)) {
+      char m[208];
+      snprintf(m, sizeof(m), "the label's backing plate at the %s spans x[%d,%d] "
+               "y[%d,%d] -- outside the panel", sp.where, o.x, o.x + o.w, o.y, o.y + o.h);
+      TEST_ASSERT_TRUE_MESSAGE(o.x >= 0 && o.x + o.w <= kSize && o.y >= 0 &&
+                               o.y + o.h <= kSize, m);
+    }
+  }
+}
+
+// The symbol/rim-dot boundary is inset from the ring so a triangle never hangs
+// half outside it. Without the inset, targets right at the ring draw as symbols.
+static void test_the_symbol_boundary_is_inset_from_the_outer_ring() {
+  saveRunwaysFromPortal("");
+  const float outer_km = radar::rangeCurrent().outer_km;
+  const float inset_km = outer_km * (float)radar::kAircraftInsideRingInsetPx /
+                         (float)radar::kGridOuterRadius;
+  TEST_ASSERT_TRUE_MESSAGE(inset_km > 0.05f, "precondition: the inset must be real");
+  // Just inside the ring but outside the inset boundary: must be a rim dot.
+  const float d = outer_km - inset_km * 0.5f;
+  Target t[] = {{0.0f, d, 200, 0, 0.1f, "EDGE01"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Triangle),
+      "a target inside the ring but within the inset must become a rim dot, or "
+      "its symbol hangs half outside the grid");
+  // Comfortably inside: must be a symbol, so the test cannot pass by drawing
+  // nothing at all.
+  Target in[] = {{0.0f, outer_km * 0.5f, 200, 0, 0.1f, "MID001"}};
+  publishTargets(in, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)g_gfx.count(DrawOp::Triangle),
+      "and a target well inside must still draw a symbol");
+}
+
+// The bitmap fallback picks fonts by closest height, exactly as the VLW path
+// does by size. Only the VLW path was pinned, so returning the wrong candidate
+// on the bitmap path -- which is what every other test in this file runs --
+// inverted the deliberate size hierarchy with the suite still green.
+static void test_the_bitmap_font_picker_returns_the_closest_candidate() {
+  using ui::pickGfxFontClosest;
+  const lgfx::GFXfont* both[] = {&fonts::FreeSansBold12pt7b, &fonts::FreeSansBold9pt7b};
+  const lgfx::GFXfont* reversed[] = {&fonts::FreeSansBold9pt7b, &fonts::FreeSansBold12pt7b};
+  // 9pt measures 13 px, 12pt measures 17 px. Order must not matter: returning
+  // candidates[0] or candidates[count-1] instead of the closest inverts the
+  // deliberate cardinal-vs-scale size hierarchy, and every display test in this
+  // file runs the bitmap path, so nothing else would notice.
+  TEST_ASSERT_EQUAL_PTR_MESSAGE(&fonts::FreeSansBold9pt7b,
+      pickGfxFontClosest(13, both, 2), "13 px target must pick the 9pt face");
+  TEST_ASSERT_EQUAL_PTR_MESSAGE(&fonts::FreeSansBold9pt7b,
+      pickGfxFontClosest(13, reversed, 2), "...whichever slot it sits in");
+  TEST_ASSERT_EQUAL_PTR_MESSAGE(&fonts::FreeSansBold12pt7b,
+      pickGfxFontClosest(17, both, 2), "17 px target must pick the 12pt face");
+  TEST_ASSERT_EQUAL_PTR_MESSAGE(&fonts::FreeSansBold12pt7b,
+      pickGfxFontClosest(17, reversed, 2), "...whichever slot it sits in");
+}
+
+// And the hierarchy it exists to produce: the scale label is never larger than
+// the cardinals on the bitmap path either.
+static void test_the_bitmap_scale_label_is_not_larger_than_the_cardinals() {
+  useFont(false);
+  saveRunwaysFromPortal("");
+  publishTargets(nullptr, 0);
+  radarDisplayDraw();
+  int cardinal_h = 0, scale_h = 0;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (o.text.size() == 1 && strchr("NSEW", o.text[0])) cardinal_h = o.h;
+    else if (o.text.find("km") != std::string::npos ||
+             o.text.find("mi") != std::string::npos) scale_h = o.h;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(cardinal_h > 0 && scale_h > 0,
+      "precondition: both a cardinal and the scale label must be drawn");
+  char m[144];
+  snprintf(m, sizeof(m), "bitmap cardinal height %d vs scale height %d", cardinal_h, scale_h);
+  TEST_ASSERT_TRUE_MESSAGE(scale_h <= cardinal_h, m);
+}
+
+// The scale label sits on top of the ring it annotates, so it is painted over a
+// background plate. Without it the ring strikes through the text.
+static void test_the_scale_label_has_a_background_plate() {
+  saveRunwaysFromPortal("");
+  publishTargets(nullptr, 0);
+  radarDisplayDraw();
+  // of() returns by value; hold a copy, not a pointer into the temporary.
+  DrawOp label{};
+  bool found = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text))
+    if (o.text.find("km") != std::string::npos || o.text.find("mi") != std::string::npos) {
+      label = o; found = true;
+    }
+  TEST_ASSERT_TRUE_MESSAGE(found, "precondition: the scale label must be drawn");
+  // The label is drawn middle_right, so compare against its resolved box.
+  const Rect tr = textRect(label);
+  bool plated = false;
+  for (const auto& r : g_gfx.of(DrawOp::FillRect)) {
+    if (r.w > 60 || r.h > 40) continue;                  // the crosshair spans
+    if (r.color != radar::kColorBackground) continue;
+    if (r.x <= tr.x && r.y <= tr.y && r.x + r.w >= tr.x + tr.w &&
+        r.y + r.h >= tr.y + tr.h)
+      plated = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(plated,
+      "the scale label needs a background plate, or the ring strikes through it");
+}
+
+// FillScreen must come FIRST. Clearing after the grid is drawn wipes the frame,
+// and a count-only assertion cannot tell the two apart.
+static void test_the_frame_is_cleared_before_anything_is_drawn() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  const auto& all = g_gfx.ops;
+  TEST_ASSERT_TRUE_MESSAGE(all.size() > 5, "precondition: a frame must be drawn");
+  int first_clear = -1, first_other = -1;
+  for (size_t i = 0; i < all.size(); ++i) {
+    if (all[i].kind == DrawOp::FillScreen) { if (first_clear < 0) first_clear = (int)i; }
+    else if (first_other < 0) first_other = (int)i;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(first_clear >= 0, "the frame must be cleared");
+  TEST_ASSERT_TRUE_MESSAGE(first_other < 0 || first_clear < first_other,
+      "the clear must precede every other op, or it erases the frame it just drew");
+}
+
+// Without a sprite the grid still reaches the panel, but a failed traffic lock
+// means the targets were erased from it. Reporting that as painted latches a
+// grid with no aircraft on it until the next publish.
+// MUST run before any test allocates the frame sprite: s_frame_ready is a
+// file-static, so once a sprite exists sprite_alloc_fails does nothing and this
+// silently re-tests renderFrame() instead -- which is how it first passed.
+static void test_the_direct_draw_fallback_reports_a_failed_traffic_lock() {
+  g_gfx.sprite_alloc_fails = true;            // force the no-sprite path
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  // aircraftLock() returns true unconditionally when no mutex exists, so
+  // g_mutex_take_fails would never be consumed without a real one.
+  services::scene::startPollTask();
+  g_gfx.reset();
+  TEST_ASSERT_TRUE_MESSAGE(radarDisplayDraw(),
+      "precondition: the fallback path must normally report a painted frame");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Push),
+      "precondition: this must be the direct-draw path, with nothing to blit");
+  g_mutex_take_fails = 1;
+  TEST_ASSERT_FALSE_MESSAGE(radarDisplayDraw(),
+      "a frame drawn without its traffic must not be reported as painted, or a "
+      "bare grid is latched until the next publish");
+  g_gfx.sprite_alloc_fails = false;
+}
+
+// --------------------------------------------------- tags at the rim ------
+// The off-panel tests use fixtures 2-8 km from the centre, i.e. 16-64 px in --
+// no tag clamp is ever reached. Put traffic right against the inner ring, on
+// every side, so the tag has to be clamped or it leaves the panel.
+static void test_tags_near_the_ring_stay_on_the_panel() {
+  saveRunwaysFromPortal("");
+  // As far out as a symbol is allowed to sit: any further and it becomes a rim
+  // dot with no tag at all, which is how a 0.88 factor silently emptied this.
+  const float r = radar::rangeCurrent().outer_km * 0.97f *
+                  (float)(radar::kGridOuterRadius - radar::kAircraftInsideRingInsetPx) /
+                  (float)radar::kGridOuterRadius;
+  const float d = radar::rangeCurrent().outer_km * 0.02f;
+  // Pairs, not singles: a tag prefers the side facing the centre, so a lone
+  // eastern target puts its tag on the LEFT and never reaches the right-edge
+  // clamp. A second target beside it takes that slot and forces the flip
+  // outward, which is the only way the clamp is exercised at all.
+  // Three per side, not two: with only two, the second tag takes the opposite
+  // side (a slot with no vertical offset) and the vertical slots -- and so the
+  // top/bottom clamp -- are never reached either.
+  // East/west groups exercise the horizontal clamps; the north/south groups are
+  // stacked VERTICALLY at the measured 2 km spacing so a line_dy slot is
+  // accepted right at the top and bottom of the ring -- the only way the
+  // vertical clamp is reached.
+  Target t[] = {{r, 0.0f, 200, 90, 0.1f, "EEEEEE"},   {r, d, 200, 90, 0.1f, "EEEE22"},
+                {r, -d, 200, 90, 0.1f, "EEEE33"},
+                {-r, 0.0f, 200, 270, 0.1f, "WWWWWW"}, {-r, d, 200, 270, 0.1f, "WWWW22"},
+                {-r, -d, 200, 270, 0.1f, "WWWW33"},
+                {0.0f, r, 200, 0, 0.1f, "NNNNNN"},    {0.0f, r - 2.0f, 200, 0, 0.1f, "NNNN22"},
+                {0.0f, r - 4.0f, 200, 0, 0.1f, "NNNN33"},
+                {0.0f, -r, 200, 180, 0.1f, "SSSSSS"}, {0.0f, -r + 2.0f, 200, 180, 0.1f, "SSSS22"},
+                {0.0f, -r + 4.0f, 200, 180, 0.1f, "SSSS33"}};
+  publishTargets(t, 12);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Triangle) >= 9,
+      "precondition: the targets must be inside the ring, or no tags are drawn");
+  TEST_ASSERT_TRUE_MESSAGE(tagBlocks().size() >= 8,
+      "precondition: tags must be placed on both sides, or no clamp is reached");
+  // Assert the block rectangles too -- the text ops alone miss the backing.
+  for (const auto& b : tagBlocks()) {
+    char bm[176];
+    snprintf(bm, sizeof(bm), "tag block x[%d,%d] y[%d,%d] is outside the panel",
+             b.x, b.x + b.w, b.y, b.y + b.h);
+    TEST_ASSERT_TRUE_MESSAGE(b.x >= 0 && b.x + b.w <= kSize && b.y >= 0 &&
+                             b.y + b.h <= kSize, bm);
+  }
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    const Rect tr = textRect(o);
+    if (o.text.size() == 1 && strchr("NSEW", o.text[0])) continue;   // bezel
+    char m[192];
+    snprintf(m, sizeof(m), "tag text '%s' spans x[%d,%d] y[%d,%d] -- outside the "
+             "240x240 panel", o.text.c_str(), tr.x, tr.x + tr.w, tr.y, tr.y + tr.h);
+    TEST_ASSERT_TRUE_MESSAGE(tr.x >= 0 && tr.x + tr.w <= kSize && tr.y >= 0 &&
+                             tr.y + tr.h <= kSize, m);
+  }
+}
+
+// --------------------------------------------- the symbol itself ----------
+// Every test so far asserts only that a Triangle op exists at some (x,y). Both
+// "all symbols point north" and "the triangle loses its wings" survive that.
+static void test_the_symbol_points_along_the_track() {
+  saveRunwaysFromPortal("");
+  Target north[] = {{0.0f, 3.0f, 300, 0, 0.0f, "NORTH1"}};
+  publishTargets(north, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(!g_gfx.of(DrawOp::Triangle).empty(),
+      "precondition: a symbol must be drawn");
+  const DrawOp n = g_gfx.of(DrawOp::Triangle)[0];
+
+  Target east[] = {{0.0f, 3.0f, 300, 90, 0.0f, "EAST01"}};
+  publishTargets(east, 1);
+  g_gfx.reset();
+  radarDisplayDraw();
+  const DrawOp e = g_gfx.of(DrawOp::Triangle)[0];
+
+  char m[224];
+  snprintf(m, sizeof(m), "north-bound apex (%d,%d) vs east-bound apex (%d,%d) at the "
+           "same position -- the symbol must rotate with the track",
+           n.x, n.y, e.x, e.y);
+  TEST_ASSERT_TRUE_MESSAGE(n.x != e.x || n.y != e.y, m);
+  // A north-bound symbol's apex must be ABOVE its two base corners.
+  snprintf(m, sizeof(m), "north-bound apex y=%d vs base y=%d,%d -- the nose must "
+           "point up-screen", n.y, n.y2, n.y3);
+  TEST_ASSERT_TRUE_MESSAGE(n.y < n.y2 && n.y < n.y3, m);
+}
+
+static void test_the_symbol_is_a_real_triangle() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{0.0f, 3.0f, 300, 0, 0.0f, "SHAPE1"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(!g_gfx.of(DrawOp::Triangle).empty(), "precondition");
+  const DrawOp o = g_gfx.of(DrawOp::Triangle)[0];
+  // Twice the area, via the cross product. A degenerate or collapsed triangle
+  // is a dot on the panel, and a presence-only check cannot tell the difference.
+  const int area2 = abs((o.x2 - o.x) * (o.y3 - o.y) - (o.x3 - o.x) * (o.y2 - o.y));
+  char m[224];
+  snprintf(m, sizeof(m), "symbol (%d,%d)(%d,%d)(%d,%d) has 2*area=%d -- it has "
+           "collapsed to a line or a dot", o.x, o.y, o.x2, o.y2, o.x3, o.y3, area2);
+  TEST_ASSERT_TRUE_MESSAGE(area2 >= 40, m);
+  // The two base corners must straddle the nose axis. Losing one wing offset
+  // leaves a valid-area sliver, so area alone does not catch it.
+  const int base_span = abs(o.x2 - o.x3) + abs(o.y2 - o.y3);
+  snprintf(m, sizeof(m), "the base corners (%d,%d) and (%d,%d) span only %d px -- "
+           "the symbol has lost a wing", o.x2, o.y2, o.x3, o.y3, base_span);
+  TEST_ASSERT_TRUE_MESSAGE(base_span >= 8, m);
+}
+
+// The ICAO label must sit next to ITS airport. Only presence, count and
+// on-panel bounds were checked, so projecting every label onto the ring --
+// moving LEMD's ~80 px away from its runways -- passed.
+static void test_an_airport_label_sits_next_to_its_own_runways() {
+  atAirport();
+  radarDisplayDraw();
+  DrawOp label{}; bool found = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text))
+    if (o.text == "LEMD") { label = o; found = true; }
+  TEST_ASSERT_TRUE_MESSAGE(found, "precondition: LEMD's label must be drawn");
+  int best = 1 << 30;
+  for (const auto& o : g_gfx.of(DrawOp::WideLine)) {
+    if (o.color != radar::kColorRunway) continue;
+    for (auto pt : {std::make_pair(o.x, o.y), std::make_pair(o.x2, o.y2)}) {
+      const int d = (pt.first - label.x) * (pt.first - label.x) +
+                    (pt.second - label.y) * (pt.second - label.y);
+      if (d < best) best = d;
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(best < (1 << 30), "precondition: strips must be drawn");
+  char m[176];
+  snprintf(m, sizeof(m), "LEMD's label at (%d,%d) is %d px from the nearest of its "
+           "own runway ends", label.x, label.y, (int)lroundf(sqrtf((float)best)));
+  TEST_ASSERT_TRUE_MESSAGE(best <= 40 * 40, m);
+}
+
+// Staleness dimming was only ever asserted on symbols. A rim dot for a stale
+// contact must dim too, or a dead feed looks live around the rim.
+static void test_rim_dots_dim_when_the_contact_is_stale() {
+  saveRunwaysFromPortal("");
+  const float far_km = radar::rangeCurrent().outer_km * 2.0f;
+  Target fresh[] = {{0.0f, far_km, 300, 0, 0.0f, "FRESH1"}};
+  publishTargets(fresh, 1);
+  radarDisplayDraw();
+  uint16_t fresh_color = 0;
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle))
+    if (o.r == kBeyondRingDotRadiusPx) fresh_color = o.color;
+  TEST_ASSERT_TRUE_MESSAGE(fresh_color != 0, "precondition: a rim dot must be drawn");
+
+  Target stale[] = {{0.0f, far_km, 300, 0,
+                     (float)services::scene::kExtrapolationHorizonSec + 5.0f, "STALE1"}};
+  publishTargets(stale, 1);
+  g_gfx.reset();
+  radarDisplayDraw();
+  uint16_t stale_color = fresh_color;
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle))
+    if (o.r == kBeyondRingDotRadiusPx) stale_color = o.color;
+  char m[176];
+  snprintf(m, sizeof(m), "fresh rim dot 0x%04X vs stale 0x%04X -- a stale contact "
+           "must be dimmed on the rim too", fresh_color, stale_color);
+  TEST_ASSERT_TRUE_MESSAGE(stale_color != fresh_color, m);
+}
+
+// Staleness is tested on each cause SEPARATELY, not on their sum: summing made
+// every target whose fix age sat within one fetch cycle of the horizon blink
+// once per cycle, because the fetch age resets on each fetch.
+static void test_staleness_is_not_decided_on_the_summed_age() {
+  saveRunwaysFromPortal("");
+  // Two half-horizon ages that only cross the threshold when added together.
+  const float half = services::scene::kExtrapolationHorizonSec * 0.6f;
+  Target t[] = {{2.0f, 0.0f, 300, 90, half, "HALF01"}};
+  publishTargets(t, 1);
+  mockAdvanceMs((unsigned long)(half * 1000.0f));   // fetch age adds the rest
+  g_gfx.reset();
+  radarDisplayDraw();
+  bool any_stale = false;
+  for (const auto& o : g_gfx.of(DrawOp::Triangle))
+    if (o.color == radar::kColorAircraftStale) any_stale = true;
+  TEST_ASSERT_FALSE_MESSAGE(any_stale,
+      "neither age alone crosses the horizon; dimming on the sum makes targets "
+      "blink once per fetch cycle");
+}
+
+
+/**
+ * The failure this whole task exists to prevent. After a naive port every item
+ * parses with ve = vn = 0 -- the server sends them and the firmware reads them,
+ * so a helper that forgets the arithmetic leaves every dead-reckoning test in
+ * this file asserting things about a stationary aeroplane, all of them green.
+ */
+static void test_a_moving_target_actually_moves_between_frames() {
+  Target t[] = {{5.0f, 0.0f, 400, 90, 0.0f, "MOVER"}};
+  publishTargets(t, 1);
+  TEST_ASSERT_TRUE_MESSAGE(
+      services::scene::aircraftList()[0].vel_e_km_s > 0.15f,
+      "the payload helper is not resolving gs/track into ve/vn");
+
+  g_gfx.reset();
+  radarDisplayDraw();
+  const int x_first = g_gfx.lastX(DrawOp::Triangle);
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(-1, x_first, "nothing drew the target at all");
+
+  mockAdvanceMs(8000);
+  g_gfx.reset();
+  radarDisplayRefreshAircraft();
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(x_first, g_gfx.lastX(DrawOp::Triangle),
+                                "the target did not dead-reckon");
+}
+
+/**
+ * PLAN.md section 3's third staleness cause, and the one the reference firmware
+ * could not have had. A device can be receiving perfectly fresh scenes -- both
+ * its clocks healthy -- from a server whose own feed has stalled. Measured on
+ * hardware: feed_ok stayed true for 90 s while feed_age climbed to 88. Only
+ * this term can dim the targets in that state.
+ */
+static void test_a_stalled_server_feed_dims_targets_while_scenes_stay_fresh() {
+  Target t[] = {{5.0f, 0.0f, 200, 90, 0.1f, "FRESH"}};
+  publishTargetsWithFeedAge(t, 1, 1.0f);
+  g_gfx.reset();
+  radarDisplayDraw();
+  const auto fresh = g_gfx.of(DrawOp::Triangle);
+  TEST_ASSERT_TRUE_MESSAGE(!fresh.empty(), "precondition: a target was drawn");
+  const uint16_t fresh_colour = fresh.back().color;
+
+  // Same target, same instant, same clocks -- only the server's feed is old.
+  publishTargetsWithFeedAge(t, 1, 30.0f);
+  g_gfx.reset();
+  radarDisplayDraw();
+  const auto stale = g_gfx.of(DrawOp::Triangle);
+  TEST_ASSERT_TRUE_MESSAGE(!stale.empty(), "precondition: a target was drawn");
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(fresh_colour, stale.back().color,
+                                "a stalled server feed must dim the targets");
+}
+
+/** And the three causes stay separate: summing them made targets blink. */
+static void test_a_fresh_feed_does_not_dim_a_fresh_target() {
+  Target t[] = {{5.0f, 0.0f, 200, 90, 0.1f, "FRESH"}};
+  publishTargetsWithFeedAge(t, 1, 1.0f);
+  g_gfx.reset();
+  radarDisplayDraw();
+  const auto a = g_gfx.of(DrawOp::Triangle);
+  publishTargetsWithFeedAge(t, 1, 2.0f);
+  g_gfx.reset();
+  radarDisplayDraw();
+  const auto b = g_gfx.of(DrawOp::Triangle);
+  TEST_ASSERT_TRUE(!a.empty() && !b.empty());
+  TEST_ASSERT_EQUAL_MESSAGE(a.back().color, b.back().color,
+                            "a healthy feed must not change the colour");
+}
+
+int main(int, char**) {
+  UNITY_BEGIN();
+  // Before anything allocates the frame sprite -- see the test's own comment.
+  RUN_TEST(test_the_direct_draw_fallback_reports_a_failed_traffic_lock);
+  // These two must run first: the frame sprite is created once and cached in a
+  // file-static, so once any test succeeds in allocating it, a scripted
+  // allocation failure can never be observed again.
+  RUN_TEST(test_sprite_failure_falls_back_to_direct_drawing);
+  RUN_TEST(test_sprite_allocation_is_not_retried_every_frame);
+  RUN_TEST(test_tags_never_overlap_each_other);
+  RUN_TEST(test_a_tag_stays_next_to_its_own_symbol);
+  RUN_TEST(test_the_nearest_aircraft_keeps_its_label);
+  RUN_TEST(test_target_advances_along_its_track_between_fetches);
+  RUN_TEST(test_extrapolation_is_clamped_on_the_total_age);
+  RUN_TEST(test_a_stale_fix_is_dimmed_not_hidden);
+  RUN_TEST(test_a_stalled_feed_dims_then_clears);
+  RUN_TEST(test_a_normal_frame_is_blitted_once);
+  RUN_TEST(test_crosshairs_are_rectangles_not_antialiased_lines);
+  RUN_TEST(test_grid_has_the_expected_rings);
+  RUN_TEST(test_speed_vectors_are_drawn_for_moving_traffic);
+  RUN_TEST(test_a_stationary_target_has_no_speed_vector);
+  RUN_TEST(test_beyond_ring_traffic_becomes_a_rim_dot);
+  RUN_TEST(test_tag_lines_carry_their_distinct_colours);
+  RUN_TEST(test_crosshairs_are_centred_on_the_radar_origin);
+  RUN_TEST(test_cardinal_labels_are_in_the_right_places);
+  RUN_TEST(test_the_scale_label_follows_the_range_and_units);
+  RUN_TEST(test_a_locked_aircraft_list_suppresses_the_blit);
+  RUN_TEST(test_the_grid_is_cleared_every_frame);
+  RUN_TEST(test_smooth_font_is_actually_selected);
+  RUN_TEST(test_the_vlw_size_search_converges_on_the_target_height);
+  RUN_TEST(test_the_scale_label_is_smaller_than_the_cardinals);
+  RUN_TEST(test_tags_never_overlap_with_the_smooth_font_either);
+  RUN_TEST(test_runway_labels_render_with_the_smooth_font);
+  RUN_TEST(test_no_text_or_rect_is_drawn_outside_the_panel);
+  RUN_TEST(test_no_geometry_is_drawn_outside_the_panel);
+  RUN_TEST(test_tags_near_the_ring_stay_on_the_panel);
+  RUN_TEST(test_the_symbol_points_along_the_track);
+  RUN_TEST(test_the_symbol_is_a_real_triangle);
+  RUN_TEST(test_an_airport_label_sits_next_to_its_own_runways);
+  RUN_TEST(test_speed_vectors_are_clipped_to_the_outer_ring);
+  RUN_TEST(test_each_airport_label_is_drawn_exactly_once);
+  RUN_TEST(test_a_label_anchored_on_the_ring_stays_on_the_panel);
+  RUN_TEST(test_the_symbol_boundary_is_inset_from_the_outer_ring);
+  RUN_TEST(test_segment_disc_intersection_handles_the_chord_case);
+  RUN_TEST(test_speed_vector_length_boundaries);
+  RUN_TEST(test_every_draw_path_gives_the_aircraft_lock_back);
+  RUN_TEST(test_the_centre_dot_is_drawn);
+  RUN_TEST(test_the_bitmap_font_picker_returns_the_closest_candidate);
+  RUN_TEST(test_the_bitmap_scale_label_is_not_larger_than_the_cardinals);
+  RUN_TEST(test_the_scale_label_has_a_background_plate);
+  RUN_TEST(test_the_frame_is_cleared_before_anything_is_drawn);
+  RUN_TEST(test_the_aircraft_colour_is_bgr_swapped_for_this_panel);
+  RUN_TEST(test_rim_dots_are_painted_far_first);
+  RUN_TEST(test_rim_dots_dim_when_the_contact_is_stale);
+  RUN_TEST(test_staleness_is_not_decided_on_the_summed_age);
+  RUN_TEST(test_runways_are_drawn_at_a_real_airport);
+  RUN_TEST(test_no_runways_when_the_overlay_is_switched_off);
+  RUN_TEST(test_no_runways_in_the_middle_of_the_ocean);
+  RUN_TEST(test_cached_geometry_is_stable_across_frames);
+  RUN_TEST(test_cache_rebuilds_when_the_range_changes);
+  RUN_TEST(test_cache_rebuilds_when_the_location_changes);
+  RUN_TEST(test_the_shipped_dataset_never_reaches_the_caps);
+  RUN_TEST(test_an_in_range_airport_is_drawn_and_identified);
+  // Last: these draw, and drawing allocates the sprite. The sprite tests
+  // assert they trigger the allocation themselves.
+  RUN_TEST(test_a_moving_target_actually_moves_between_frames);
+  RUN_TEST(test_a_stalled_server_feed_dims_targets_while_scenes_stay_fresh);
+  RUN_TEST(test_a_fresh_feed_does_not_dim_a_fresh_target);
+  return UNITY_END();
+}
