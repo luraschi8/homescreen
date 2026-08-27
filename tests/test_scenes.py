@@ -5,11 +5,32 @@ from pathlib import Path
 
 import pytest
 
+from homescreen import datasource
 from homescreen import scenes
 from homescreen.scenes import clock as _clock_mod
 from homescreen.cache import write_cache
 
-CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
+
+def _sky_path(cache_dir, cfg, options=None):
+    """Where the radar reads its sky, derived the way the scene derives it.
+
+    Tests used to write `cache/feed/adsb.json` -- the per-device file from when
+    there was one feed and one radar. The scene now declares a requirement and
+    is handed a Reading, so a fixture that hardcodes a path is one that agrees
+    with itself and with nothing else.
+    """
+    from homescreen import jobstore, providers, scenes
+    need = scenes.needs("planes", options or {}, cfg)[0]
+    key = providers.key(need["provider"],
+                        providers.clean_params(need["provider"], need["params"]))
+    path = jobstore.path_for(cache_dir, key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+
+CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid",
+                    "lat": 40.4168, "lon": -3.7038},
        "secondary_clock": {"label": "BS AS",
                            "timezone": "America/Argentina/Buenos_Aires"},
        "feeds": {"adsb": {"source": "api", "endpoint": "https://x"}},
@@ -21,9 +42,25 @@ ROUND = {"w": 240, "h": 240, "depth": 16, "layouts": ["fill"]}
 NOW = 1_787_000_000.0
 
 
-def ctx(tmp_path, caps=None, device=None, now=NOW):
+def ctx(tmp_path, caps=None, device=None, now=NOW, options=None):
+    from homescreen import jobstore, providers
+    from homescreen.reading import Reading
+
+    def data(requirement):
+        """Resolve exactly as serve.py does, so these tests exercise the real
+        key derivation rather than a fixture that agrees with itself."""
+        try:
+            params = providers.clean_params(requirement["provider"],
+                                            requirement.get("params"))
+        except (ValueError, KeyError, TypeError):
+            return Reading.nothing()
+        env = jobstore.read(tmp_path,
+                            providers.key(requirement["provider"], params))
+        return Reading.from_envelope(env, now=now)
+
     return scenes.SceneContext(
         cfg=CFG, cache_dir=tmp_path, caps=caps or EPAPER, now=now,
+        options=options or {}, data=data,
         device=device or {"hw": "aabb00112233", "id": "desk",
                           "name": "desk", "feed": "adsb", "max_aircraft": 20})
 
@@ -130,7 +167,8 @@ def test_clock_shows_both_cities(tmp_path):
 
 def test_clock_survives_a_broken_timezone(tmp_path):
     cfg = {**CFG, "secondary_clock": {"label": "X", "timezone": "Not/AZone"}}
-    c = scenes.SceneContext(cfg=cfg, cache_dir=tmp_path, caps=EPAPER,
+    c = scenes.SceneContext(
+        data=datasource.reader(tmp_path, lambda: 1_787_000_000.0),cfg=cfg, cache_dir=tmp_path, caps=EPAPER,
                             now=1_787_000_000.0, device={"hw": "x"})
     html = scenes.build("clock", c).html
     assert "Madrid" in html, "the good clock still renders"
@@ -145,7 +183,7 @@ def test_planes_emits_one_coarse_radar_component_for_data_push(tmp_path):
     # The design spec claimed the radar decomposes into generic rings+markers.
     # It does not -- the firmware draws eleven elements, two angles per marker,
     # and a collision ladder for labels. So it is ONE component carrying data.
-    write_cache(tmp_path / "feed" / "adsb.json",
+    write_cache(_sky(tmp_path),
                 {"aircraft": [{"cs": "IBE1", "ty": "A320", "alt": "3675 ft",
                                "dst": 7.4, "ve": 0.1, "vn": 0.2, "age": 1.0}]})
     scene = scenes.build("planes", ctx(tmp_path, ROUND))
@@ -157,7 +195,7 @@ def test_planes_emits_one_coarse_radar_component_for_data_push(tmp_path):
 
 
 def test_planes_renders_a_list_for_pixel_push(tmp_path):
-    write_cache(tmp_path / "feed" / "adsb.json",
+    write_cache(_sky(tmp_path),
                 {"aircraft": [{"cs": "IBE1", "ty": "A320", "alt": "3675 ft",
                                "dst": 7.4}]})
     html = scenes.build("planes", ctx(tmp_path)).html
@@ -165,7 +203,7 @@ def test_planes_renders_a_list_for_pixel_push(tmp_path):
 
 
 def test_planes_respects_the_device_cap(tmp_path):
-    write_cache(tmp_path / "feed" / "adsb.json",
+    write_cache(_sky(tmp_path),
                 {"aircraft": [{"cs": f"A{i}", "dst": float(i)} for i in range(50)]})
     dev = {"hw": "x", "id": "desk", "name": "desk", "feed": "adsb",
            "max_aircraft": 5}
@@ -178,7 +216,7 @@ def test_planes_respects_the_device_cap(tmp_path):
     '{"fetched_at":"x","ok":true,"data":{"aircraft":[1,2,"three"]}}',
 ])
 def test_planes_never_raises_on_a_damaged_cache(tmp_path, bad):
-    path = tmp_path / "feed" / "adsb.json"
+    path = _sky(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if bad is not None:
         path.write_text(bad)
@@ -187,7 +225,7 @@ def test_planes_never_raises_on_a_damaged_cache(tmp_path, bad):
 
 
 def test_planes_says_so_when_the_feed_is_down(tmp_path):
-    write_cache(tmp_path / "feed" / "adsb.json", {"aircraft": []}, ok=False,
+    write_cache(_sky(tmp_path), {"aircraft": []}, ok=False,
                 error="boom")
     html = scenes.build("planes", ctx(tmp_path)).html
     assert "sin señal" in html
@@ -293,7 +331,7 @@ RADAR_ITEM_KEYS = {"lat", "lon", "nose", "trk", "gs", "ve", "vn",
 
 
 def test_the_radar_component_carries_exactly_the_agreed_fields(tmp_path):
-    write_cache(tmp_path / "feed" / "adsb.json", {"aircraft": [
+    write_cache(_sky(tmp_path), {"aircraft": [
         {"lat": 40.5, "lon": -3.6, "nose": 90.0, "trk": 91.0, "gs": 400.0,
          "ve": 0.2, "vn": 0.0, "age": 3.1, "dst": 7.4,
          "cs": "IBE3221", "ty": "A320", "alt": "3675 ft"}]})
@@ -317,7 +355,7 @@ def test_the_radar_component_states_the_range_it_covers(tmp_path):
 
 def test_the_dead_reckoning_fields_are_never_dropped(tmp_path):
     # ve/vn/age are the whole reason this device is on data push (ADDENDUM §2).
-    write_cache(tmp_path / "feed" / "adsb.json", {"aircraft": [
+    write_cache(_sky(tmp_path), {"aircraft": [
         {"lat": 40.5, "lon": -3.6, "trk": 90.0, "gs": 400.0,
          "ve": 0.13, "vn": -0.17, "age": 3.1, "dst": 7.4, "cs": "IBE1"}]})
     item = scenes.build("planes", ctx(tmp_path)).components[0]["items"][0]
@@ -331,11 +369,16 @@ def test_the_clock_survives_every_timezone_being_broken(tmp_path):
     cfg = {"location": {"name": "Nowhere", "timezone": "Not/AZone"},
            "secondary_clock": {"label": "X", "timezone": "Also/Bad"},
            "feeds": {}, "devices": []}
-    c = scenes.SceneContext(cfg=cfg, cache_dir=tmp_path, caps=EPAPER,
+    c = scenes.SceneContext(
+        data=datasource.reader(tmp_path, lambda: 1_787_000_000.0),cfg=cfg, cache_dir=tmp_path, caps=EPAPER,
                             now=1_787_000_000.0, device={"hw": "aa"})
     html = scenes.build("clock", c).html
     assert "--:--" in html, "a broken clock says so rather than going blank"
     assert "width:800px" in html
+
+
+def _sky(tmp_path):
+    return _sky_path(tmp_path, CFG)
 
 
 def _feed_at(tmp_path, when, aircraft):
@@ -347,8 +390,7 @@ def _feed_at(tmp_path, when, aircraft):
     """
     import json as _json
     from datetime import timezone
-    path = tmp_path / "feed" / "adsb.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = _sky(tmp_path)
     path.write_text(_json.dumps({
         "fetched_at": datetime.fromtimestamp(when, timezone.utc).isoformat(),
         "ok": True, "error": None, "data": {"aircraft": aircraft}}))
@@ -454,7 +496,7 @@ def test_a_cache_stamp_we_cannot_read_reports_the_feed_as_dead(tmp_path):
     # and left the device permanently blind to a dead feed -- the one number it
     # has for that failure would never move.
     import json as _json
-    p = tmp_path / "feed" / "adsb.json"
+    p = _sky(tmp_path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
     def comp_for(stamp):

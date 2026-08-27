@@ -136,6 +136,27 @@ def mapping(value) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def home_location(cfg: dict) -> dict:
+    """Where this deployment is: {lat, lon, name}. Empty if it cannot say.
+
+    `location` if the config declares one, otherwise the first configured
+    device's `home` -- which is where it actually lives in every config file
+    that exists, because devices predated the idea of a deployment-wide
+    location. Three scenes read this; without one answer they read a key the
+    documented config has never contained, decide they need no data, and the
+    fetch daemon looks idle while every panel goes empty.
+    """
+    where = mapping(cfg.get("location"))
+    if where.get("lat") is not None and where.get("lon") is not None:
+        return where
+    for dev in (cfg.get("devices") or []):
+        home = mapping(mapping(dev).get("home"))
+        if home.get("lat") is not None and home.get("lon") is not None:
+            return {**home, "name": home.get("name") or where.get("name")
+                    or mapping(dev).get("id")}
+    return where
+
+
 def feed_config(cfg: dict, name: str = "adsb") -> dict:
     return mapping(mapping(cfg.get("feeds")).get(name))
 

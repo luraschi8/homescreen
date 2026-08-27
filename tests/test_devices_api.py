@@ -9,7 +9,8 @@ from homescreen.serve import create_app
 
 HW = "a4cf12ab3c44"
 HW2 = "deadbeef0000"
-CFG = {"feeds": {"adsb": {"source": "api", "endpoint": "https://x",
+CFG = {"location": {"lat": 40.4168, "lon": -3.7038, "name": "Madrid"},
+       "feeds": {"adsb": {"source": "api", "endpoint": "https://x",
                           "fetch_seconds": 3}},
        "devices": []}
 
@@ -454,10 +455,30 @@ def test_an_operator_cadence_reaches_every_route_too(ctx):
 # succeed is not a feature, and the device pays a ~30 KB parse peak every poll
 # to learn nothing.
 
-def _seed_sky(cache, when, aircraft):
+def _sky_path(cache_dir, cfg, options=None):
+    from homescreen import jobstore, providers, scenes
+    need = scenes.needs("planes", options or {}, cfg)[0]
+    key = providers.key(need["provider"],
+                        providers.clean_params(need["provider"], need["params"]))
+    path = jobstore.path_for(cache_dir, key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _seed_sky(cache, when, aircraft, options=None):
+    """Put a sky where the radar now reads it: the JOB the scene asks for.
+
+    The scene declares what it needs and is handed a Reading; there is no
+    per-device feed file any more. Deriving the key here rather than hardcoding
+    it means this seeds whatever the component actually asks for.
+    """
     import json as _json
     from datetime import datetime, timezone
-    p = cache / "feed" / "adsb.json"
+    from homescreen import jobstore, providers, scenes
+    need = scenes.needs("planes", options or {}, CFG)[0]
+    key = providers.key(need["provider"],
+                        providers.clean_params(need["provider"], need["params"]))
+    p = jobstore.path_for(cache, key)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(_json.dumps({
         "fetched_at": datetime.fromtimestamp(when, timezone.utc).isoformat(),
@@ -536,7 +557,7 @@ def test_a_feed_going_down_changes_the_etag(ctx):
     registry.set_approval(cache, HW, True)
     client.patch(f"/api/devices/{HW}", json={"name": "r", "scene": "planes"})
     etag = client.get(q).headers["ETag"]
-    p = cache / "feed" / "adsb.json"
+    p = _sky_path(cache, CFG)
     env = _json.loads(p.read_text())
     env["ok"] = False
     p.write_text(_json.dumps(env))

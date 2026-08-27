@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT))
 
 from homescreen.serve import create_app          # noqa: E402
 
-CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
+CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid",
+                    "lat": 40.4168, "lon": -3.7038},
        "feeds": {"adsb": {"source": "api", "endpoint": "https://x"}},
        "devices": []}
 HW = "aabb00112233"
@@ -40,7 +41,14 @@ AIRCRAFT = [
 
 def _write_feed(cache_dir: pathlib.Path, fetched_at: float,
                 ok: bool = True) -> None:
-    path = cache_dir / "feed" / "adsb.json"
+    # Where the radar reads its sky: the JOB it declares, derived exactly as
+    # the scene derives it. A hardcoded path here is a fixture that agrees
+    # with itself and with nothing the device is served.
+    from homescreen import jobstore, providers, scenes
+    need = scenes.needs("planes", {}, CFG)[0]
+    path = jobstore.path_for(cache_dir, providers.key(
+        need["provider"],
+        providers.clean_params(need["provider"], need["params"])))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "fetched_at": datetime.fromtimestamp(fetched_at,

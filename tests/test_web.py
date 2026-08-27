@@ -51,13 +51,14 @@ def _status(**over):
     return base
 
 
-def _source(**over):
-    base = {"id": "radar", "kind": "gc9a01_client", "render": "device",
-            "feed_name": "adsb", "poll_seconds": 5,
-            "feed": {"ok": True, "age_s": 2.4, "aircraft": 17,
-                     "fetched_at": "2026-08-26T10:00:00+02:00", "error": None},
-            "endpoints": {"data": "/api/display/radar/data"},
-            "last_telemetry": None}
+def _job(**over):
+    """One fetch the fleet implies. Sources are jobs now: a screen showing
+    something implies somebody fetches it, and that is what this page lists."""
+    base = {"key": "adsb-abc123def456", "provider": "adsb",
+            "params": {"lat": 40.4, "lon": -3.7, "radius_km": 60.0},
+            "interval_s": 5, "wanted_by": ["aabb/dia"],
+            "ok": True, "fetched_at": "2026-08-26T10:00:00+02:00",
+            "error": None}
     base.update(over)
     return base
 
@@ -81,37 +82,27 @@ def _device_page(screen, **kw):
 
 # --- the source's real numbers reach a human --------------------------------
 
-def test_the_aircraft_count_is_the_real_one():
-    # The old test warned in its own comment that a bare substring check
-    # "held with zero aircraft". I replaced it with `assert "17" in html`,
-    # which the palette satisfies on its own -- `--panel:#17191d`. Assert the
-    # rendered FIELD, and that a different feed renders differently.
-    html = web.render_settings(_status()["feed"], devices=[_source()])
-    assert "<dd>17</dd>" in html
-    other = web.render_settings(_status()["feed"], devices=[
-        _source(feed={"ok": True, "age_s": 2.4, "aircraft": 42,
-                      "fetched_at": "x", "error": None})])
-    assert "<dd>42</dd>" in other and "<dd>17</dd>" not in other
+def test_a_jobs_parameters_are_shown_so_you_can_tell_two_apart():
+    # Two radars watching different cities are two rows here, and their
+    # parameters are the only thing distinguishing them.
+    here = web.render_settings({}, jobs=[_job()])
+    there = web.render_settings({}, jobs=[
+        _job(params={"lat": 51.5, "lon": -0.12, "radius_km": 60.0})])
+    assert "lat=40.4" in here and "lat=51.5" not in here
+    assert "lat=51.5" in there
 
-
-def test_a_healthy_feed_and_a_stale_one_render_differently():
-    healthy = web.render_settings({}, devices=[_source()])
-    stale = web.render_settings({}, devices=[
-        _source(feed={"ok": False, "age_s": 900, "aircraft": 0,
-                      "fetched_at": "x", "error": "timeout"})])
-    assert "al día" in healthy and "caducado" not in healthy
-    assert "caducado" in stale and "timeout" in stale
-
+def test_a_healthy_job_and_a_failing_one_render_differently():
+    healthy = web.render_settings({}, jobs=[_job()])
+    failing = web.render_settings({}, jobs=[_job(ok=False, error="timeout")])
+    assert "al día" in healthy and "fallando" not in healthy
+    assert "fallando" in failing and "timeout" in failing
 
 def test_a_failure_with_no_reason_does_not_render_a_dangling_dash():
-    # ok:false with error:null is reachable -- an unparseable `fetched_at`
-    # gets there -- and "caducado — " reads as a truncated message.
-    html = web.render_settings({}, devices=[
-        _source(feed={"ok": False, "age_s": 1, "aircraft": 0,
-                      "fetched_at": "garbage", "error": None})])
-    assert "caducado" in html
-    assert "caducado \u2014 <" not in html and "caducado \u2014 " not in html
-
+    # ok:false with error:null is reachable, and "fallando \u2014 " reads as a
+    # truncated message rather than as a state.
+    html = web.render_settings({}, jobs=[_job(ok=False, error=None)])
+    assert "fallando" in html
+    assert "fallando \u2014" not in html
 
 def test_an_absent_value_renders_as_a_dash_not_as_its_entity():
     # dash()/when() feed pill(), which escapes, so returning "&mdash;" put the
@@ -121,38 +112,32 @@ def test_an_absent_value_renders_as_a_dash_not_as_its_entity():
     assert "&amp;mdash;" not in html and "&mdash;" not in html
 
 
-def test_a_feed_that_never_fetched_says_so():
-    html = web.render_settings({}, devices=[
-        _source(feed={"ok": False, "age_s": None, "aircraft": 0,
-                      "fetched_at": None, "error": None})])
+def test_a_job_that_never_ran_says_so():
+    html = web.render_settings({}, jobs=[_job(fetched_at=None)])
     assert "nunca consultado" in html
 
-
-def test_a_pixel_push_device_is_shown_but_not_as_a_dead_feed():
-    # Asserting only the NEGATIVE would pass on a blank page -- and it did:
-    # the renderer skipped these entirely, so a configured screen vanished
-    # from the only page that lists sources.
-    html = web.render_settings({}, devices=[_source(id="kitchen", feed=None)])
-    assert "kitchen" in html, "a screen with no feed of its own is still listed"
-    assert "sin fuente propia" in html
-    assert "caducado" not in html and "nunca consultado" not in html
+def test_a_fleet_that_needs_no_data_says_so_rather_than_rendering_nothing():
+    # A house of clocks fetches nothing, and that is a fact worth stating --
+    # an empty area reads as a broken page.
+    html = web.render_settings({}, jobs=[])
+    assert "Ninguna pantalla pide datos" in html
 
 
 def test_the_upstream_feed_block_shows_provider_endpoint_and_cadence():
     # `"3" in html` was vacuous too -- true with fetch_seconds=None.
-    html = web.render_settings(_status()["feed"], devices=[])
+    html = web.render_settings(_status()["feed"], jobs=[])
     assert "adsb.fi" in html and 'value="https://x"' in html
     assert 'value="3"' in html
     blank = web.render_settings({"source": "adsb.fi", "endpoint": None,
-                                 "fetch_seconds": None}, devices=[])
+                                 "fetch_seconds": None}, jobs=[])
     assert 'value="3"' not in blank
 
 
-def test_where_a_source_is_served_is_shown_somewhere():
-    # The old fleet page answered "where is the data served" and the page split
-    # dropped it with nowhere to land. It belongs with the source.
-    html = web.render_settings({}, devices=[_source()])
-    assert "/api/display/radar/data" in html
+def test_which_screens_want_a_job_is_shown():
+    # Sources are shared now, so "who is this for" is the question that
+    # replaced "where is it served".
+    html = web.render_settings({}, jobs=[_job(wanted_by=["aabb/dia", "ccdd/x"])])
+    assert "aabb/dia" in html and "ccdd/x" in html
 
 
 def test_the_version_and_uptime_are_rendered():
@@ -294,7 +279,7 @@ def test_telemetry_values_are_escaped():
 
 @pytest.mark.parametrize("html", [
     web.render_fleet(_status(fleet=[_screen()])),
-    web.render_settings(_status()["feed"], devices=[_source()]),
+    web.render_settings(_status()["feed"], jobs=[_job()]),
     web.render_device(_screen(), options=[("clock", True, "")], schemas={},
                       name_max=32),
 ])
@@ -381,5 +366,5 @@ def test_a_scene_the_server_no_longer_knows_is_flagged_not_silently_replaced():
 def test_every_page_reads_a_timestamp_the_same_way():
     # The settings page kept raw ISO with microseconds while the others had
     # been switched to ages -- the same fact rendered two ways in one product.
-    html = web.render_settings({}, devices=[_source()])
+    html = web.render_settings({}, jobs=[_job()])
     assert "2026-08-26T10:00:00" not in html

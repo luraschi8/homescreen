@@ -37,7 +37,7 @@ def ctx(tmp_path, monkeypatch):
         "homescreen.cache._now_iso",
         lambda: datetime.fromtimestamp(clock.t, timezone.utc).isoformat())
     app = create_app(CFG, tmp_path, clock=clock, version="abc1234")
-    return app.test_client(), tmp_path / "feed" / "adsb.json", clock
+    return app.test_client(), _sky_path(tmp_path, CFG), clock
 
 
 def _seed(path, n=2):
@@ -64,17 +64,23 @@ def test_home_renders_for_a_human(ctx, route):
     assert 'href="/settings"' in body, "and how to get at it"
 
 
-def test_home_shows_live_feed_state(ctx):
+def test_the_settings_page_shows_the_fetches_the_fleet_implies(ctx):
+    # Was: per-device feed health, with an aircraft count. Sources are JOBS
+    # now -- one fetch serves every screen wanting the same sky -- so the
+    # question this page answers changed from "how is this device's feed" to
+    # "what is being fetched, for whom, and is it working".
     client, path, clock = ctx
     _seed(path, n=3)
-    clock.t += 4.0
-    # Feed health belongs with the source, not repeated under every screen:
-    # one stale feed used to look like N problems.
+    hw = "aabb00112233"
+    q = "w=240&h=240&depth=16&shape=round&components=radar,draw_list"
+    client.get(f"/api/devices/{hw}/scene?{q}")
+    client.put(f"/api/devices/{hw}/membership", json={"approved": True})
+    client.patch(f"/api/devices/{hw}", json={"name": "salon", "scene": "planes"})
+
     body = client.get("/settings").get_data(as_text=True)
-    # `assert "3" in body` was the old check and was vacuous: "3" appears in
-    # the palette and in the version string, so it held at zero aircraft.
-    assert "<dt>aviones</dt><dd>3</dd>" in body
-    assert "<dt>antigüedad</dt><dd>4.0s</dd>" in body
+    assert "adsb" in body, "the job is listed"
+    assert "al día" in body, "and it has data"
+    assert "salon" in body or hw in body, "and it says which screen wants it"
 
 
 def test_home_works_before_any_fetch_has_happened(ctx):
@@ -83,7 +89,9 @@ def test_home_works_before_any_fetch_has_happened(ctx):
     assert client.get("/home").status_code == 200
     r = client.get("/settings")
     assert r.status_code == 200
-    assert "nunca consultado" in r.get_data(as_text=True)
+    # Sources are jobs, and a fleet with nothing assigned implies no fetches.
+    # Saying so beats an empty area that reads as a broken page.
+    assert "Ninguna pantalla pide datos" in r.get_data(as_text=True)
 
 
 def test_home_never_500s_on_a_corrupt_cache(ctx):
@@ -169,6 +177,25 @@ def test_resolve_version_treats_an_empty_sha_as_unknown(tmp_path, monkeypatch):
 
 
 from homescreen import registry as _registry
+
+
+def _sky_path(cache_dir, cfg, options=None):
+    """Where the radar reads its sky, derived the way the scene derives it.
+
+    Tests used to write `cache/feed/adsb.json` -- the per-device file from when
+    there was one feed and one radar. The scene now declares a requirement and
+    is handed a Reading, so a fixture that hardcodes a path is one that agrees
+    with itself and with nothing else.
+    """
+    from homescreen import jobstore, providers, scenes
+    need = scenes.needs("planes", options or {}, cfg)[0]
+    key = providers.key(need["provider"],
+                        providers.clean_params(need["provider"], need["params"]))
+    path = jobstore.path_for(cache_dir, key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 
 
 def _reg_app(tmp_path, clock=None, cfg=None):

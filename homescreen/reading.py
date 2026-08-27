@@ -51,7 +51,15 @@ class Reading:
         if isinstance(stamp, str):
             try:
                 from datetime import datetime
-                age = max(0.0, now - datetime.fromisoformat(stamp).timestamp())
+                moment = datetime.fromisoformat(stamp)
+                if moment.tzinfo is None:
+                    # A NAIVE stamp is unknown, not fresh. Interpreting it in
+                    # local time makes a dead feed look current, which leaves a
+                    # device permanently blind to it -- the failure is silent
+                    # and total, and this was a real bug once already.
+                    age = None
+                else:
+                    age = max(0.0, now - moment.timestamp())
             except (TypeError, ValueError):
                 age = None
         return cls(data=data if isinstance(data, dict) else None,

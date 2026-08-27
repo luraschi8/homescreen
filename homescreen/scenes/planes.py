@@ -21,6 +21,8 @@ pretending otherwise would mean rebuilding a working renderer badly.
 
 from __future__ import annotations
 
+import logging
+
 import html
 import math
 from datetime import datetime
@@ -54,6 +56,12 @@ OPTIONS = (
     {"key": "max_aircraft", "label": "Aviones como máximo", "type": "int",
      "default": 0,
      "help": "0 usa el valor del servidor. La pantalla puede imponer menos."},
+    # Two radars pointed at different cities is the case this platform exists
+    # for. Without these, every radar in the fleet collapses onto the
+    # deployment's own coordinates and they all share one fetch.
+    {"key": "lat", "label": "Latitud", "type": "text", "default": "",
+     "help": "En blanco usa la ubicación del servidor."},
+    {"key": "lon", "label": "Longitud", "type": "text", "default": ""},
 )
 
 CSS = """
@@ -69,6 +77,8 @@ tr+tr td{border-top:1px dotted #000}
 #: Reported when the cache stamp cannot be read. Large enough that every
 #: consumer treats the feed as dead, because a feed whose age is unknowable is
 #: not a feed you should draw.
+log = logging.getLogger(__name__)
+
 _UNKNOWN_DWELL = 86400.0
 
 
@@ -88,11 +98,18 @@ def _aircraft(ctx: SceneContext) -> tuple[list, dict]:
     cache file directly rather than going through `serve._servable`. Same trap,
     second door.
     """
-    env = read_cache(feed_cache_path(ctx.cache_dir, ctx.device))
-    if env is None:
+    wanted = needs(ctx.options or {}, ctx.cfg)
+    reading = ctx.data(wanted[0]) if wanted else None
+    if reading is None or reading.missing:
         return [], {"ok": False, "age_s": None}
-    dwell = _dwell(env, ctx.now)
-    raw = env.get("data", {}).get("aircraft")
+    # Dwell is how long this sky has sat in OUR cache. The device dead-reckons
+    # from `age`, so passing the on-disk value through untouched made a 20s-old
+    # record still claim 3.1s -- the device extrapolates from a position five
+    # kilometres behind the aeroplane and its 12s dimming test never fires,
+    # because the number it tests never grows. The Reading carries the age, so
+    # this is now one subtraction rather than a second parse of a timestamp.
+    dwell = reading.age_s if reading.age_s is not None else _UNKNOWN_DWELL
+    raw = (reading.data or {}).get("aircraft")
     items = []
     for a in raw if isinstance(raw, list) else []:
         if not isinstance(a, dict):
@@ -104,7 +121,7 @@ def _aircraft(ctx: SceneContext) -> tuple[list, dict]:
         if not math.isfinite(age):
             continue
         items.append(_wire(a, age + dwell))
-    return items, {"ok": bool(env.get("ok")), "age_s": round(dwell, 1)}
+    return items, {"ok": bool(reading.ok), "age_s": round(dwell, 1)}
 
 
 #: Decimal places for each wire field. The device parses into float32, so
@@ -150,12 +167,21 @@ def needs(options: dict, cfg: dict) -> tuple:
     self-describing, so two screens reading the same upstream share one fetch
     and changing the upstream visibly becomes a different job.
     """
-    from homescreen.config import feed_config, mapping
-    where = mapping((cfg or {}).get("location"))
-    lat, lon = where.get("lat"), where.get("lon")
+    from homescreen.config import feed_config, home_location
+    options = options or {}
+    try:
+        lat, lon = float(options["lat"]), float(options["lon"])
+    except (KeyError, TypeError, ValueError):
+        where = home_location(cfg or {})
+        lat, lon = where.get("lat"), where.get("lon")
     if lat is None or lon is None:
+        # Not "needs nothing" -- cannot say what it needs. Logged, because the
+        # difference is invisible downstream and the symptom is a daemon that
+        # looks idle while the panel goes empty.
+        log.warning("radar has no location: neither the assignment nor the "
+                    "config says where to look")
         return ()
-    radius = _positive((options or {}).get("radius_km")) or 60.0
+    radius = _positive(options.get("radius_km")) or 60.0
     return ({"provider": "adsb",
              "params": {"lat": lat, "lon": lon, "radius_km": radius,
                         "endpoint": feed_config(cfg).get("endpoint") or ""}},)

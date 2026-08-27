@@ -11,7 +11,7 @@ every component signs when it declares a surface.
 from __future__ import annotations
 
 from homescreen import draw
-from homescreen.config import mapping
+from homescreen.config import home_location, mapping
 from homescreen.scenes import Scene, SceneContext
 from homescreen.reading import Reading
 from homescreen.scenes._style import page
@@ -50,7 +50,7 @@ def _where(options: dict, cfg: dict) -> tuple:
         return lat, lon
     except (TypeError, ValueError):
         pass
-    home = mapping((cfg or {}).get("location"))
+    home = home_location(cfg or {})
     return home.get("lat"), home.get("lon")
 
 
@@ -78,7 +78,7 @@ def build(ctx: SceneContext) -> Scene:
 
     temp = _degrees(reading.get("temp"), units)
     place = (options.get("place") or reading.get("place")
-             or mapping((ctx.cfg or {}).get("location")).get("name") or "")
+             or home_location(ctx.cfg or {}).get("name") or "")
     description = (reading.get("description") or "").capitalize()
     span = ""
     if options.get("show_range", True):

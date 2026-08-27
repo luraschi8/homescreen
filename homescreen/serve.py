@@ -16,7 +16,7 @@ from flask import (Flask, Response, jsonify, redirect, request,
                    url_for)
 
 from homescreen import draw, layout, overrides, registry, scenes, secrets, web
-from homescreen import jobs, jobstore, providers, reading
+from homescreen import datasource, jobs, jobstore, providers
 from homescreen import schedule as scheduling
 from homescreen import render
 from homescreen.render import (RenderBusy, RenderError, check_geometry as
@@ -91,6 +91,27 @@ def resolve_version(root: Path) -> str:
         return "unknown"
 
 
+def _device_job_path(cfg: dict, dev: dict, cache_dir: Path):
+    """Where the sky this device waits on is cached. Never raises."""
+    from homescreen import jobstore, providers, scenes
+    options = {}
+    home = (dev or {}).get("home") or {}
+    if home.get("lat") is not None and home.get("lon") is not None:
+        options = {"lat": home["lat"], "lon": home["lon"]}
+    if (dev or {}).get("radius_km") is not None:
+        options["radius_km"] = dev["radius_km"]
+    needs = scenes.needs("planes", options, cfg)
+    if not needs:
+        return cache_dir / "jobs" / "none.json"
+    need = needs[0]
+    try:
+        params = providers.clean_params(need["provider"], need["params"])
+        return jobstore.path_for(cache_dir, providers.key(need["provider"],
+                                                          params))
+    except ValueError:
+        return cache_dir / "jobs" / "none.json"
+
+
 def _device_summary(cfg: dict, dev: dict, cache_dir: Path, now: float,
                     telemetry: dict) -> dict:
     """Structural facts about one device. Never includes a config VALUE that
@@ -98,7 +119,10 @@ def _device_summary(cfg: dict, dev: dict, cache_dir: Path, now: float,
     is_data = dev.get("render") == DATA_RENDER
     feed = None
     if is_data:
-        env = read_cache(feed_cache_path(cache_dir, dev))
+        # The JOB this device's radar implies, not a per-device feed file. The
+        # file is gone: one fetch now serves every screen wanting the same sky,
+        # so "this device's feed" is really "the job this device waits on".
+        env = read_cache(_device_job_path(cfg, dev, cache_dir))
         ok, dwell = _feed_state(env, now)
         feed = {"ok": ok, "age_s": round(dwell, 1),
                 "aircraft": len(_servable(env, dwell)),
@@ -458,7 +482,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     def settings_page():
         st = _status()
         return Response(
-            web.render_settings(st["feed"] or {}, devices=st.get("devices"),
+            web.render_settings(st["feed"] or {}, jobs=_job_report(),
                                 notice=request.args.get("m", ""),
                                 version=version),
             mimetype="text/html")
@@ -942,12 +966,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             gone = False
         return ("", 204) if gone else (jsonify({"error": "no estaba puesto"}), 404)
 
-    @app.get("/api/jobs")
-    def list_jobs():
-        """The fetch work the fleet currently implies, and how it is doing.
+    def _job_report() -> list:
+        """The fetch work the fleet implies, with each job's health.
 
         Derived on read, exactly as the daemon derives it, so this cannot drift
-        from what is actually being fetched.
+        from what is actually being fetched. One function, used by the page and
+        by the API, so they cannot disagree either.
         """
         plan = jobs.collect(registry.load(cache_dir), _live())
         out = []
@@ -959,7 +983,16 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                         "ok": env.get("ok"),
                         "fetched_at": env.get("fetched_at"),
                         "error": env.get("error")})
-        return jsonify({"jobs": out})
+        return out
+
+    @app.get("/api/jobs")
+    def list_jobs():
+        """The fetch work the fleet currently implies, and how it is doing.
+
+        Derived on read, exactly as the daemon derives it, so this cannot drift
+        from what is actually being fetched.
+        """
+        return jsonify({"jobs": _job_report()})
 
     @app.get("/api/devices/<hw>/schedule")
     def device_schedule(hw: str):
@@ -1150,24 +1183,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                     rec, scene_max_s=getattr(scene, "poll_max_s", None)))
         return resp
 
-    def _scene_data(requirement):
-        """Resolve one component requirement to whatever was last fetched.
-
-        The component's side of the port: it hands back the requirement it
-        declared and receives a payload or None. It never learns that a job
-        exists, where the payload is cached, or whether the fetch succeeded --
-        a failed fetch keeps the last good payload, and deciding what to do
-        with old data is the component's business, not the cache's.
-        """
-        if not isinstance(requirement, dict):
-            return reading.Reading.nothing()
-        provider = requirement.get("provider")
-        try:
-            params = providers.clean_params(provider, requirement.get("params"))
-        except ValueError:
-            return reading.Reading.nothing()
-        env = jobstore.read(cache_dir, providers.key(provider, params))
-        return reading.Reading.from_envelope(env, now=clock())
+    _scene_data = datasource.reader(cache_dir, clock)
 
     def _scene_for(hw: str, rec: dict, caps: dict | None = None):
         """(scene_name, Scene). An unassigned device gets a real scene telling

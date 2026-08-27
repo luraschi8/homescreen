@@ -10,12 +10,33 @@ from pathlib import Path
 
 import pytest
 
+from homescreen import datasource
 from homescreen import registry, render, scenes
 from homescreen.cache import write_cache
 from homescreen.serve import create_app
 from tests.conftest import FrozenClock
 
-CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid"},
+
+def _sky_path(cache_dir, cfg, options=None):
+    """Where the radar reads its sky, derived the way the scene derives it.
+
+    Tests used to write `cache/feed/adsb.json` -- the per-device file from when
+    there was one feed and one radar. The scene now declares a requirement and
+    is handed a Reading, so a fixture that hardcodes a path is one that agrees
+    with itself and with nothing else.
+    """
+    from homescreen import jobstore, providers, scenes
+    need = scenes.needs("planes", options or {}, cfg)[0]
+    key = providers.key(need["provider"],
+                        providers.clean_params(need["provider"], need["params"]))
+    path = jobstore.path_for(cache_dir, key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+
+CFG = {"location": {"name": "Madrid", "timezone": "Europe/Madrid",
+                    "lat": 40.4168, "lon": -3.7038},
        "feeds": {"adsb": {"source": "api", "endpoint": "https://x"}},
        "devices": []}
 
@@ -216,7 +237,8 @@ def test_a_hostile_device_name_cannot_black_out_a_panel(tmp_path, payload):
     # Measured before escaping: 100.00% ink.
     _needs_chromium()
     render.clear_cache()
-    ctx = scenes.SceneContext(cfg=CFG, cache_dir=tmp_path, caps={"w": 800, "h": 480},
+    ctx = scenes.SceneContext(
+        data=datasource.reader(tmp_path, lambda: 1_787_000_000.0),cfg=CFG, cache_dir=tmp_path, caps={"w": 800, "h": 480},
                               now=1_787_000_000.0,
                               device={"hw": "aa", "name": payload})
     packed = render.render_frame(scenes.build("status", ctx).html, 800, 480)
@@ -229,10 +251,11 @@ def test_a_hostile_upstream_callsign_cannot_control_the_panel(tmp_path):
     # partly controls what the panel draws.
     _needs_chromium()
     render.clear_cache()
-    write_cache(tmp_path / "feed" / "adsb.json", {"aircraft": [
+    write_cache(_sky_path(tmp_path, CFG), {"aircraft": [
         {"cs": '<div style="position:fixed;inset:0;background:#000">',
          "ty": "A320", "alt": "1 ft", "dst": 1.0}]})
-    ctx = scenes.SceneContext(cfg=CFG, cache_dir=tmp_path, caps={"w": 800, "h": 480},
+    ctx = scenes.SceneContext(
+        data=datasource.reader(tmp_path, lambda: 1_787_000_000.0),cfg=CFG, cache_dir=tmp_path, caps={"w": 800, "h": 480},
                               now=1_787_000_000.0,
                               device={"hw": "aa", "id": "x", "feed": "adsb",
                                       "max_aircraft": 20})
@@ -242,9 +265,10 @@ def test_a_hostile_upstream_callsign_cannot_control_the_panel(tmp_path):
 
 
 def test_a_non_numeric_distance_from_upstream_does_not_break_the_page(tmp_path):
-    write_cache(tmp_path / "feed" / "adsb.json",
+    write_cache(_sky_path(tmp_path, CFG),
                 {"aircraft": [{"cs": "X", "dst": "far"}]})
-    ctx = scenes.SceneContext(cfg=CFG, cache_dir=tmp_path, caps={"w": 800, "h": 480},
+    ctx = scenes.SceneContext(
+        data=datasource.reader(tmp_path, lambda: 1_787_000_000.0),cfg=CFG, cache_dir=tmp_path, caps={"w": 800, "h": 480},
                               now=1_787_000_000.0,
                               device={"hw": "aa", "id": "x", "feed": "adsb",
                                       "max_aircraft": 20})

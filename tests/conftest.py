@@ -48,3 +48,4 @@ class FrozenClock:
 @pytest.fixture
 def frozen_clock():
     return FrozenClock()
+
