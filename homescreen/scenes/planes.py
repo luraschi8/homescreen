@@ -35,6 +35,27 @@ from homescreen.scenes._style import page
 #: aircraft symbol overlap, and every label collides with every other.
 SURFACES = ({"min_short": 160},)
 
+#: Per ASSIGNMENT, with the deployment's values as the defaults.
+#:
+#: These lived only in config.yaml and the runtime override file, which made
+#: them one setting for the whole house: two radars could not watch different
+#: ranges, and changing either meant editing the Pi. Blank means "use the
+#: deployment default", so a screen that has never been configured behaves
+#: exactly as it did.
+#:
+#: `endpoint` and `fetch_seconds` are declared here because they belong to the
+#: component, but they are not yet honoured per assignment: one fetch daemon
+#: serves every radar, so making two screens read different upstreams needs the
+#: job registry. Until that lands the dashboard says so rather than offering a
+#: field that silently does nothing.
+OPTIONS = (
+    {"key": "radius_km", "label": "Radio (km)", "type": "int", "default": 0,
+     "help": "0 usa el valor del servidor. Escala los anillos del radar."},
+    {"key": "max_aircraft", "label": "Aviones como máximo", "type": "int",
+     "default": 0,
+     "help": "0 usa el valor del servidor. La pantalla puede imponer menos."},
+)
+
 CSS = """
 .wrap{padding:18px;display:flex;flex-direction:column;height:100%}
 table{width:100%;border-collapse:collapse;margin-top:8px}
@@ -121,13 +142,28 @@ def _dwell(env: dict, now: float) -> float:
     return max(0.0, now - fetched.timestamp())
 
 
+def _positive(value):
+    """A usable number, or None. Zero and nonsense both mean "not set" here,
+    which is what lets one field carry both a value and "use the default"."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 def build(ctx: SceneContext) -> Scene:
     items, feed = _aircraft(ctx)
     # Two caps, and the smaller wins: the operator says how many are USEFUL,
     # the device says how many it can HOLD. Ignoring the device's number sends
     # a body it cannot parse -- and a parse failure reads as "no server", so
     # the panel blanks rather than showing fewer aeroplanes.
-    cap = int(ctx.device.get("max_aircraft") or 20)
+    # Assignment first, then the deployment's value, then the floor. Blank
+    # means "whatever the server was already doing", so a screen nobody has
+    # configured is unchanged.
+    opts = ctx.options or {}
+    cap = int(_positive(opts.get("max_aircraft"))
+              or ctx.device.get("max_aircraft") or 20)
     declared = ctx.device.get("max_items")
     if declared:
         cap = min(cap, int(declared))
@@ -144,10 +180,12 @@ def build(ctx: SceneContext) -> Scene:
     # from lat/lon itself so that changing the range preset stays a local,
     # instant action (ADDENDUM §2). Renaming them for a firmware that does not
     # exist yet would break the one that does. Pinned by test_scenes.py.
-    try:
-        radius_km = float(ctx.device.get("radius_km") or 60.0)
-    except (TypeError, ValueError):
-        radius_km = 60.0
+    radius_km = _positive(opts.get("radius_km"))
+    if not radius_km:
+        try:
+            radius_km = float(ctx.device.get("radius_km") or 60.0)
+        except (TypeError, ValueError):
+            radius_km = 60.0
     # `feed_age_s` is the THIRD staleness cause, and it must stay separate from
     # the per-aircraft age. PLAN.md §3: radar_display.cpp tests its two causes
     # separately and deliberately -- summing them made targets blink once per

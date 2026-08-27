@@ -40,7 +40,12 @@ def _drawn(client):
 def test_a_component_declares_its_own_options():
     keys = [f["key"] for f in scenes.option_schema("clock")]
     assert "timezone" in keys and "show_seconds" in keys
-    assert scenes.option_schema("planes") == (), "radar takes none yet"
+    # The radar's range and aircraft cap were global -- one setting for the
+    # whole house, so two radars could not watch different ranges and changing
+    # either meant editing the Pi. They belong to the assignment now, with the
+    # deployment's values as the defaults.
+    radar_keys = {f["key"] for f in scenes.option_schema("planes")}
+    assert {"radius_km", "max_aircraft"} <= radar_keys
     assert scenes.option_schema("nosuchscene") == ()
 
 
@@ -276,3 +281,35 @@ def test_a_long_option_value_is_truncated_before_it_reaches_the_card(tmp_path):
     registry.touch(tmp_path, HW, now=1000.0)
     rec = registry.assign(tmp_path, HW, options={"timezone": "x" * 900})
     assert len(rec["options"]["timezone"]) <= registry.MAX_VALUE_LEN
+
+
+def test_two_radars_can_watch_different_ranges(tmp_path):
+    # The point of moving this off the global: it was one dial for the house.
+    from homescreen import registry
+    from homescreen.serve import create_app
+    client = create_app(CFG, tmp_path, version="t").test_client()
+    q = "w=240&h=240&depth=16&shape=round&components=radar,draw_list"
+    for hw, radius in (("aa00000000ff", 20), ("bb00000000ff", 90)):
+        client.get(f"/api/devices/{hw}/scene?{q}")
+        client.put(f"/api/devices/{hw}/membership", json={"approved": True})
+        registry.assign(tmp_path, hw, scene="planes",
+                        options={"radius_km": radius})
+    seen = {}
+    for hw in ("aa00000000ff", "bb00000000ff"):
+        body = client.get(f"/api/devices/{hw}/scene?{q}").get_json()
+        seen[hw] = body["components"][0]["radius_km"]
+    assert seen == {"aa00000000ff": 20.0, "bb00000000ff": 90.0}
+
+
+def test_a_radar_nobody_configured_behaves_exactly_as_before(tmp_path):
+    # Blank means "whatever the deployment was already doing". A screen that
+    # has never been opened must not change because a field appeared.
+    from homescreen import registry
+    from homescreen.serve import create_app
+    client = create_app(CFG, tmp_path, version="t").test_client()
+    q = "w=240&h=240&depth=16&shape=round&components=radar,draw_list"
+    client.get(f"/api/devices/{HW}/scene?{q}")
+    client.put(f"/api/devices/{HW}/membership", json={"approved": True})
+    registry.assign(tmp_path, HW, scene="planes")
+    body = client.get(f"/api/devices/{HW}/scene?{q}").get_json()
+    assert body["components"][0]["radius_km"] == 60.0, "the server's own default"
