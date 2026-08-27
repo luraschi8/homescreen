@@ -242,7 +242,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                    # view all said 30. One device, two answers, and the
                    # firmware decides which -- that is how an e-paper ends up
                    # refreshing every 5 seconds.
-                   "poll_seconds": registry.poll_seconds(rec),
+                   "poll_seconds": registry.advertised_poll_seconds(rec),
                    "caps": rec.get("caps") or {}}
         if require_data_render and dev.get("render") != DATA_RENDER:
             return None
@@ -569,7 +569,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
     def _fleet_entry(hw: str, rec: dict, now: float) -> dict:
         entry = {"hw": hw, "name": rec.get("name"), "scene": rec.get("scene"),
                  "fw": rec.get("fw"),
-                 "poll_seconds": registry.poll_seconds(rec),
+                 "poll_seconds": registry.advertised_poll_seconds(rec),
                  "online": registry.is_online(rec, now),
                  "last_seen": rec.get("last_seen"),
                  "first_seen": rec.get("first_seen"),
@@ -786,11 +786,24 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return None, (jsonify({"error": "registry unavailable"}), 503)
         return rec, None
 
-    def _poll_seconds(rec: dict) -> int:
-        return registry.poll_seconds(rec)
+    def _poll_seconds(rec: dict, scene=None) -> int:
+        return registry.poll_seconds(
+            rec, scene_poll_s=getattr(scene, "poll_s", None))
 
-    def _poll_header(resp, rec):
-        resp.headers["X-Poll-Seconds"] = str(_poll_seconds(rec))
+    def _poll_header(resp, rec, scene=None, hw=None):
+        """Tell the device when to come back, and record the ceiling we implied.
+
+        The header may count down to the next change; the recorded budget is the
+        stable number the fleet view judges silence against. Both come from one
+        place so they can never drift apart -- the bug this shape replaces was
+        four routes each deriving a cadence of their own.
+        """
+        resp.headers["X-Poll-Seconds"] = str(_poll_seconds(rec, scene))
+        if hw:
+            registry.remember_poll_budget(
+                cache_dir, hw,
+                registry.poll_budget_seconds(
+                    rec, scene_max_s=getattr(scene, "poll_max_s", None)))
         return resp
 
     def _scene_for(hw: str, rec: dict, caps: dict | None = None):
@@ -822,7 +835,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                     "max_items": registry.clean_caps(
                         rec.get("caps") or {}).get("max_items")})
         if name in ("unassigned", "error"):
-            return name, scenes.safe_build("status", ctx)
+            return name, scenes.without_cadence(scenes.safe_build("status", ctx))
         return name, scenes.safe_build(name, ctx)
 
     @app.get("/api/device/<hw>/scene")
@@ -878,7 +891,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         else:
             resp = jsonify(body)
         resp.headers["ETag"] = etag
-        return _poll_header(resp, rec)
+        return _poll_header(resp, rec, scene, hw)
 
     def _requested_geometry(args: dict):
         """(w, h, error_response). Read from THIS request, never from storage.
@@ -956,7 +969,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         resp.headers["ETag"] = etag
         resp.headers["X-Frame-Bytes"] = str(len(packed))
         resp.headers["X-Scene"] = name
-        return _poll_header(resp, rec)
+        return _poll_header(resp, rec, scene, hw)
 
     @app.get("/api/status")
     def status():

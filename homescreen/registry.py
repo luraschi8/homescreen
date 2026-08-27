@@ -213,12 +213,46 @@ def default_poll_seconds(caps) -> int:
     return EPAPER_POLL_SECONDS if depth == 1 else DEFAULT_POLL_SECONDS
 
 
-def poll_seconds(rec: dict) -> int:
+#: Record field: the cadence CEILING last advertised to this device.
+#:
+#: Stored rather than recomputed because the fleet view has no scene: building
+#: every device's scene to answer "is it online" would read feed caches and
+#: render decisions on a route that only wants a timestamp comparison. What we
+#: told the device is a fact about a past response, so it belongs in the record
+#: next to `last_seen`, which is a fact about the same exchange.
+POLL_BUDGET_FIELD = "poll_budget_s"
+
+
+def poll_floor(caps) -> int:
+    """The fastest cadence this HARDWARE can sustain, whatever a scene wants.
+
+    A 1-bit panel's own full refresh takes ~3s and every frame it asks for is a
+    Chromium render on the Pi, of which there are two slots for the whole
+    fleet. A scene that wants a one-second tick -- a clock with seconds shown
+    is a real example -- must not be able to turn that shared queue into a busy
+    loop. A 16-bit LCD parses a few KB of JSON instead, so there is nothing
+    there to protect and the scene gets what it asks for.
+
+    Never raises: devices.json is hand-editable and this runs on the serve path.
+    """
+    if isinstance(caps, dict) and caps.get("depth") == 1:
+        return EPAPER_POLL_SECONDS
+    return 1
+
+
+def poll_seconds(rec: dict, scene_poll_s=None) -> int:
     """What to put in `X-Poll-Seconds`. An operator's setting always wins.
 
     Rounds rather than truncates: a stored 1.9 became a header of 1, so the
     fleet view and the device disagreed and the device always polled faster
     than it was told to.
+
+    Below an explicit setting sits the SCENE's own cadence, because what is
+    being shown knows better than the panel's hardware does: a clock changes
+    once a minute, a radar every few seconds, and the same device shows both.
+    The hardware default stays underneath as the answer for a scene with no
+    opinion -- it is about the glass (a 1-bit panel takes ~3s to refresh), not
+    about the content.
     """
     raw = (rec or {}).get("poll_seconds")
     if raw is not None:
@@ -228,7 +262,61 @@ def poll_seconds(rec: dict) -> int:
             n = 0
         if n >= 1:
             return n
+    if scene_poll_s is not None and not isinstance(scene_poll_s, bool):
+        # `float(True)` is 1.0, which would quietly become a one-second poll.
+        try:
+            n = int(round(float(scene_poll_s)))
+        except (TypeError, ValueError):
+            n = 0
+        if n >= 1:
+            return max(n, poll_floor((rec or {}).get("caps")))
     return default_poll_seconds((rec or {}).get("caps"))
+
+
+def poll_budget_seconds(rec: dict, scene_max_s=None) -> int:
+    """The window silence is judged against: the longest wait we would impose.
+
+    Same precedence as `poll_seconds`, but fed the scene's CEILING rather than
+    its next-wake time, so a clock counting down to the minute boundary is not
+    judged dead for having been told "come back in 1s" a moment ago.
+    """
+    return poll_seconds(rec, scene_poll_s=scene_max_s)
+
+
+def advertised_poll_seconds(rec) -> int:
+    """The cadence to SHOW an operator: what this device was last told, or what
+    it would be told if it asked right now.
+
+    The dashboard and the liveness rule must quote one number. When they
+    disagreed, the fleet called an e-paper offline against a cadence no route
+    had ever sent it.
+    """
+    # Same precedence as everywhere else -- operator, then content, then
+    # hardware -- with the recorded ceiling standing in for the scene. Reading
+    # the record FIRST would let a cadence we advertised for a scene the device
+    # no longer shows outrank the operator who just changed it.
+    return poll_seconds(rec, scene_poll_s=(rec or {}).get(POLL_BUDGET_FIELD))
+
+
+def remember_poll_budget(cache_dir: Path, hw_id: str, seconds: int) -> None:
+    """Record what we just advertised. Never raises: this is bookkeeping on the
+    device's only route, and failing to write it must not fail the response."""
+    try:
+        n = int(seconds)
+    except (TypeError, ValueError):
+        return
+    if n < 1:
+        return
+    try:
+        with _locked(cache_dir):
+            data = load_raw(cache_dir)
+            rec = data.get(hw_id)
+            if not isinstance(rec, dict) or rec.get(POLL_BUDGET_FIELD) == n:
+                return                   # unchanged: no write, no fsync
+            rec[POLL_BUDGET_FIELD] = n
+            _save_unlocked(cache_dir, data)
+    except OSError:
+        return
 
 
 def load_raw(cache_dir: Path) -> dict:
@@ -667,7 +755,10 @@ def is_online(rec: dict, now: float) -> bool:
     # The cadence we ADVERTISED, not the bare default: an e-paper is told 30s,
     # so judging it against 3 x 5s would call a device offline two polls before
     # it was ever due to speak. These two numbers must come from one place.
-    poll = poll_seconds(rec)
+    # The CEILING we advertised, not the countdown value: a clock aiming at the
+    # minute boundary is told 1s at :59, and three times that would call it
+    # dead one second later. `poll_budget_s` is what the scene route recorded.
+    poll = advertised_poll_seconds(rec)
     delta = now - seen
     if delta < -1.0:
         return False                    # clock skew, not freshness

@@ -97,5 +97,15 @@ def build(ctx: SceneContext) -> Scene:
             draw.text("rim_bottom", f"{rest[0][0]} {rest[0][1]}", "xs", "dim"))
     components = ({"c": "clock", "draw": instructions},)
 
+    # Ask to be woken when the picture actually changes. A clock is stale the
+    # instant the minute rolls and identical for the 59 seconds after it, so a
+    # fixed grid is the worst of both: twelve requests a minute, and the new
+    # minute still arriving up to a poll late. With seconds shown there is no
+    # boundary to aim at and every second is a change.
+    opts = ctx.options or {}
+    seconds = bool(opts.get("show_seconds"))
+    poll_s = 1 if seconds else max(1, 60 - int(ctx.now) % 60)
+
     return Scene(layout="fill", components=components,
+                 poll_s=poll_s, poll_max_s=1 if seconds else 60,
                  html=page(w, h, "".join(body), CSS))

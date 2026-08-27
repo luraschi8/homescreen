@@ -43,4 +43,5 @@ def build(ctx: SceneContext, *, message: str | None = None) -> Scene:
             f'<div class="sec msg">{text}</div>'
             f'<div class="ter" style="margin-top:14px">{stamp}</div>'
             f'</div>')
-    return Scene(layout="fill", html=page(w, h, body, CSS))
+    # Host stats: nothing here is worth waking a panel for more often.
+    return Scene(layout="fill", poll_s=30, html=page(w, h, body, CSS))

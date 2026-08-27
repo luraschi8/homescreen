@@ -446,11 +446,17 @@ float secondsSinceContent() {
 
 float secondsSinceContentRaw() { return secondsSince(s_content_ms); }
 
+float contactExpirySec() {
+  const float agreed = static_cast<float>(s_poll_ms) / 1000.0f;
+  const float missed = agreed * kContactExpiryPolls;
+  return missed > kContactExpirySec ? missed : kContactExpirySec;
+}
+
 bool contentExpired() {
   if (!s_ever_received) {
     return false;                       // nothing to expire yet
   }
-  if (secondsSince(s_contact_ms) >= kContactExpirySec) {
+  if (secondsSince(s_contact_ms) >= contactExpirySec()) {
     return true;                        // the server itself is gone
   }
   // The server is answering, but its feed stopped moving. feed_age_s is the

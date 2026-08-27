@@ -47,6 +47,13 @@ class SceneContext:
 #: device can draw and no test can honestly exercise.
 LAYOUTS = ("fill",)
 
+#: Bounds on the cadence a scene may ask for, in seconds. Mirrors the
+#: firmware's kPollMinMs/kPollMaxMs. A scene asking outside this is CLAMPED
+#: rather than ignored: a device that stops polling cannot be recovered from
+#: the dashboard, so the failure mode has to be "polls oddly", never "gone".
+POLL_MIN_S = 1
+POLL_MAX_S = 600
+
 
 def check_layout(layout: str) -> str:
     """The one place a layout name is admitted. Raises ValueError otherwise."""
@@ -71,9 +78,50 @@ class Scene:
     #: be recorded in the fleet view, and a swallowed exception cannot be:
     #: the caller had no way to tell a fallback from a real scene.
     error: str | None = None
+    #: How long the device should wait before asking again, in seconds.
+    #:
+    #: The right cadence is a property of the CONTENT, not of the device: a
+    #: clock changes once a minute and is unchanged for the 59 seconds after
+    #: it, while a radar wants fresh vectors every few seconds. Only the scene
+    #: knows which it is. None means "no opinion" and leaves the device's own
+    #: default in place.
+    #:
+    #: A scene may also point at the next CHANGE rather than a fixed period --
+    #: `60 - now % 60` wakes a clock on the minute boundary -- which costs one
+    #: request a minute instead of twelve and lands the new minute within a
+    #: second of when it becomes true.
+    poll_s: int | None = None
+    #: The LONGEST this scene will ever ask for, in seconds.
+    #:
+    #: Separate from `poll_s` because a scene that aims at the next change asks
+    #: for a different number every time -- a clock counts 60, 59, 58 down to
+    #: the boundary. Liveness cannot be judged against that: three times a
+    #: one-second cadence would call a healthy panel dead. This is the stable
+    #: number, so the fleet view and the device agree on when silence means
+    #: something. Defaults to `poll_s`, which is right for any fixed cadence.
+    poll_max_s: int | None = None
 
     def __post_init__(self):
         check_layout(self.layout)
+        object.__setattr__(self, "poll_s", clean_poll_s(self.poll_s))
+        object.__setattr__(self, "poll_max_s",
+                           clean_poll_s(self.poll_max_s) or self.poll_s)
+
+
+def clean_poll_s(value):
+    """Coerce a scene's requested cadence to a usable number of seconds.
+
+    Never raises. Scenes are the part of this system most likely to be edited
+    casually, and this runs on the device's only route -- a TypeError here is a
+    500 on the request that keeps a panel alive.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return max(POLL_MIN_S, min(POLL_MAX_S, n))
 
 
 def _registry() -> dict:
@@ -108,9 +156,21 @@ def safe_build(name: str, ctx: SceneContext) -> Scene:
         return _fallback(ctx, f"fallo en {name}: {type(exc).__name__}")
 
 
+def without_cadence(scene: Scene) -> Scene:
+    """The same scene with no opinion about polling.
+
+    Used where a scene is borrowed for its LOOK rather than its content: an
+    unassigned panel shows the status scene, but it is waiting to be given a
+    job, and an operator who assigns one should see the panel change rather
+    than wait out a cadence chosen for host stats.
+    """
+    return dataclasses.replace(scene, poll_s=None, poll_max_s=None)
+
+
 def _fallback(ctx: SceneContext, message: str) -> Scene:
     from homescreen.scenes import status
-    return dataclasses.replace(status.build(ctx, message=message),
+    return dataclasses.replace(without_cadence(status.build(ctx,
+                                                            message=message)),
                                error=message)
 
 

@@ -488,8 +488,43 @@ void test_a_component_with_no_items_still_bumps_the_generation(void) {
       "a ticking clock must be able to tell the loop to redraw");
 }
 
+
+void test_a_slow_cadence_is_not_evidence_that_the_server_is_gone(void) {
+  // The bug this prevents, in full: a clock component asks to be woken on the
+  // minute boundary, so the device is legitimately told to wait ~58s. With a
+  // FIXED 60s contact expiry the picture blanks two seconds before the poll
+  // that would refresh it -- every minute, forever, for obeying us.
+  resetForTest();
+  poll(kWireAssigned, HTTP_CODE_OK, kWireAssignedEtag, "58");
+  TEST_ASSERT_FALSE(contentExpired());
+
+  // Two full cadences of silence: overdue, but not yet evidence of anything.
+  mockAdvanceMs(120000);
+  TEST_ASSERT_FALSE_MESSAGE(contentExpired(),
+                            "two missed polls is late, not gone");
+
+  // Three is the call.
+  mockAdvanceMs(60000);
+  TEST_ASSERT_TRUE_MESSAGE(contentExpired(),
+                           "three missed polls at the agreed cadence is gone");
+}
+
+void test_a_fast_cadence_does_not_shorten_the_expiry_below_its_floor(void) {
+  // The radar polls every 5s; 3 x 5 is 15, and calling the server gone after
+  // 15 seconds of silence would blank the panel on a slow DNS lookup. The
+  // floor is what stops a fast cadence making the device twitchy.
+  resetForTest();
+  poll(kWireAssigned, HTTP_CODE_OK, kWireAssignedEtag, "5");
+  mockAdvanceMs(45000);
+  TEST_ASSERT_FALSE_MESSAGE(contentExpired(),
+                            "45s of silence must not expire a 5s cadence");
+  TEST_ASSERT_EQUAL_FLOAT(kContactExpirySec, contactExpirySec());
+}
+
 int main(void) {
   UNITY_BEGIN();
+  RUN_TEST(test_a_slow_cadence_is_not_evidence_that_the_server_is_gone);
+  RUN_TEST(test_a_fast_cadence_does_not_shorten_the_expiry_below_its_floor);
   RUN_TEST(test_the_request_declares_everything_the_server_needs);
   RUN_TEST(test_a_real_server_body_becomes_aircraft);
   RUN_TEST(test_velocities_come_from_the_server_and_are_not_recomputed);

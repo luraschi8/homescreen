@@ -49,8 +49,28 @@ constexpr size_t kMaxAircraft = 40;
  */
 constexpr float kExtrapolationHorizonSec = 12.0f;
 
-/** Silence from the SERVER this long and the picture must go. */
+/**
+ * Silence from the SERVER this long and the picture must go -- but never
+ * sooner than we were told to come back.
+ *
+ * This was a bare 60s, which was safe only while every scene polled at the
+ * radar's 5s. Now that a component declares its own cadence, a clock asking to
+ * be woken on the minute boundary polls at up to 60s, and a fixed 60s expiry
+ * would condemn it for obeying us: the picture would blank moments before the
+ * poll that refreshes it, every single minute.
+ *
+ * So the floor stays 60s and the real threshold is whichever is longer: this,
+ * or kContactExpiryPolls consecutive missed polls at the agreed cadence.
+ * Expiry means "the server is gone", and the only honest evidence for that is
+ * polls that were due and did not land.
+ */
 constexpr float kContactExpirySec = 60.0f;
+
+/** Missed polls at the AGREED cadence before the server counts as gone. */
+constexpr float kContactExpiryPolls = 3.0f;
+
+/** The threshold actually applied: the floor, or three missed polls. */
+float contactExpirySec();
 /**
  * The server's own feed cache this stale and the picture must go, even though
  * the server is answering us perfectly.

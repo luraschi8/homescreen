@@ -395,11 +395,17 @@ def test_a_recovered_scene_clears_the_note(ctx, monkeypatch):
     assert "unsupported" not in entry
 
 
-def test_every_route_tells_a_device_the_same_cadence(ctx):
-    # A self-registered 1-bit panel was told 30 by /scene, /frame and
-    # /api/devices, and 5 by /api/display/<name>/data -- while the fleet view
-    # judged it offline against 3 x 30. Which one the firmware obeys decides
-    # whether the panel refreshes every 5s or every 30s.
+def test_every_route_agrees_on_the_window_silence_is_judged_against(ctx):
+    # Was: every route must quote the SAME cadence. A self-registered 1-bit
+    # panel was told 30 by /scene, /frame and /api/devices and 5 by
+    # /api/display/<name>/data, while the fleet judged it offline against 3x30.
+    #
+    # That invariant could not survive a scene that aims at its next CHANGE: a
+    # clock asks for 47s, then 46s, then 45s. Equality across routes would have
+    # to be bought by giving that up, and the thing it was really protecting is
+    # not equality -- it is that nobody judges a device against a number no
+    # route ever sent it. So: one budget everywhere, and the countdown the
+    # device actually obeys never exceeds it.
     client, cache, _ = ctx
     client.get(f"/api/device/{HW}/scene?w=800&h=480&depth=1")
     client.patch(f"/api/devices/{HW}", json={"name": "salon", "scene": "clock"})
@@ -408,9 +414,14 @@ def test_every_route_tells_a_device_the_same_cadence(ctx):
     data = client.get("/api/display/salon/data")
     fleet, = [d for d in client.get("/api/devices").get_json()["devices"]
               if d["hw"] == HW]
-    assert scene.headers["X-Poll-Seconds"] == "30"
-    assert data.headers["X-Poll-Seconds"] == "30", "this route computed its own"
-    assert fleet["poll_seconds"] == 30
+    budget = fleet["poll_seconds"]
+    assert budget == 60, "a clock's ceiling is the minute it changes on"
+    assert data.headers["X-Poll-Seconds"] == str(budget), \
+        "this route computed its own"
+    told = int(scene.headers["X-Poll-Seconds"])
+    assert told <= budget, "a device must never be told to wait past its budget"
+    # ...and never faster than a 1-bit panel can actually refresh.
+    assert told >= registry.EPAPER_POLL_SECONDS
 
 
 def test_an_operator_cadence_reaches_every_route_too(ctx):

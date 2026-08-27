@@ -181,4 +181,8 @@ def build(ctx: SceneContext) -> Scene:
             f'<table>{rows or "<tr><td class=sec>cielo despejado</td></tr>"}</table>'
             f'<div class="foot"><div class="rule"></div>'
             f'<div class="ter" style="margin-top:6px">{stamp}</div></div></div>')
-    return Scene(layout="fill", components=components, html=page(w, h, body, CSS))
+    # Aircraft move continuously and the device dead-reckons between polls, so
+    # this is how often the reckoning gets corrected rather than how often the
+    # picture changes.
+    return Scene(layout="fill", components=components, poll_s=5,
+                 html=page(w, h, body, CSS))
