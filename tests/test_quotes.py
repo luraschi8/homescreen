@@ -93,7 +93,7 @@ def test_with_no_data_it_draws_dashes_rather_than_a_price_of_zero():
 
 
 def test_with_no_symbols_it_says_so():
-    assert any("sin símbolos" in v for v in drawn(ROUND, symbols=""))
+    assert any("sin simbolos" in v for v in drawn(ROUND, symbols=""))
 
 
 # --- options ----------------------------------------------------------------

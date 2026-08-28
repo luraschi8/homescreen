@@ -37,13 +37,13 @@ def test_a_small_round_panel_shows_the_next_one():
     values = drawn(ROUND)
     assert "Dentista" in values
     assert "Cena con Ana" not in " ".join(values)
-    assert "+2 más" in values, "and says there is more"
+    assert "+2 mas" in values, "and says there is more"
 
 
 def test_times_are_written_the_way_a_person_reads_them():
     values = " ".join(drawn(EPAPER))
     assert "hoy 14:00" in values
-    assert "mañana 09:00" in values
+    assert "manana 09:00" in values, "the font has no ñ"
     assert "4 sep 19:30" in values, "past this week, a date"
 
 

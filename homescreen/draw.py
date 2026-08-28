@@ -140,11 +140,52 @@ def lines_fit(lines, w: int, h: int, *, size: str = "sm",
     return max(len(line) for line in lines) * px * CHAR_WIDTH_RATIO <= usable
 
 
+#: What the panel's embedded face can actually draw: 95 glyphs, 0x21-0xB0.
+#: It has a degree sign and no accented letters, no arrows, no middle dot and
+#: no em dash -- which is most of written Spanish and half the punctuation a
+#: component reaches for.
+#:
+#: Substituted rather than dropped, because a missing glyph is a blank box or
+#: nothing at all, and "maana" is at least a word you can read. The mapping is
+#: deliberately boring; `tests/test_draw.py` pins every entry against the font
+#: file itself, so a different embedded face fails the test rather than the
+#: panel.
+DEVICE_SUBSTITUTIONS = {
+    "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ü": "u", "ñ": "n",
+    "Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ü": "U", "Ñ": "N",
+    "¿": "", "¡": "", "·": "-", "—": "-", "–": "-",
+    "▲": "+", "▼": "-", "“": '"', "”": '"', "‘": "'", "’": "'",
+    "€": "EUR", "£": "GBP", "…": "...",
+}
+
+#: Codepoints the face carries. Anything outside this, after substitution, is
+#: dropped: a box on the glass is worse than a shorter word.
+DEVICE_MIN_CP, DEVICE_MAX_CP = 0x20, 0xB0
+
+
+def for_device(value) -> str:
+    """Text an instruction list can carry, from text a person wrote.
+
+    Applied inside `text()` so every component is safe by construction and
+    none of them has to know what the panel's font holds. The SVG preview runs
+    the same instruction list, so preview and glass still agree -- which is the
+    property the whole two-executor design exists to protect.
+    """
+    out = []
+    for char in str(value):
+        char = DEVICE_SUBSTITUTIONS.get(char, char)
+        for piece in char:
+            if DEVICE_MIN_CP <= ord(piece) <= DEVICE_MAX_CP:
+                out.append(piece)
+    return "".join(out)
+
+
 def text(slot: str, value: str, size: str = "md",
          tone: str = "normal") -> dict:
     """Build one text instruction. Components use this rather than dict literals
     so a vocabulary change is one edit, not a search."""
-    return {"t": "text", "slot": slot, "v": value, "size": size, "tone": tone}
+    return {"t": "text", "slot": slot, "v": for_device(value), "size": size,
+            "tone": tone}
 
 
 def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True) -> str:

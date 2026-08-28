@@ -28,7 +28,7 @@ def test_a_number_a_person_reads_from_across_the_room():
                                  "input_tokens": 2_000_000,
                                  "output_tokens": 500_000, "days": 30}, ok=True))
     assert values[0] == "2.5M", "magnitude, not 2500000"
-    assert "30 días" in values[1]
+    assert "30 dias" in values[1], "as the panel can draw it"
 
 
 def test_with_no_data_it_says_so_rather_than_showing_zero():

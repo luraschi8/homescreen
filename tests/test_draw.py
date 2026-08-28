@@ -141,3 +141,75 @@ def test_no_panel_height_makes_the_two_resolvers_disagree(h):
     for size, frac in draw.SIZES.items():
         assert draw.size_px(size, h, h) == max(
             draw.MIN_TEXT_PX, math.floor(frac * h + 0.5))
+
+
+# --- what the panel's font can actually draw --------------------------------
+#
+# Found by inspecting the embedded face rather than by looking at the glass:
+# it holds 95 glyphs and none of them are accented letters, arrows, middle
+# dots or em dashes. Every Spanish string and half the punctuation a component
+# reaches for would have rendered as a blank box. The clock never caught it
+# because "Madrid" and "Buenos Aires" are ASCII.
+
+import pathlib
+import struct
+
+
+def _font_codepoints():
+    """Every glyph the embedded VLW actually carries."""
+    blob = pathlib.Path("firmware/data/ui_font.vlw").read_bytes()
+    count = struct.unpack(">i", blob[0:4])[0]
+    out, offset = set(), 24
+    for _ in range(count):
+        out.add(struct.unpack(">i", blob[offset:offset + 4])[0])
+        offset += 28
+    return out
+
+
+def test_every_substitution_lands_on_a_glyph_the_font_has():
+    # Pinned against the FONT FILE, so swapping the embedded face fails here
+    # rather than on the panel.
+    have = _font_codepoints()
+    for source, replacement in draw.DEVICE_SUBSTITUTIONS.items():
+        for char in replacement:
+            assert ord(char) in have or char == " ", \
+                f"{source!r} -> {replacement!r} is not drawable either"
+
+
+def test_the_declared_range_matches_the_font():
+    have = _font_codepoints()
+    assert max(have) <= draw.DEVICE_MAX_CP
+    assert min(have) >= draw.DEVICE_MIN_CP
+
+
+@pytest.mark.parametrize("scene_name", [
+    "clock", "weather", "quotes", "calendar", "sport", "claude", "planes",
+])
+def test_no_component_can_emit_a_character_the_panel_cannot_draw(scene_name):
+    """The test that would have caught this.
+
+    Every component, on the round panel, with no data -- which is the state
+    that draws the most prose and therefore the most accented Spanish.
+    """
+    import tempfile
+    from homescreen import scenes
+    have = _font_codepoints() | {0x20}
+    ctx = scenes.SceneContext(
+        cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+        cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 240, "h": 240, "depth": 16, "shape": "round"},
+        now=1_787_000_000.0, device={}, options=scenes.defaults(scene_name))
+    for component in scenes.build(scene_name, ctx).components:
+        for instruction in component.get("draw") or ():
+            for char in instruction.get("v", ""):
+                assert ord(char) in have, \
+                    f"{scene_name} would draw {char!r}, which the font lacks"
+
+
+def test_the_preview_shows_exactly_what_the_panel_will_show():
+    # Substitution happens in `text()`, so the SVG preview runs the same
+    # instruction list. If it happened later, the preview would promise an
+    # accent the glass cannot keep -- the drift this design exists to prevent.
+    instruction = draw.text("center", "mañana · 21°")
+    assert instruction["v"] == "manana - 21°"
+    assert "manana - 21°" in draw.to_svg([instruction], 240, 240)
