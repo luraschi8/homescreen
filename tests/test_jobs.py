@@ -307,6 +307,7 @@ _SAMPLE_PARAMS = {
     "openweather": {"lat": 40.4, "lon": -3.7, "units": "metric"},
     "quotes": {"symbol": "AAPL"},
     "ics": {"url": "https://example.invalid/c.ics", "days": 14},
+    "football": {"team": 86, "days": 30},
 }
 
 
