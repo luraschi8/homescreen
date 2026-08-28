@@ -6,6 +6,7 @@ versa.
 """
 
 from . import schedule_ui as _schedule_ui
+from . import views_ui
 from .device import render_device
 from .layout import CSS as _CSS
 from .fleet import render_fleet

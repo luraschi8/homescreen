@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from . import schedule_ui
+from . import schedule_ui, views_ui
 from .fields import datalist_markup, option_group
 from .layout import dash, e, page, pill, scene_label, when
 from . import layout as _layout
 
 _layout._with(schedule_ui.CSS)
+_layout._with(views_ui.CSS)
 
 #: Picking a component swaps its settings in without a round trip.
 SCRIPT = """
@@ -79,7 +80,8 @@ def _credentials(hw: str, creds) -> str:
 
 def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
                   notice: str = "", plan=None, views=(), now: float = 0.0,
-                  credentials=()) -> str:
+                  credentials=(), view_bodies=None, regions=None,
+                  template: str = "") -> str:
     """`options` is [(scene, drawable, why)] for THIS device; `schemas` maps a
     scene to its option schema, so every component's settings travel with it."""
     hw = e(dev.get("hw"))
@@ -160,6 +162,8 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     <div class="actions"><button type="submit">Guardar</button></div>
   </form>
 </div></div>
+{views_ui.editor(dev.get("hw") or "", view_bodies or {}, regions or {},
+                 options, template)}
 {_credentials(dev.get("hw") or "", credentials)}
 {schedule_ui.editor(dev.get("hw") or "", plan or {}, views, now) if views else ""}
 {f'<h2>Vista previa</h2><div class="panel"><div class="pad"><div class="pvs">{thumbs}</div></div></div>' if thumbs else ""}

@@ -406,12 +406,19 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         schemas = {name: list(scenes.option_schema(name))
                    for name, ok, _ in opts if ok}
         plan = rec.get("schedule") or {}
+        caps = registry.clean_caps(rec.get("caps") or {})
+        showing_view = layout.view_for(rec)
+        template = layout.template_of(showing_view)
         return Response(
             web.render_device(_fleet_entry(hw, rec, now), options=opts,
                               schemas=schemas, name_max=registry.NAME_MAX,
                               notice=request.args.get("m", ""),
                               plan=plan, views=layout.view_names(rec), now=now,
-                              credentials=_screen_credentials(hw, rec)),
+                              credentials=_screen_credentials(hw, rec),
+                              view_bodies={n: layout.view_for(rec, n)
+                                           for n in layout.view_names(rec)},
+                              regions=layout.regions(caps, template),
+                              template=template),
             mimetype="text/html")
 
     def _composed_html(hw: str, rec: dict, w: int, h: int):
@@ -466,6 +473,55 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                         state["scope"] = scope
                         out.append(state)
         return out
+
+    @app.post("/device/<hw>/views")
+    def device_page_views(hw: str):
+        """What each view contains. The arrangement, not a patch.
+
+        Options are untouched: a placement's settings belong to the component
+        and are edited on the form above. Two forms writing one value is how
+        they come to disagree.
+        """
+        rec = registry.load(cache_dir).get(hw)
+        if rec is None:
+            return redirect(url_for("home", m=f"no existe ninguna pantalla {hw}"))
+        caps = registry.clean_caps(rec.get("caps") or {})
+        template = layout.template_of(layout.view_for(rec))
+        regions = layout.regions(caps, template)
+        names = list(layout.view_names(rec))
+        new = (request.form.get("new_view") or "").strip()[:40]
+        if new and new not in names:
+            names.append(new)
+        posted = web.views_ui.parse(request.form, regions, names)
+
+        known = set(scenes.names())
+        views, kept = {}, {}
+        for name, body in posted.items():
+            body["template"] = template
+            cleaned = layout.clean_view(body, caps, known)
+            if not cleaned["placements"]:
+                continue                 # an empty view is not a view
+            # Options survive the arrangement: a component that was already
+            # here keeps what it was configured with.
+            previous = {p.get("component"): p.get("options")
+                        for p in (layout.view_for(rec, name).get("placements")
+                                  or ())}
+            for placement in cleaned["placements"]:
+                placement["options"] = dict(
+                    previous.get(placement["component"]) or {})
+            views[name] = cleaned
+            kept[name] = True
+        if not views:
+            return redirect(url_for("device_page", hw=hw,
+                                    m="una pantalla necesita al menos una vista"))
+        plan = scheduling.clean_schedule(rec.get("schedule") or {}, views)
+        try:
+            registry.set_layout(cache_dir, hw, views, plan)
+        except (ValueError, OSError) as exc:
+            return redirect(url_for("device_page", hw=hw, m=str(exc)))
+        _last_cold.pop(hw, None)
+        return redirect(url_for("device_page", hw=hw,
+                                m=f"vistas guardadas · {len(views)}"))
 
     @app.post("/device/<hw>/secrets")
     def device_page_secret(hw: str):
