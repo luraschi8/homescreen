@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -16,7 +17,7 @@ from flask import (Flask, Response, jsonify, redirect, request,
                    url_for)
 
 from homescreen import draw, layout, overrides, registry, scenes, secrets, web
-from homescreen import datasource, fetch
+from homescreen import compose, datasource, fetch
 from homescreen import schedule as scheduling
 from homescreen import render
 from homescreen.render import (RenderBusy, RenderError, check_geometry as
@@ -412,6 +413,34 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                               plan=plan, views=layout.view_names(rec), now=now,
                               credentials=_screen_credentials(hw, rec)),
             mimetype="text/html")
+
+    def _composed_html(hw: str, rec: dict, w: int, h: int):
+        """The showing view as one page, or None if it is a single component.
+
+        Returns None rather than a page for the one-placement case so the
+        existing path stays exactly as it is: composing one component into a
+        full-bleed region would be the same pixels by a longer route, and a
+        longer route is a second thing that can differ.
+        """
+        if not registry.is_approved(rec):
+            return None
+        showing = scheduling.active_view(rec.get("schedule") or {}, clock())
+        view = layout.view_for(rec, showing or None)
+        placements = view.get("placements") or []
+        if len(placements) < 2:
+            return None
+        caps = {**registry.clean_caps(rec.get("caps") or {}), "w": w, "h": h}
+
+        def build_scene(component, options, region_caps):
+            return scenes.safe_build(component, scenes.SceneContext(
+                cfg=_live(), cache_dir=cache_dir, caps=region_caps,
+                now=clock(), data=_scene_data,
+                options=scenes.clean_options(component, options),
+                device={"hw": hw, "id": rec.get("name") or hw,
+                        "name": rec.get("name"), "feed": "adsb",
+                        "max_items": caps.get("max_items")})).html
+
+        return compose.compose(view, caps, build_scene) or None
 
     def _screen_credentials(hw: str, rec: dict) -> list:
         """Which credentials THIS screen could hold its own copy of.
@@ -1431,8 +1460,15 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return jsonify({"error": str(exc)}), 400
         name, scene = _scene_for(hw, rec, caps={"w": w, "h": h})
         _note(hw, **({"scene_error": scene.error} if scene.error else {}))
-        if not scene.html:
+        # A view with more than one placement is a COMPOSED dashboard: the
+        # panel takes a framebuffer, so several components become one page with
+        # each drawn into its region. A single placement is the degenerate
+        # case and goes through unchanged -- there is no second path, only
+        # more of the same one.
+        html = _composed_html(hw, rec, w, h) or scene.html
+        if not html:
             return jsonify({"error": f"scene {name!r} has no pixel rendering"}), 409
+        scene = dataclasses.replace(scene, html=html)
         if not render.is_cached(scene.html, w, h) \
                 and not _cold_render_allowed(hw, rec,
                                              request.remote_addr or "?"):
