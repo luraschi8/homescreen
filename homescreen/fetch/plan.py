@@ -15,8 +15,12 @@ deduplication and cadence testable without an upstream.
 from __future__ import annotations
 
 import dataclasses
+import logging
 
-from homescreen import layout, providers
+from homescreen import layout
+from homescreen.fetch import providers
+
+log = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -59,13 +63,38 @@ def collect(records: dict, cfg: dict, *, requirements=None,
     for hw, rec in (records or {}).items():
         if not isinstance(rec, dict):
             continue
-        for view_name in layout.view_names(rec):
-            view = layout.view_for(rec, view_name)
-            for placement in view.get("placements") or ():
+        # Inside the guard, not outside it. `view_names` sorts whatever keys a
+        # hand-edited file holds, so a record with an integer view name raised
+        # a TypeError out of a function documented as never raising -- on the
+        # serve path, which must not 500.
+        try:
+            view_names = layout.view_names(rec)
+        except Exception:                               # noqa: BLE001
+            log.warning("device %s has unusable views; skipped", hw)
+            continue
+        for view_name in view_names:
+            try:
+                placements = layout.view_for(rec, view_name).get("placements")
+                placements = list(placements or ())
+            except Exception:                           # noqa: BLE001
+                log.warning("device %s view %r is unusable; skipped",
+                            hw, view_name)
+                continue
+            for placement in placements:
+                if not isinstance(placement, dict):
+                    continue
                 component = placement.get("component")
                 options = placement.get("options") or {}
                 where = f"{hw}/{view_name}"
-                needs = requirements(component, options, cfg)
+                try:
+                    needs = requirements(component, options, cfg)
+                except Exception:                       # noqa: BLE001
+                    # Logged. A bare `except: continue` here is how an
+                    # ImportError in a component became "this fleet needs
+                    # nothing" with no diagnostic at all.
+                    log.exception("could not read what %s needs on %s",
+                                  component, where)
+                    continue
                 for need in needs or ():
                     # A placement with its own credential is a DIFFERENT fetch,
                     # even for identical parameters: same question, different

@@ -16,7 +16,7 @@ from flask import (Flask, Response, jsonify, redirect, request,
                    url_for)
 
 from homescreen import draw, layout, overrides, registry, scenes, secrets, web
-from homescreen import datasource, jobs, jobstore, providers
+from homescreen import datasource, fetch
 from homescreen import schedule as scheduling
 from homescreen import render
 from homescreen.render import (RenderBusy, RenderError, check_geometry as
@@ -93,7 +93,8 @@ def resolve_version(root: Path) -> str:
 
 def _device_job_path(cfg: dict, dev: dict, cache_dir: Path):
     """Where the sky this device waits on is cached. Never raises."""
-    from homescreen import jobstore, providers, scenes
+    from homescreen import scenes
+    from homescreen.fetch import providers, store as jobstore
     options = {}
     home = (dev or {}).get("home") or {}
     if home.get("lat") is not None and home.get("lon") is not None:
@@ -105,8 +106,8 @@ def _device_job_path(cfg: dict, dev: dict, cache_dir: Path):
         return cache_dir / "jobs" / "none.json"
     need = needs[0]
     try:
-        params = providers.clean_params(need["provider"], need["params"])
-        return jobstore.path_for(cache_dir, providers.key(need["provider"],
+        params = fetch.providers.clean_params(need["provider"], need["params"])
+        return fetch.path_for(cache_dir, fetch.providers.key(need["provider"],
                                                           params))
     except ValueError:
         return cache_dir / "jobs" / "none.json"
@@ -428,7 +429,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                                          _live()) or ():
                     provider = need.get("provider")
                     scope = f"{hw}/{view_name}/{provider}"
-                    for name in providers.secrets_for(provider):
+                    for name in fetch.providers.secrets_for(provider):
                         if (provider, name, scope) in seen:
                             continue
                         seen.add((provider, name, scope))
@@ -444,8 +445,8 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         provider = (request.form.get("provider") or "").strip()
         secret = (request.form.get("secret") or "").strip()
         scope = (request.form.get("scope") or "").strip()
-        if providers.get(provider) is None or \
-                secret not in providers.secrets_for(provider):
+        if fetch.providers.get(provider) is None or \
+                secret not in fetch.providers.secrets_for(provider):
             return redirect(url_for("device_page", hw=hw,
                                     m="esa credencial no existe"))
         try:
@@ -985,18 +986,18 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         about what is configured.
         """
         return [{"name": name,
-                 "params": list(providers.params_schema(name)),
-                 "interval_s": providers.default_interval(name),
+                 "params": list(fetch.providers.params_schema(name)),
+                 "interval_s": fetch.providers.default_interval(name),
                  "secrets": secrets.statuses(cache_dir, name,
-                                             providers.secrets_for(name))}
-                for name in providers.names()]
+                                             fetch.providers.secrets_for(name))}
+                for name in fetch.providers.names()]
 
     @app.post("/settings/secrets")
     def settings_secret():
         provider = (request.form.get("provider") or "").strip()
         secret = (request.form.get("secret") or "").strip()
-        if providers.get(provider) is None or \
-                secret not in providers.secrets_for(provider):
+        if fetch.providers.get(provider) is None or \
+                secret not in fetch.providers.secrets_for(provider):
             return redirect(url_for("settings_page",
                                     m="esa credencial no existe"))
         if request.form.get("action") == "clear":
@@ -1027,9 +1028,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
 
     @app.put("/api/providers/<name>/secrets/<secret>")
     def set_provider_secret(name: str, secret: str):
-        if providers.get(name) is None:
+        if fetch.providers.get(name) is None:
             return jsonify({"error": f"proveedor desconocido: {name}"}), 404
-        if secret not in providers.secrets_for(name):
+        if secret not in fetch.providers.secrets_for(name):
             return jsonify({"error": f"{name} no usa un secreto {secret!r}"}), 404
         body = request.get_json(silent=True) or {}
         try:
@@ -1044,7 +1045,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
 
     @app.delete("/api/providers/<name>/secrets/<secret>")
     def clear_provider_secret(name: str, secret: str):
-        if providers.get(name) is None:
+        if fetch.providers.get(name) is None:
             return jsonify({"error": f"proveedor desconocido: {name}"}), 404
         try:
             gone = secrets.clear(cache_dir, name, secret)
@@ -1059,14 +1060,14 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         from what is actually being fetched. One function, used by the page and
         by the API, so they cannot disagree either.
         """
-        plan = jobs.collect(
+        plan = fetch.derive(
             registry.load(cache_dir), _live(),
             has_own_key=lambda provider, scope: any(
                 secrets.has(cache_dir, provider, n, scope)
-                for n in providers.secrets_for(provider)))
+                for n in fetch.providers.secrets_for(provider)))
         out = []
         for job in sorted(plan.values(), key=lambda j: j.key):
-            env = jobstore.read(cache_dir, job.key) or {}
+            env = fetch.read(cache_dir, job.key) or {}
             out.append({"key": job.key, "provider": job.provider,
                         "params": job.params, "interval_s": job.interval_s,
                         "wanted_by": list(job.wanted_by),

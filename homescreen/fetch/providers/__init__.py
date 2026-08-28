@@ -23,6 +23,41 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import re
+from typing import Protocol, runtime_checkable
+
+log = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class ProviderPort(Protocol):
+    """What every adapter must be.
+
+    Written down because `getattr` defaults made the port unfalsifiable: an
+    object with only `fetch` satisfied every accessor here, and an adapter that
+    forgot `clean_params` got NO validation while `clean_params`'s own
+    docstring promised it raises on unusable input. A contract test walks the
+    registry against this, so a provider that does not implement the port fails
+    at registration rather than at three in the morning.
+    """
+    NAME: str
+    PARAMS: tuple
+    SECRETS: tuple
+    DEFAULT_INTERVAL_S: int
+
+    def clean_params(self, raw: dict) -> dict: ...
+
+    def fetch(self, params: dict, *, session=None, secrets=None) -> dict: ...
+
+
+#: A provider's name becomes part of a job key, and a job key becomes a
+#: filename. Constrained here so `key()` cannot mint something the store
+#: refuses -- the two used to agree only by luck.
+NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+
+#: Used when a provider declares no cadence of its own.
+FALLBACK_INTERVAL_S = 300
 
 #: Bounds any provider's cadence must respect, whatever it declares or is
 #: asked for. The low end protects an upstream we do not own; the high end
@@ -31,9 +66,43 @@ MIN_INTERVAL_S = 5
 MAX_INTERVAL_S = 6 * 3600
 
 
+def min_spacing(name: str) -> float:
+    """Seconds the runner must leave between two requests to this provider.
+
+    A per-JOB cadence says nothing about N jobs' spacing, and that is the
+    constraint that actually exists: adsb.fi permits one request a second, so
+    five radars on five centres firing together violates it however politely
+    each one is scheduled. The adapter declares what its upstream permits,
+    because the runner cannot invent it.
+    """
+    provider = get(name)
+    try:
+        return max(0.0, float(getattr(provider, "MIN_SPACING_S", 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+#: Memoised: this was rebuilt, with imports, on every call -- once per job per
+#: cycle -- and `get()` claimed never to raise while an ImportError escaped it.
+_CACHE: dict = {}
+
+
 def _modules() -> dict:
-    from homescreen.providers import adsb, openweather
-    return {m.NAME: m for m in (adsb, openweather)}
+    if not _CACHE:
+        try:
+            from homescreen.fetch.providers import adsb, openweather
+            for module in (adsb, openweather):
+                if not NAME_RE.match(getattr(module, "NAME", "")):
+                    log.error("provider %r has an unusable NAME; not registered",
+                              getattr(module, "NAME", None))
+                    continue
+                _CACHE[module.NAME] = module
+        except Exception:                               # noqa: BLE001
+            # A broken adapter must not take down the daemon or the serve path
+            # for every other provider, but it must be loud: silence here is a
+            # fleet that quietly stops fetching.
+            log.exception("a provider module failed to import")
+    return _CACHE
 
 
 def names() -> tuple[str, ...]:
@@ -58,7 +127,8 @@ def secrets_for(name: str) -> tuple[str, ...]:
 
 def default_interval(name: str) -> int:
     provider = get(name)
-    raw = getattr(provider, "DEFAULT_INTERVAL_S", 300) if provider else 300
+    raw = (getattr(provider, "DEFAULT_INTERVAL_S", FALLBACK_INTERVAL_S)
+           if provider else FALLBACK_INTERVAL_S)
     return clamp_interval(raw)
 
 
@@ -66,7 +136,7 @@ def clamp_interval(seconds) -> int:
     try:
         n = int(float(seconds))
     except (TypeError, ValueError):
-        return 300
+        return FALLBACK_INTERVAL_S
     return max(MIN_INTERVAL_S, min(MAX_INTERVAL_S, n))
 
 

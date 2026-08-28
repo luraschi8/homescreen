@@ -9,7 +9,7 @@ import tempfile
 
 import pytest
 
-from homescreen import jobs, providers, scenes
+from homescreen import fetch, scenes
 from homescreen.reading import Reading
 
 CFG = {"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"},
@@ -91,11 +91,11 @@ def test_a_screen_elsewhere_asks_for_a_different_fetch():
     here = scenes.needs("weather", {}, CFG)[0]["params"]
     there = scenes.needs("weather", {"lat": "51.5", "lon": "-0.12"}, CFG)[0]["params"]
     assert here != there
-    assert providers.key("openweather", here) != providers.key("openweather", there)
+    assert fetch.providers.key("openweather", here) != fetch.providers.key("openweather", there)
 
 
 def test_two_screens_in_the_same_place_share_one_fetch():
-    plan = jobs.collect({"a": {"scene": "weather", "options": {}},
+    plan = fetch.derive({"a": {"scene": "weather", "options": {}},
                          "b": {"scene": "weather", "options": {}}}, CFG)
     assert len(plan) == 1
 
@@ -110,7 +110,7 @@ def test_hiding_the_range_hides_it():
 
 def test_the_provider_refuses_to_fetch_without_its_key():
     # Better than a 401 loop that looks like an outage.
-    from homescreen.providers import openweather
+    from homescreen.fetch.providers import openweather
     with pytest.raises(ValueError, match="clave"):
         openweather.fetch({"lat": 1, "lon": 2}, secrets={})
 
@@ -118,7 +118,7 @@ def test_the_provider_refuses_to_fetch_without_its_key():
 def test_a_200_that_is_not_a_reading_is_a_failure_not_a_blank_temperature():
     # Some proxies return a JSON error body with a 200. Treating it as a
     # reading puts an empty temperature on the glass and calls the feed healthy.
-    from homescreen.providers import openweather
+    from homescreen.fetch.providers import openweather
 
     class Resp:
         def raise_for_status(self):
@@ -137,7 +137,7 @@ def test_a_200_that_is_not_a_reading_is_a_failure_not_a_blank_temperature():
 
 
 def test_the_payload_is_normalised_so_a_vendor_swap_does_not_touch_the_scene():
-    from homescreen.providers import openweather
+    from homescreen.fetch.providers import openweather
 
     class Resp:
         def raise_for_status(self):

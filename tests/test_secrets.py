@@ -104,7 +104,7 @@ def test_no_route_returns_a_secret_value(ctx):
 
 def test_the_dashboard_can_see_that_a_key_is_set_without_seeing_it(ctx,
                                                                   monkeypatch):
-    from homescreen import providers
+    from homescreen.fetch import providers
     monkeypatch.setattr(providers, "secrets_for", lambda name: ("api_key",))
     client, cache = ctx
     before = client.get("/api/providers").get_json()["providers"][0]["secrets"]
@@ -129,7 +129,7 @@ def test_setting_a_secret_for_an_unknown_provider_is_a_404(ctx):
 
 
 def test_a_secret_can_be_set_and_cleared_over_the_api(ctx, monkeypatch):
-    from homescreen import providers
+    from homescreen.fetch import providers
     monkeypatch.setattr(providers, "secrets_for", lambda name: ("api_key",))
     client, cache = ctx
     r = client.put("/api/providers/adsb/secrets/api_key",

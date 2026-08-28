@@ -44,11 +44,11 @@ def _write_feed(cache_dir: pathlib.Path, fetched_at: float,
     # Where the radar reads its sky: the JOB it declares, derived exactly as
     # the scene derives it. A hardcoded path here is a fixture that agrees
     # with itself and with nothing the device is served.
-    from homescreen import jobstore, providers, scenes
+    from homescreen import fetch, scenes
     need = scenes.needs("planes", {}, CFG)[0]
-    path = jobstore.path_for(cache_dir, providers.key(
+    path = fetch.store.path_for(cache_dir, fetch.providers.key(
         need["provider"],
-        providers.clean_params(need["provider"], need["params"])))
+        fetch.providers.clean_params(need["provider"], need["params"])))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "fetched_at": datetime.fromtimestamp(fetched_at,

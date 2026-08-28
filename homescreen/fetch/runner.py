@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import time
 
-from homescreen import jobs, jobstore, providers
+from homescreen.fetch import plan as planning, providers, store
 
 log = logging.getLogger(__name__)
 
@@ -30,20 +30,51 @@ def due(job, last_run: dict, now: float) -> bool:
     return ran is None or (now - ran) >= job.interval_s
 
 
+def _record_failure_safely(cache_dir, key: str, error: str) -> None:
+    """Record a failure, and never fail doing it.
+
+    `record_failure` can itself raise -- an unusable key, or a read-only
+    filesystem, which is the exact Pi fault `sources/adsb.py` wraps for. The
+    handler calling it was the LAST guard, so its own exception escaped a
+    function documented as never raising, straight into a Restart=always loop.
+    """
+    try:
+        store.record_failure(cache_dir, key, error)
+    except Exception:                                   # noqa: BLE001
+        log.warning("could not record the failure of job %s", key,
+                    exc_info=True)
+
+
 def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
-             session=None, secrets_for=None) -> int:
+             session=None, secrets_for=None, sleep=None) -> int:
     """Fetch every job that is due. Returns how many ran. Never raises.
 
     One failing provider must not stop the others: a stocks API being down is
     not a reason for the radar to stop.
     """
     ran = 0
-    for job in plan.values():
+    # Upstream politeness is per PROVIDER, not per job: five radars on five
+    # centres each politely scheduled still fire together. Spacing is applied
+    # between requests to the same provider, in one cycle.
+    last_request: dict = {}
+    for job in sorted(plan.values(), key=lambda j: j.key):
         if not due(job, last_run, now):
             continue
         provider = providers.get(job.provider)
         if provider is None:
+            # Recorded as attempted anyway, or a job the runner keeps skipping
+            # makes `_nap` compute a negative wait and pins the loop at its
+            # floor -- a 2Hz spin on a Pi with nothing in the log to explain it.
+            log.warning("job %s names provider %r, which is not registered",
+                        job.key, job.provider)
+            last_run[job.key] = now
             continue
+        gap = providers.min_spacing(job.provider)
+        if gap and job.provider in last_request and sleep:
+            waited = time.monotonic() - last_request[job.provider]
+            if waited < gap:
+                sleep(gap - waited)
+        last_request[job.provider] = time.monotonic()
         last_run[job.key] = now
         ran += 1
         try:
@@ -61,16 +92,17 @@ def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
             payload = provider.fetch(params, session=session, secrets=creds)
         except Exception as exc:                        # noqa: BLE001
             log.warning("job %s failed: %s", job.key, exc)
-            jobstore.record_failure(cache_dir, job.key, str(exc))
+            _record_failure_safely(cache_dir, job.key, str(exc))
             continue
         try:
-            jobstore.store(cache_dir, job.key, payload)
+            store.save(cache_dir, job.key, payload)
         except Exception as exc:                        # noqa: BLE001
             # write_cache refuses to serialise a non-finite, and that refusal
             # must become a recorded failure rather than an exception escaping
             # into a Restart=always loop.
             log.warning("job %s could not be stored: %s", job.key, exc)
-            jobstore.record_failure(cache_dir, job.key, f"store failed: {exc}")
+            _record_failure_safely(cache_dir, job.key,
+                                   f"store failed: {exc}")
     return ran
 
 
@@ -85,17 +117,17 @@ def run_forever(cfg_loader, records_loader, cache_dir, *, session=None,
     while cycles is None or done < cycles:
         now = clock()
         if now - last_reload >= RELOAD_EVERY_S or not plan:
-            plan = jobs.collect(records_loader(), cfg_loader(),
+            plan = planning.collect(records_loader(), cfg_loader(),
                                 has_own_key=has_own_key)
             last_reload = now
-            jobstore.prune(cache_dir, set(plan))
+            store.prune(cache_dir, set(plan))
             # Forget the schedule of jobs nobody wants, so a job that comes
             # back later fetches immediately rather than appearing stale.
             for key in list(last_run):
                 if key not in plan:
                     last_run.pop(key, None)
         run_once(cache_dir, plan, last_run, now=now, session=session,
-                 secrets_for=secrets_for)
+                 secrets_for=secrets_for, sleep=sleep)
         done += 1
         if cycles is None or done < cycles:
             sleep(_nap(plan, last_run, clock()))

@@ -25,11 +25,11 @@ def _sky_path(cache_dir, cfg, options=None):
     is handed a Reading, so a fixture that hardcodes a path is one that agrees
     with itself and with nothing else.
     """
-    from homescreen import jobstore, providers, scenes
+    from homescreen import fetch, scenes
     need = scenes.needs("planes", options or {}, cfg)[0]
-    key = providers.key(need["provider"],
-                        providers.clean_params(need["provider"], need["params"]))
-    path = jobstore.path_for(cache_dir, key)
+    key = fetch.providers.key(need["provider"],
+                        fetch.providers.clean_params(need["provider"], need["params"]))
+    path = fetch.store.path_for(cache_dir, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

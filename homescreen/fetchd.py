@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from homescreen import jobrunner, overrides, registry, secrets
+from homescreen import fetch, overrides, registry, secrets
 from homescreen.config import load_config
 
 log = logging.getLogger("homescreen.fetchd")
@@ -62,13 +62,13 @@ def main() -> None:
         log.exception("bad config: %s", exc)
         raise SystemExit(78) from None
     log.info("fetch daemon starting; work is derived from assignments")
-    from homescreen import providers
+    from homescreen.fetch import providers
 
     def has_own_key(provider, scope):
         return any(secrets.has(cache_dir, provider, name, scope)
                    for name in providers.secrets_for(provider))
 
-    jobrunner.run_forever(cfg_loader, records_loader, cache_dir,
+    fetch.run_forever(cfg_loader, records_loader, cache_dir,
                           has_own_key=has_own_key,
                           secrets_for=lambda name, scope=None:
                               secrets.for_provider(cache_dir, name, scope))

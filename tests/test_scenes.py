@@ -19,11 +19,11 @@ def _sky_path(cache_dir, cfg, options=None):
     is handed a Reading, so a fixture that hardcodes a path is one that agrees
     with itself and with nothing else.
     """
-    from homescreen import jobstore, providers, scenes
+    from homescreen import fetch, scenes
     need = scenes.needs("planes", options or {}, cfg)[0]
-    key = providers.key(need["provider"],
-                        providers.clean_params(need["provider"], need["params"]))
-    path = jobstore.path_for(cache_dir, key)
+    key = fetch.providers.key(need["provider"],
+                        fetch.providers.clean_params(need["provider"], need["params"]))
+    path = fetch.store.path_for(cache_dir, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -43,19 +43,19 @@ NOW = 1_787_000_000.0
 
 
 def ctx(tmp_path, caps=None, device=None, now=NOW, options=None):
-    from homescreen import jobstore, providers
+    from homescreen import fetch
     from homescreen.reading import Reading
 
     def data(requirement):
         """Resolve exactly as serve.py does, so these tests exercise the real
         key derivation rather than a fixture that agrees with itself."""
         try:
-            params = providers.clean_params(requirement["provider"],
+            params = fetch.providers.clean_params(requirement["provider"],
                                             requirement.get("params"))
         except (ValueError, KeyError, TypeError):
             return Reading.nothing()
-        env = jobstore.read(tmp_path,
-                            providers.key(requirement["provider"], params))
+        env = fetch.store.read(tmp_path,
+                            fetch.providers.key(requirement["provider"], params))
         return Reading.from_envelope(env, now=now)
 
     return scenes.SceneContext(

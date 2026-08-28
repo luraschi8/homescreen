@@ -456,11 +456,11 @@ def test_an_operator_cadence_reaches_every_route_too(ctx):
 # to learn nothing.
 
 def _sky_path(cache_dir, cfg, options=None):
-    from homescreen import jobstore, providers, scenes
+    from homescreen import fetch, scenes
     need = scenes.needs("planes", options or {}, cfg)[0]
-    key = providers.key(need["provider"],
-                        providers.clean_params(need["provider"], need["params"]))
-    path = jobstore.path_for(cache_dir, key)
+    key = fetch.providers.key(need["provider"],
+                        fetch.providers.clean_params(need["provider"], need["params"]))
+    path = fetch.store.path_for(cache_dir, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -474,11 +474,11 @@ def _seed_sky(cache, when, aircraft, options=None):
     """
     import json as _json
     from datetime import datetime, timezone
-    from homescreen import jobstore, providers, scenes
+    from homescreen import fetch, scenes
     need = scenes.needs("planes", options or {}, CFG)[0]
-    key = providers.key(need["provider"],
-                        providers.clean_params(need["provider"], need["params"]))
-    p = jobstore.path_for(cache, key)
+    key = fetch.providers.key(need["provider"],
+                        fetch.providers.clean_params(need["provider"], need["params"]))
+    p = fetch.store.path_for(cache, key)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(_json.dumps({
         "fetched_at": datetime.fromtimestamp(when, timezone.utc).isoformat(),

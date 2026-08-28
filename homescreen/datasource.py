@@ -8,7 +8,7 @@ guess, which is the same failure the two-executor design exists to prevent.
 
 from __future__ import annotations
 
-from homescreen import jobstore, providers
+from homescreen.fetch import providers, store
 from homescreen.reading import Reading
 
 
@@ -28,6 +28,6 @@ def reader(cache_dir, now_fn):
             params = providers.clean_params(provider, requirement.get("params"))
         except ValueError:
             return Reading.nothing()
-        env = jobstore.read(cache_dir, providers.key(provider, params))
+        env = store.read(cache_dir, providers.key(provider, params))
         return Reading.from_envelope(env, now=now_fn())
     return read

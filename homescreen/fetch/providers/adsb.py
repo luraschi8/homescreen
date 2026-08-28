@@ -24,12 +24,20 @@ PARAMS = (
     {"key": "radius_km", "label": "Radio (km)", "type": "float",
      "default": 60.0},
     {"key": "endpoint", "label": "Endpoint", "type": "text", "default": ""},
+    {"key": "show_ground", "label": "Incluir tráfico en tierra", "type": "bool",
+     "default": False},
 )
 
 #: adsb.fi's public limit is one request a second, and the firmware's
 #: dead-reckoning horizon is 12s. See sources/adsb.py: this is the cadence that
 #: keeps worst-case dwell under that horizon for a single radar.
 DEFAULT_INTERVAL_S = 5
+
+#: adsb.fi's public limit is one request a second, enforced as SPACING rather
+#: than as an average. This is a property of the upstream, not of one job: five
+#: radars on five centres would otherwise fire together and violate it however
+#: politely each was scheduled on its own.
+MIN_SPACING_S = 1.0
 
 #: None. The public endpoint is unauthenticated; a keyed one would declare it.
 SECRETS: tuple = ()
@@ -54,13 +62,15 @@ def clean_params(raw: dict) -> dict:
     endpoint = str(raw.get("endpoint") or "").strip()
     if endpoint and not endpoint.startswith(("http://", "https://")):
         raise ValueError("el endpoint debe empezar por http:// o https://")
-    out = {"lat": round(lat, 5), "lon": round(lon, 5),
-           "radius_km": round(radius, 2)}
-    if endpoint:
-        # Only when set. Otherwise two screens on the deployment default would
-        # key differently from each other the day someone types it in.
-        out["endpoint"] = endpoint
-    return out
+    if not endpoint:
+        # Required, not optional. An empty endpoint produced a schemeless path
+        # that `requests` rejects forever -- a job fetching nothing while
+        # looking perfectly healthy, which is the failure this module's own
+        # docstring warns about.
+        raise ValueError("adsb necesita un endpoint")
+    return {"lat": round(lat, 5), "lon": round(lon, 5),
+            "radius_km": round(radius, 2), "endpoint": endpoint,
+            "show_ground": bool(raw.get("show_ground", False))}
 
 
 def fetch(params: dict, *, session=None, secrets=None) -> dict:

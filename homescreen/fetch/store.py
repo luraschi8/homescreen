@@ -38,7 +38,7 @@ def read(cache_dir: Path, key: str) -> dict | None:
         return None
 
 
-def store(cache_dir: Path, key: str, payload: dict) -> None:
+def save(cache_dir: Path, key: str, payload: dict) -> None:
     write_cache(path_for(cache_dir, key), payload)
 
 
