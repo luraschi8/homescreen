@@ -60,9 +60,17 @@ def test_a_requirement_we_cannot_turn_into_a_fetch_is_dropped():
 
 
 def test_the_shorter_cadence_wins_when_two_screens_share_a_job():
-    plan = jobs.collect({"a": radar(40), "b": radar(40)}, CFG)
-    job = next(iter(plan.values()))
-    assert job.interval_s == providers.default_interval("adsb")
+    # Was tautological: both screens asked for the provider default, so
+    # min(x, x) == x and `max` passed too. One screen must actually want it
+    # sooner for this to say anything.
+    def wants(component, options, cfg):
+        return ({"provider": "adsb", "params": {"lat": 1, "lon": 2},
+                 "interval_s": options.get("every")},)
+
+    plan = jobs.collect({"a": {"scene": "planes", "options": {"every": 60}},
+                         "b": {"scene": "planes", "options": {"every": 9}}},
+                        CFG, requirements=wants)
+    assert next(iter(plan.values())).interval_s == 9
 
 
 def test_a_job_is_identified_by_its_parameters_not_its_asker():
@@ -175,11 +183,22 @@ def test_a_job_key_that_could_be_a_path_is_refused():
 
 
 def test_the_loop_sleeps_until_the_soonest_job_is_due(fake, tmp_path):
-    naps = []
-    jobrunner.run_forever(
-        lambda: CFG, lambda: {}, tmp_path, cycles=2,
-        sleep=naps.append, clock=lambda: 1000.0)
-    assert naps and all(n > 0 for n in naps)
+    # Was: an empty fleet, so `plan` was empty, `_nap` returned its hardcoded
+    # fallback, and `all(n > 0)` was unfalsifiable because _nap floors at 0.5.
+    # It passed with the whole function deleted.
+    plan = {"fake-aaa111": _job("fake-aaa111", interval=10),
+            "fake-bbb222": _job("fake-bbb222", interval=90)}
+    last = {"fake-aaa111": 994.0, "fake-bbb222": 1000.0}
+    assert jobrunner._nap(plan, last, 1000.0) == pytest.approx(4.0), \
+        "the sooner job is due in 4s, not the later one in 90"
+
+
+def test_the_loop_does_not_sleep_past_a_reload(fake, tmp_path):
+    # Assignments change while this runs; an hourly job must not mean an hour
+    # before noticing a new screen.
+    plan = {"fake-aaa111": _job("fake-aaa111", interval=3600)}
+    assert jobrunner._nap(plan, {"fake-aaa111": 1000.0}, 1000.0) \
+        <= jobrunner.RELOAD_EVERY_S
 
 
 def test_the_loop_notices_a_screen_added_while_it_runs(fake, tmp_path,
@@ -203,10 +222,23 @@ def test_the_loop_notices_a_screen_added_while_it_runs(fake, tmp_path,
         return tick.t
     tick.t = 1000.0
 
+    plans = []
+    real_collect = jobs.collect
+
+    def watched(*a, **kw):
+        plan = real_collect(*a, **kw)
+        plans.append(plan)
+        return plan
+
+    monkeypatch.setattr(jobs, "collect", watched)
     jobrunner.run_forever(lambda: CFG, records, tmp_path, cycles=4,
                           sleep=lambda s: None, clock=tick,
                           session=_DeadSession())
-    assert seen[-1] == 1, "the new screen was picked up without a restart"
+    # Was: `seen[-1] == 1`, which proves only that records_loader was called
+    # again -- it passed with collect stubbed to return nothing. Assert the
+    # JOB appeared.
+    assert not plans[0], "nothing to fetch before the screen existed"
+    assert plans[-1], "the new screen's job was picked up without a restart"
 
 
 class _DeadSession:

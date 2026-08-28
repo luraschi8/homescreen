@@ -31,12 +31,37 @@ log = logging.getLogger(__name__)
 #: from URLs, so they are validated rather than trusted.
 NAME_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 
+#: A per-assignment credential is stored under the same provider, with the
+#: placement it belongs to appended. Scopes come from hardware ids and view
+#: names, so they are constrained the same way everything else that becomes a
+#: key is.
+SCOPE_RE = re.compile(r"^[A-Za-z0-9_:./-]{1,120}$")
+
+#: Separator between a credential's name and the placement that owns it. Not a
+#: character either side can contain, so the split is unambiguous.
+SCOPE_SEP = "@"
+
 MAX_VALUE_LEN = 4096
 MAX_SECRETS = 64
 
 
 def secrets_path(cache_dir: Path) -> Path:
     return Path(cache_dir) / "secrets.json"
+
+
+def scoped(name: str, scope=None) -> str:
+    """The storage name for a credential, global or per placement."""
+    if not scope:
+        return str(name)
+    return f"{name}{SCOPE_SEP}{scope}"
+
+
+def _check_scope(scope) -> str:
+    if scope in (None, ""):
+        return ""
+    if not SCOPE_RE.match(str(scope)):
+        raise ValueError(f"ámbito no válido: {scope!r}")
+    return str(scope)
 
 
 def _check(provider: str, name: str) -> tuple[str, str]:
@@ -78,9 +103,16 @@ def _save(cache_dir: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-def set_secret(cache_dir: Path, provider: str, name: str, value: str) -> dict:
-    """Store a credential. Returns its STATUS, never its value."""
+def set_secret(cache_dir: Path, provider: str, name: str, value: str,
+               scope=None) -> dict:
+    """Store a credential, globally or for one placement.
+
+    A per-placement key is what lets two screens read two different accounts --
+    a work calendar and a personal one, or two weather plans. Without a scope
+    this is the deployment's own key, which every placement falls back to.
+    """
     provider, name = _check(provider, name)
+    name = scoped(name, _check_scope(scope))
     value = "" if value is None else str(value)
     if not value.strip():
         raise ValueError("el valor no puede estar vacío")
@@ -96,8 +128,9 @@ def set_secret(cache_dir: Path, provider: str, name: str, value: str) -> dict:
     return status(cache_dir, provider, name)
 
 
-def clear(cache_dir: Path, provider: str, name: str) -> bool:
+def clear(cache_dir: Path, provider: str, name: str, scope=None) -> bool:
     provider, name = _check(provider, name)
+    name = scoped(name, _check_scope(scope))
     data = _load(cache_dir)
     block = data.get(provider)
     if not isinstance(block, dict) or name not in block:
@@ -111,26 +144,35 @@ def clear(cache_dir: Path, provider: str, name: str) -> bool:
     return True
 
 
-def status(cache_dir: Path, provider: str, name: str) -> dict:
+def status(cache_dir: Path, provider: str, name: str, scope=None) -> dict:
     """Whether it is set and when it changed. There is deliberately no `value`
     key -- absent, not null, so nothing downstream can serialise a placeholder
     into a field an operator later mistakes for the secret."""
     try:
-        provider, name = _check(provider, name)
+        provider, bare = _check(provider, name)
+        stored = scoped(bare, _check_scope(scope))
     except ValueError:
         return {"provider": provider, "name": name, "set": False}
-    entry = (_load(cache_dir).get(provider) or {}).get(name)
-    if not isinstance(entry, dict):
-        return {"provider": provider, "name": name, "set": False}
-    return {"provider": provider, "name": name, "set": True,
-            "updated_at": entry.get("updated_at")}
+    entry = (_load(cache_dir).get(provider) or {}).get(stored)
+    out = {"provider": provider, "name": bare, "set": isinstance(entry, dict)}
+    if scope:
+        out["scope"] = str(scope)
+    if isinstance(entry, dict):
+        out["updated_at"] = entry.get("updated_at")
+    return out
 
 
 def statuses(cache_dir: Path, provider: str, names) -> list:
     return [status(cache_dir, provider, n) for n in names or ()]
 
 
-def for_provider(cache_dir: Path, provider: str) -> dict:
+def has(cache_dir: Path, provider: str, name: str, scope=None) -> bool:
+    """Whether a credential exists. The predicate job collection needs, so it
+    can stay pure while still knowing that two screens use two keys."""
+    return bool(status(cache_dir, provider, name, scope).get("set"))
+
+
+def for_provider(cache_dir: Path, provider: str, scope=None) -> dict:
     """{name: value} for the FETCHER only.
 
     The one function that returns values, and the only caller that should ever
@@ -140,13 +182,24 @@ def for_provider(cache_dir: Path, provider: str) -> dict:
     """
     try:
         provider, _ = _check(provider, "x")
+        scope = _check_scope(scope)
     except ValueError:
         return {}
     block = _load(cache_dir).get(provider)
     if not isinstance(block, dict):
         return {}
-    return {name: entry.get("value") for name, entry in block.items()
-            if isinstance(entry, dict) and entry.get("value")}
+    # The deployment's keys first, then this placement's on top: a screen with
+    # its own key uses it, and one without falls back rather than failing.
+    out = {}
+    for stored, entry in block.items():
+        if not isinstance(entry, dict) or not entry.get("value"):
+            continue
+        bare, sep, owner = str(stored).partition(SCOPE_SEP)
+        if not sep:
+            out.setdefault(bare, entry["value"])
+        elif scope and owner == scope:
+            out[bare] = entry["value"]
+    return out
 
 
 def _stamp() -> str:

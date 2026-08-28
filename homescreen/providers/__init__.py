@@ -80,8 +80,17 @@ def clean_params(name: str, raw) -> dict:
     provider = get(name)
     if provider is None:
         raise ValueError(f"proveedor desconocido: {name}")
+    raw = dict(raw or {})
+    # Which credential to use is the RUNNER's business, not the adapter's. It
+    # rides in params because it is part of the job's identity -- two screens
+    # on two accounts are two fetches -- but no adapter should have to know
+    # that, so it is carried around the adapter's own validation.
+    scope = raw.pop("secret_scope", None)
     cleaner = getattr(provider, "clean_params", None)
-    return dict(cleaner(raw or {})) if cleaner else dict(raw or {})
+    out = dict(cleaner(raw) if cleaner else raw)
+    if scope:
+        out["secret_scope"] = str(scope)
+    return out
 
 
 def key(name: str, params: dict) -> str:

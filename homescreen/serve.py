@@ -408,8 +408,60 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             web.render_device(_fleet_entry(hw, rec, now), options=opts,
                               schemas=schemas, name_max=registry.NAME_MAX,
                               notice=request.args.get("m", ""),
-                              plan=plan, views=layout.view_names(rec), now=now),
+                              plan=plan, views=layout.view_names(rec), now=now,
+                              credentials=_screen_credentials(hw, rec)),
             mimetype="text/html")
+
+    def _screen_credentials(hw: str, rec: dict) -> list:
+        """Which credentials THIS screen could hold its own copy of.
+
+        Derived from what its components need, so a screen showing a clock is
+        not offered a weather key, and a component that grows a credential
+        grows a field here with no edit.
+        """
+        out, seen = [], set()
+        for view_name in layout.view_names(rec):
+            view = layout.view_for(rec, view_name)
+            for placement in view.get("placements") or ():
+                component = placement.get("component")
+                for need in scenes.needs(component, placement.get("options"),
+                                         _live()) or ():
+                    provider = need.get("provider")
+                    scope = f"{hw}/{view_name}/{provider}"
+                    for name in providers.secrets_for(provider):
+                        if (provider, name, scope) in seen:
+                            continue
+                        seen.add((provider, name, scope))
+                        state = secrets.status(cache_dir, provider, name, scope)
+                        state["scope"] = scope
+                        out.append(state)
+        return out
+
+    @app.post("/device/<hw>/secrets")
+    def device_page_secret(hw: str):
+        if hw not in registry.load(cache_dir):
+            return redirect(url_for("home", m=f"no existe ninguna pantalla {hw}"))
+        provider = (request.form.get("provider") or "").strip()
+        secret = (request.form.get("secret") or "").strip()
+        scope = (request.form.get("scope") or "").strip()
+        if providers.get(provider) is None or \
+                secret not in providers.secrets_for(provider):
+            return redirect(url_for("device_page", hw=hw,
+                                    m="esa credencial no existe"))
+        try:
+            if request.form.get("action") == "clear":
+                secrets.clear(cache_dir, provider, secret, scope)
+                message = "vuelve a usar la clave global"
+            else:
+                secrets.set_secret(cache_dir, provider, secret,
+                                   request.form.get("value"), scope)
+                message = "esta pantalla usa su propia clave"
+        except ValueError as exc:
+            return redirect(url_for("device_page", hw=hw, m=str(exc)))
+        except OSError:
+            return redirect(url_for("device_page", hw=hw,
+                                    m="no se pudo guardar"))
+        return redirect(url_for("device_page", hw=hw, m=message))
 
     @app.post("/device/<hw>")
     def device_page_apply(hw: str):
@@ -483,6 +535,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         st = _status()
         return Response(
             web.render_settings(st["feed"] or {}, jobs=_job_report(),
+                                providers=_provider_report(),
                                 notice=request.args.get("m", ""),
                                 version=version),
             mimetype="text/html")
@@ -924,6 +977,45 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         hw = (request.form.get("hw") or "").strip()
         return redirect(url_for("home", m=_apply_device_form(hw, request.form)))
 
+    def _provider_report() -> list:
+        """What can be fetched, and whether each credential is set.
+
+        Secret NAMES and states, never values -- the same shape the API
+        returns, from one function, so the page and the API cannot disagree
+        about what is configured.
+        """
+        return [{"name": name,
+                 "params": list(providers.params_schema(name)),
+                 "interval_s": providers.default_interval(name),
+                 "secrets": secrets.statuses(cache_dir, name,
+                                             providers.secrets_for(name))}
+                for name in providers.names()]
+
+    @app.post("/settings/secrets")
+    def settings_secret():
+        provider = (request.form.get("provider") or "").strip()
+        secret = (request.form.get("secret") or "").strip()
+        if providers.get(provider) is None or \
+                secret not in providers.secrets_for(provider):
+            return redirect(url_for("settings_page",
+                                    m="esa credencial no existe"))
+        if request.form.get("action") == "clear":
+            try:
+                secrets.clear(cache_dir, provider, secret)
+            except (ValueError, OSError):
+                return redirect(url_for("settings_page", m="no se pudo borrar"))
+            return redirect(url_for("settings_page",
+                                    m=f"{provider}: credencial borrada"))
+        try:
+            secrets.set_secret(cache_dir, provider, secret,
+                               request.form.get("value"))
+        except ValueError as exc:
+            return redirect(url_for("settings_page", m=str(exc)))
+        except OSError:
+            return redirect(url_for("settings_page", m="no se pudo guardar"))
+        return redirect(url_for("settings_page",
+                                m=f"{provider}: credencial guardada"))
+
     @app.get("/api/providers")
     def list_providers():
         """What can be fetched, and what each one needs.
@@ -931,13 +1023,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         Secret NAMES, never values: a provider says it needs `api_key`, and the
         dashboard renders a field for it. There is no route that returns one.
         """
-        return jsonify({"providers": [
-            {"name": name,
-             "params": list(providers.params_schema(name)),
-             "interval_s": providers.default_interval(name),
-             "secrets": secrets.statuses(cache_dir, name,
-                                         providers.secrets_for(name))}
-            for name in providers.names()]})
+        return jsonify({"providers": _provider_report()})
 
     @app.put("/api/providers/<name>/secrets/<secret>")
     def set_provider_secret(name: str, secret: str):
@@ -973,7 +1059,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         from what is actually being fetched. One function, used by the page and
         by the API, so they cannot disagree either.
         """
-        plan = jobs.collect(registry.load(cache_dir), _live())
+        plan = jobs.collect(
+            registry.load(cache_dir), _live(),
+            has_own_key=lambda provider, scope: any(
+                secrets.has(cache_dir, provider, n, scope)
+                for n in providers.secrets_for(provider)))
         out = []
         for job in sorted(plan.values(), key=lambda j: j.key):
             env = jobstore.read(cache_dir, job.key) or {}

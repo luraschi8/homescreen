@@ -138,3 +138,63 @@ def test_a_secret_can_be_set_and_cleared_over_the_api(ctx, monkeypatch):
     assert secrets.for_provider(cache, "adsb")["api_key"] == "sk-live-canary"
     assert client.delete("/api/providers/adsb/secrets/api_key").status_code == 204
     assert secrets.for_provider(cache, "adsb") == {}
+
+
+# --- the field on the page --------------------------------------------------
+
+def test_the_page_offers_a_field_for_each_credential_a_provider_needs(ctx):
+    client, _ = ctx
+    html = client.get("/settings").get_data(as_text=True)
+    assert "openweather · api_key" in html
+    assert "sin configurar" in html
+
+
+def test_saving_a_key_from_the_page_reaches_the_fetcher(ctx):
+    client, cache = ctx
+    r = client.post("/settings/secrets", data={
+        "provider": "openweather", "secret": "api_key",
+        "value": "sk-canary-999"})
+    assert r.status_code in (302, 303)
+    assert secrets.for_provider(cache, "openweather") == {"api_key": "sk-canary-999"}
+
+
+def test_the_field_never_contains_the_key_even_once_it_is_set(ctx):
+    # There is nothing to put in it: no route returns a value. What it shows
+    # instead is that one is set and when.
+    client, cache = ctx
+    client.post("/settings/secrets", data={
+        "provider": "openweather", "secret": "api_key", "value": "sk-canary-999"})
+    html = client.get("/settings").get_data(as_text=True)
+    assert "sk-canary-999" not in html
+    assert "Guardada el" in html
+
+
+def test_the_page_can_clear_a_key(ctx):
+    client, cache = ctx
+    client.post("/settings/secrets", data={
+        "provider": "openweather", "secret": "api_key", "value": "x"})
+    client.post("/settings/secrets", data={
+        "provider": "openweather", "secret": "api_key", "action": "clear"})
+    assert secrets.for_provider(cache, "openweather") == {}
+
+
+def test_a_blank_save_does_not_silently_unset_a_working_key(ctx):
+    client, cache = ctx
+    client.post("/settings/secrets", data={
+        "provider": "openweather", "secret": "api_key", "value": "working"})
+    r = client.post("/settings/secrets", data={
+        "provider": "openweather", "secret": "api_key", "value": ""})
+    assert secrets.for_provider(cache, "openweather") == {"api_key": "working"}
+    assert "vac" in r.headers["Location"], "and it says why"
+
+
+@pytest.mark.parametrize("form", [
+    {"provider": "ghost", "secret": "api_key", "value": "x"},
+    {"provider": "openweather", "secret": "otra", "value": "x"},
+    {"provider": "", "secret": "", "value": "x"},
+])
+def test_a_credential_that_does_not_exist_is_refused(ctx, form):
+    client, cache = ctx
+    r = client.post("/settings/secrets", data=form)
+    assert r.status_code in (302, 303)
+    assert secrets._load(cache) == {}

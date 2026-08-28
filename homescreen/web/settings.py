@@ -56,7 +56,48 @@ def _sources(job_list) -> str:
     return "".join(rows)
 
 
-def render_settings(feed: dict, *, jobs=None, editable: bool = True,
+def _secret_field(provider: str, state: dict) -> str:
+    """One credential: settable, never shown.
+
+    The input is empty even when a key is stored, because there is nothing to
+    put in it -- no route returns a value. What it shows instead is that one is
+    set and when, which is what someone debugging "why is weather failing"
+    actually needs.
+    """
+    name = state.get("name")
+    stored = state.get("set")
+    since = state.get("updated_at")
+    hint = (f"Guardada el {e(when(since))}. Escribe otra para reemplazarla."
+            if stored else "No hay ninguna guardada.")
+    return f"""<form class="stack" method="post" action="/settings/secrets"
+      style="margin-bottom:1rem">
+  <input type="hidden" name="provider" value="{e(provider)}">
+  <input type="hidden" name="secret" value="{e(name)}">
+  <label class="field">{e(provider)} · {e(name)}
+    <input type="password" name="value" autocomplete="off"
+      placeholder="{'\u2022' * 12 if stored else 'sin configurar'}">
+    <span class="hint">{hint} Nunca se muestra.</span></label>
+  <div class="actions">
+    <button type="submit">Guardar</button>
+    {'<button class="danger" type="submit" name="action" value="clear">Borrar</button>'
+     if stored else ''}
+  </div>
+</form>"""
+
+
+def _credentials(provider_list) -> str:
+    forms = []
+    for provider in provider_list or ():
+        for state in provider.get("secrets") or ():
+            forms.append(_secret_field(provider.get("name"), state))
+    if not forms:
+        return ('<div class="panel"><div class="pad empty">'
+                'Ninguna fuente necesita credenciales todavía.</div></div>')
+    return f'<div class="panel"><div class="pad">{"".join(forms)}</div></div>'
+
+
+def render_settings(feed: dict, *, jobs=None, providers=None,
+                    editable: bool = True,
                     notice: str = "", version: str = "") -> str:
     feed = feed or {}
     form = (
@@ -86,6 +127,7 @@ def render_settings(feed: dict, *, jobs=None, editable: bool = True,
             f'<h2>Fuente ADS-B ({e(feed.get("source"))})</h2>'
             f'<div class="panel"><div class="pad">'
             f'{form if editable else read_only}</div></div>'
+            f'<h2>Credenciales</h2>{_credentials(providers)}'
             f'<h2>Descargas en curso</h2>{_sources(jobs)}')
     return page("Ajustes — HomeScreen", body, active="settings", notice=notice,
                 meta=e(version))

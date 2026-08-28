@@ -50,9 +50,15 @@ def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
             # Scoped per provider: a weather key must not be reachable from
             # the quotes adapter. The narrow port makes that enforceable
             # rather than a convention nobody checks.
-            creds = secrets_for(job.provider) if secrets_for else None
-            payload = provider.fetch(job.params, session=session,
-                                     secrets=creds)
+            creds = (secrets_for(job.provider,
+                                 job.params.get("secret_scope"))
+                     if secrets_for else None)
+            # The adapter is handed its parameters without the bookkeeping:
+            # `secret_scope` says WHICH key, which the runner has already
+            # resolved into `creds`.
+            params = {k: v for k, v in job.params.items()
+                      if k != "secret_scope"}
+            payload = provider.fetch(params, session=session, secrets=creds)
         except Exception as exc:                        # noqa: BLE001
             log.warning("job %s failed: %s", job.key, exc)
             jobstore.record_failure(cache_dir, job.key, str(exc))
@@ -70,7 +76,7 @@ def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
 
 def run_forever(cfg_loader, records_loader, cache_dir, *, session=None,
                 sleep=time.sleep, clock=time.time, cycles: int | None = None,
-                secrets_for=None):
+                secrets_for=None, has_own_key=None):
     """Re-derive the plan, fetch what is due, prune what nobody wants."""
     last_run: dict = {}
     last_reload = 0.0
@@ -79,7 +85,8 @@ def run_forever(cfg_loader, records_loader, cache_dir, *, session=None,
     while cycles is None or done < cycles:
         now = clock()
         if now - last_reload >= RELOAD_EVERY_S or not plan:
-            plan = jobs.collect(records_loader(), cfg_loader())
+            plan = jobs.collect(records_loader(), cfg_loader(),
+                                has_own_key=has_own_key)
             last_reload = now
             jobstore.prune(cache_dir, set(plan))
             # Forget the schedule of jobs nobody wants, so a job that comes

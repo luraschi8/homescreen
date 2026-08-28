@@ -44,8 +44,42 @@ def _notes(dev: dict) -> str:
     return out
 
 
+def _credentials(hw: str, creds) -> str:
+    """Per-screen keys, if any component here needs one.
+
+    The deployment's own key is on the settings page and every screen falls
+    back to it. This is for the screen that needs a DIFFERENT one -- a second
+    account, a personal calendar next to a work one -- which is a real thing to
+    want and is why a job with its own key is its own fetch.
+    """
+    if not creds:
+        return ""
+    fields = []
+    for state in creds:
+        stored = state.get("set")
+        fields.append(f"""<form class="stack" method="post"
+      action="/device/{e(hw)}/secrets" style="margin-bottom:.9rem">
+  <input type="hidden" name="provider" value="{e(state.get("provider"))}">
+  <input type="hidden" name="secret" value="{e(state.get("name"))}">
+  <input type="hidden" name="scope" value="{e(state.get("scope"))}">
+  <label class="field">{e(state.get("provider"))} · {e(state.get("name"))}
+    <input type="password" name="value" autocomplete="off"
+      placeholder="{'\u2022' * 12 if stored else 'usa la del servidor'}">
+    <span class="hint">{"Esta pantalla usa su propia clave."
+                        if stored else
+                        "En blanco usa la clave global de Ajustes."}</span>
+  </label>
+  <div class="actions"><button type="submit">Guardar</button>
+    {'<button class="danger" type="submit" name="action" value="clear">'
+     'Volver a la global</button>' if stored else ''}</div>
+</form>""")
+    return ('<h2>Credenciales de esta pantalla</h2>'
+            f'<div class="panel"><div class="pad">{"".join(fields)}</div></div>')
+
+
 def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
-                  notice: str = "", plan=None, views=(), now: float = 0.0) -> str:
+                  notice: str = "", plan=None, views=(), now: float = 0.0,
+                  credentials=()) -> str:
     """`options` is [(scene, drawable, why)] for THIS device; `schemas` maps a
     scene to its option schema, so every component's settings travel with it."""
     hw = e(dev.get("hw"))
@@ -126,6 +160,7 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     <div class="actions"><button type="submit">Guardar</button></div>
   </form>
 </div></div>
+{_credentials(dev.get("hw") or "", credentials)}
 {schedule_ui.editor(dev.get("hw") or "", plan or {}, views, now) if views else ""}
 {f'<h2>Vista previa</h2><div class="panel"><div class="pad"><div class="pvs">{thumbs}</div></div></div>' if thumbs else ""}
 

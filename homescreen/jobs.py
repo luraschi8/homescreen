@@ -34,25 +34,27 @@ class Job:
         return dataclasses.replace(self, wanted_by=tuple(sorted(set(who))))
 
 
-def requirements_of(component: str, options: dict, cfg: dict) -> tuple:
-    """What one component needs fetched, given how it is configured.
-
-    A function of its OPTIONS, because that is what makes it specific: the
-    weather component needs a place, the quotes component needs symbols, and
-    which ones is the assignment's business.
-    """
+def _default_requirements(component: str, options: dict, cfg: dict) -> tuple:
     from homescreen import scenes
     return scenes.needs(component, options, cfg)
 
 
-def collect(records: dict, cfg: dict) -> dict:
+def collect(records: dict, cfg: dict, *, requirements=None,
+            has_own_key=None) -> dict:
     """{key: Job} for the whole fleet. Never raises.
 
     Walks every device, every view it can show -- not merely the one showing
     now. A schedule that switches to weather at 07:00 must not discover at
     07:00 that nobody has been fetching weather; the job exists because the
     view exists, and it is warm before it is needed.
+
+    `requirements` and `has_own_key` are injected so this stays pure and
+    testable: the first is what a component needs, the second answers whether
+    one placement has its OWN credential. That second question is what stops
+    two screens reading two different accounts from silently sharing one fetch
+    -- and one key winning.
     """
+    requirements = requirements or _default_requirements
     found: dict = {}
     for hw, rec in (records or {}).items():
         if not isinstance(rec, dict):
@@ -62,12 +64,20 @@ def collect(records: dict, cfg: dict) -> dict:
             for placement in view.get("placements") or ():
                 component = placement.get("component")
                 options = placement.get("options") or {}
-                try:
-                    needs = requirements_of(component, options, cfg)
-                except Exception:                       # noqa: BLE001
-                    continue                            # a scene may not need any
+                where = f"{hw}/{view_name}"
+                needs = requirements(component, options, cfg)
                 for need in needs or ():
-                    job = _job_from(need, f"{hw}/{view_name}")
+                    # A placement with its own credential is a DIFFERENT fetch,
+                    # even for identical parameters: same question, different
+                    # account. The scope is an identifier, not a secret, so it
+                    # is safe in the key and visible in /api/jobs.
+                    if has_own_key and isinstance(need, dict):
+                        scope = f"{where}/{(need.get('provider') or '')}"
+                        if has_own_key(need.get("provider"), scope):
+                            need = {**need,
+                                    "params": {**(need.get("params") or {}),
+                                               "secret_scope": scope}}
+                    job = _job_from(need, where)
                     if job is None:
                         continue
                     existing = found.get(job.key)
