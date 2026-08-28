@@ -224,11 +224,11 @@ def clean_poll_s(value):
 
 
 def _registry() -> dict:
-    from homescreen.scenes import (clock, planes, quotes, status,
+    from homescreen.scenes import (calendar, clock, planes, quotes, status,
                                    weather)
     return {"clock": clock.build, "status": status.build,
             "planes": planes.build, "weather": weather.build,
-            "quotes": quotes.build}
+            "quotes": quotes.build, "calendar": calendar.build}
 
 
 def names() -> tuple[str, ...]:

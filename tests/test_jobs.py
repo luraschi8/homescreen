@@ -306,6 +306,7 @@ _SAMPLE_PARAMS = {
              "endpoint": "https://example.invalid/api"},
     "openweather": {"lat": 40.4, "lon": -3.7, "units": "metric"},
     "quotes": {"symbol": "AAPL"},
+    "ics": {"url": "https://example.invalid/c.ics", "days": 14},
 }
 
 

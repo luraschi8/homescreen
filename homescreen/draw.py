@@ -102,6 +102,44 @@ def resolve(draw: list, w: int, h: int) -> list:
     return out
 
 
+#: Rough width of one character as a fraction of type height, for the faces
+#: these panels carry. An estimate on purpose: the exact answer needs the font,
+#: which lives on the device. Being approximately right here is the difference
+#: between a list and a smear, not between two correct layouts.
+CHAR_WIDTH_RATIO = 0.58
+
+#: A circle's usable width across the rows a list occupies. The rim slots sit
+#: at 12% and 88% of the height, where the chord is well short of the diameter.
+ROUND_USABLE = 0.72
+
+#: Vertical room one row needs, as a multiple of its type height, before rows
+#: start touching.
+ROW_PITCH = 2.0
+
+
+def lines_fit(lines, w: int, h: int, *, size: str = "sm",
+              shape: str = "rect") -> bool:
+    """Can these lines all be shown at once on this glass?
+
+    Asked by every component that has a list and a small screen, so it is one
+    rule rather than one per component. It measures the LONGEST LINE, because
+    that is what actually decides: "BINANCE:BTCUSDT 63,120 ▲ 2.90%" needs three
+    times the width of "AAPL 227.40", and a rule about panel size cannot see
+    the difference -- which is how a round 240px panel came to stack three rows
+    that each ran off both edges.
+    """
+    lines = [str(x) for x in (lines or ()) if str(x)]
+    if not lines:
+        return True
+    if len(lines) > len(SLOTS):
+        return False                     # more rows than the vocabulary has
+    px = size_px(size, w, h)
+    if h / len(lines) < px * ROW_PITCH:
+        return False                     # rows would touch
+    usable = w * (ROUND_USABLE if shape == "round" else 0.94)
+    return max(len(line) for line in lines) * px * CHAR_WIDTH_RATIO <= usable
+
+
 def text(slot: str, value: str, size: str = "md",
          tone: str = "normal") -> dict:
     """Build one text instruction. Components use this rather than dict literals

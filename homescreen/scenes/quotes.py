@@ -72,39 +72,6 @@ def _rotate_seconds(options: dict) -> int:
     return max(2, min(300, n))
 
 
-#: Rough width of one character as a fraction of type height, for this face at
-#: these sizes. An estimate on purpose: the exact answer needs the font, which
-#: lives on the device, and being approximately right here is the difference
-#: between a list and a smear -- not between two correct layouts.
-_CHAR_WIDTH_RATIO = 0.58
-
-#: A circle's usable width at the rows a list occupies. The rim slots sit at
-#: 12% and 88% of height, where the chord is well short of the diameter.
-_ROUND_USABLE = 0.72
-
-
-def _list_fits(symbols, readings, caps) -> bool:
-    """Is there room to show every symbol at once?
-
-    Measured against the LONGEST line this list would actually draw, not
-    against the panel's size class. `BINANCE:BTCUSDT 63,120 ▲ 2.90%` needs
-    three times the width of `AAPL 227.40`, and a rule about height cannot see
-    that -- which is how a 240px round panel ended up stacking three lines that
-    each ran off both edges of the glass.
-    """
-    from homescreen import draw as _draw
-    w = int((caps or {}).get("w") or 240)
-    h = int((caps or {}).get("h") or 240)
-    if len(symbols) > 5:
-        return False                     # more slots than the vocabulary has
-    size_px = _draw.size_px("sm", w, h)
-    if h / max(len(symbols), 1) < size_px * 1.8:
-        return False                     # rows would touch
-    usable = w * (_ROUND_USABLE if str((caps or {}).get("shape")) == "round" else 0.94)
-    longest = max(len(_line(s, readings[s])) for s in symbols)
-    return longest * size_px * _CHAR_WIDTH_RATIO <= usable
-
-
 def _line(symbol: str, reading) -> str:
     change = _fmt_change(reading.get("change_pct"))[0]
     line = f"{symbol}  {_fmt_price(reading.get('price'))}"
@@ -141,7 +108,9 @@ def build(ctx: SceneContext) -> Scene:
 
     w = int(ctx.caps.get("w") or 240)
     h = int(ctx.caps.get("h") or 240)
-    stacked = len(symbols) > 1 and _list_fits(symbols, readings, ctx.caps)
+    stacked = len(symbols) > 1 and draw.lines_fit(
+        [_line(s, readings[s]) for s in symbols], w, h,
+        shape=str(ctx.caps.get("shape") or "rect"))
 
     if not symbols:
         return _scene(ctx, w, h, [draw.text("center", "sin símbolos", "sm", "dim")],
