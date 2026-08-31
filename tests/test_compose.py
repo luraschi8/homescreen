@@ -6,6 +6,7 @@ is isolation: every component was written believing it owned the document, and
 two of them style `.big`.
 """
 import pathlib
+import re
 import tempfile
 
 import pytest
@@ -133,3 +134,69 @@ def test_a_composed_view_reaches_the_renderer_as_one_page(ctx):
     assert len(view["placements"]) == 3, "all three survived validation"
     html = compose.compose(view, {"w": 800, "h": 480, "depth": 1}, _build)
     assert html.count("position:absolute") == 3
+
+
+# --- Several placements in one region ----------------------------------------
+#
+# `main_left` declares `holds: 4, stack: "v"` and the view editor offers all
+# four. Until slots existed, every one of them was given the region's whole
+# rectangle, so a four-component column rendered as four components on top of
+# each other.
+
+STACKED = {"template": "dashboard", "placements": [
+    {"id": "a", "region": "main_left", "component": "clock", "options": {}},
+    {"id": "b", "region": "main_left", "component": "planes", "options": {}},
+    {"id": "c", "region": "main_left", "component": "status", "options": {}}]}
+
+
+def _rects(html):
+    return {m[0]: tuple(int(v) for v in m[1:]) for m in re.findall(
+        r"#rg-(\w+)\{position:absolute;left:(\d+)px;top:(\d+)px;"
+        r"width:(\d+)px;height:(\d+)px", html)}
+
+
+def test_placements_sharing_a_region_do_not_share_a_rectangle():
+    got = _rects(compose.compose(STACKED, EPAPER, _build))
+    assert len(set(got.values())) == 3, got
+
+
+def test_a_shared_region_is_divided_along_its_declared_stack_axis():
+    got = _rects(compose.compose(STACKED, EPAPER, _build))
+    x, y, w, h = layout.regions(EPAPER, "dashboard")["main_left"]["rect"]
+    ordered = [got["a"], got["b"], got["c"]]
+    assert [r[0] for r in ordered] == [x] * 3        # a column, not a row
+    assert [r[2] for r in ordered] == [w] * 3
+    assert ordered[0][1] == y
+    assert sum(r[3] for r in ordered) == h           # tiles the region exactly
+
+
+def test_a_component_is_told_the_size_of_its_slot_not_of_the_region():
+    # The failure this prevents is silent: a component handed 417x335 lays out
+    # for 335px of height and then renders into 111, and the overflow is
+    # clipped rather than reported.
+    seen = []
+
+    def spy(component, options, region_caps):
+        seen.append((region_caps["w"], region_caps["h"]))
+        assert region_caps["depth"] == 1, "depth is the glass's, not the slot's"
+        return _build(component, options, region_caps)
+
+    compose.compose(STACKED, EPAPER, spy)
+    _, _, w, h = layout.regions(EPAPER, "dashboard")["main_left"]["rect"]
+    assert [s[0] for s in seen] == [w] * 3
+    assert sum(s[1] for s in seen) == h
+    assert all(s[1] < h for s in seen)
+
+
+def test_a_placement_that_fails_does_not_shift_the_others_off_their_slots():
+    # Slots are assigned from the view, not from what survived rendering, so a
+    # broken component leaves a hole rather than sliding the rest upward.
+    def flaky(component, options, region_caps):
+        if component == "planes":
+            raise RuntimeError("upstream down")
+        return _build(component, options, region_caps)
+
+    got = _rects(compose.compose(STACKED, EPAPER, flaky))
+    whole = _rects(compose.compose(STACKED, EPAPER, _build))
+    assert "b" not in got
+    assert got["a"] == whole["a"] and got["c"] == whole["c"]

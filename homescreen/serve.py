@@ -411,6 +411,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         template = layout.template_of(showing_view)
         return Response(
             web.render_device(_fleet_entry(hw, rec, now), options=opts,
+                              # Re-judged per slot: a region that divides four
+                              # ways must not offer what only fits whole.
+                              fits=lambda name, slot: scenes.supports(
+                                  name, {**caps, **slot}),
                               schemas=schemas, name_max=registry.NAME_MAX,
                               notice=request.args.get("m", ""),
                               # Only once the screen HAS views. Before that
@@ -503,7 +507,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         template = layout.template_of(layout.view_for(rec))
         regions = layout.regions(caps, template)
         names = list(layout.view_names(rec))
-        new = (request.form.get("new_view") or "").strip()[:40]
+        # Narrowed on the way in, so every later use -- the field key it
+        # becomes, the attribute it is written into -- is safe by construction.
+        asked = (request.form.get("new_view") or "").strip()
+        new = web.views_ui.safe_view_name(asked) if asked else ""
         if new and new not in names:
             names.append(new)
         schemas = {name: list(scenes.option_schema(name))
@@ -1417,7 +1424,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             caps=registry.clean_caps(caps if caps is not None
                                      else rec.get("caps") or {}),
             options=scenes.clean_options(
-                name, (placements[0]["options"] if placements
+                # `.get`, because a record written before views existed --
+                # or edited by hand -- has a placement with no options at all,
+                # and a device asking for its scene must never get a 500.
+                name, (placements[0].get("options") if placements
                        else rec.get("options")) or {}),
             data=_scene_data,
             now=clock(),

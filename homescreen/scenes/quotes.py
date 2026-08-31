@@ -27,7 +27,11 @@ from homescreen.scenes._style import page
 #:
 #: A price and a percentage. Less demanding than the radar; about the same as
 #: the clock, since it is two lines of text.
-SURFACES = ({"min_short": 90},)
+SURFACES = (# A square-ish panel, or a ticker cell in a wide band. SPEC SS9's markets
+            # row is six of the latter, 127x62 each, and until this second entry
+            # existed the band that row was designed for could hold nothing.
+            {"min_short": 90},
+            {"min_w": 110, "min_h": 40})
 
 OPTIONS = (
     {"key": "symbols", "label": "Símbolos", "type": "text",

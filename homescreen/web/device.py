@@ -81,7 +81,7 @@ def _credentials(hw: str, creds) -> str:
 def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
                   notice: str = "", plan=None, views=(), now: float = 0.0,
                   credentials=(), view_bodies=None, regions=None,
-                  template: str = "") -> str:
+                  template: str = "", fits=None) -> str:
     """`options` is [(scene, drawable, why)] for THIS device; `schemas` maps a
     scene to its option schema, so every component's settings travel with it."""
     hw = e(dev.get("hw"))
@@ -163,7 +163,7 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
   </form>
 </div></div>
 {views_ui.editor(dev.get("hw") or "", view_bodies or {}, regions or {},
-                 options, template, schemas)}
+                 options, template, schemas, fits)}
 {_credentials(dev.get("hw") or "", credentials)}
 {schedule_ui.editor(dev.get("hw") or "", plan or {}, views, now) if views else ""}
 {f'<h2>Vista previa</h2><div class="panel"><div class="pad"><div class="pvs">{thumbs}</div></div></div>' if thumbs else ""}

@@ -389,3 +389,123 @@ def test_a_provider_with_no_stated_limit_is_not_slowed_down(fake, tmp_path):
     plan = {f"fake-{i:06x}": _job(f"fake-{i:06x}", v=i) for i in range(4)}
     fetch.runner.run_once(tmp_path, plan, {}, now=1.0, sleep=slept.append)
     assert slept == []
+
+
+# --- The daemon must survive its own credential store -------------------------
+
+def test_a_credential_store_that_raises_does_not_kill_the_daemon(fake, tmp_path):
+    # `secrets_for` reads a file. On a read-only SD -- the failure mode CLAUDE.md
+    # SS16 calls live -- it raises, and the handler that was meant to catch the
+    # fetch failure referenced a variable the raise had skipped past. The daemon
+    # is `Restart=always`, so this was a crash loop, not a logged warning.
+    def hostile(provider, scope):
+        raise PermissionError("/var/lib/homescreen/secrets: read-only file system")
+
+    ran = fetch.runner.run_once(tmp_path, {"fake-abc123": _job(v=7)}, {},
+                                now=1.0, secrets_for=hostile)
+    assert ran == 1, "the job is counted as attempted, not skipped"
+    failure = fetch.store.read(tmp_path, "fake-abc123")
+    assert failure["ok"] is False
+    assert "read-only" in failure["error"]
+
+
+def test_a_short_credential_is_redacted_too():
+    # The floor was `>= 8`, which silently exempted every shorter key. The
+    # store it lands in is rendered on an unauthenticated LAN page.
+    assert "s3cr3t" not in fetch.runner.redact("denied for s3cr3t", ["s3cr3t"])
+    assert "abc" not in fetch.runner.redact("bad key abc", ["abc"])
+
+
+def test_a_credential_is_redacted_even_when_the_error_percent_encodes_it():
+    # `requests` quotes the query string back in its exception, so the key
+    # arrives re-encoded and a plain `.replace` walks straight past it.
+    # Deliberately NOT in a `token=` parameter: the URL pattern would catch
+    # that on its own and the value pass would never be exercised.
+    key = "a b+c/d"
+    text = "vendor rejected credential a%20b%2Bc%2Fd for this account"
+    assert "a%20b%2Bc%2Fd" not in fetch.runner.redact(text, [key])
+
+
+def test_redaction_leaves_ordinary_error_text_alone():
+    # The guard against over-redacting: a one- or two-character credential
+    # would otherwise blank out half the message it was meant to make safe.
+    assert fetch.runner.redact("upstream is down", ["x"]) == "upstream is down"
+
+
+# --- per-placement credentials -----------------------------------------------
+#
+# The feature that makes two calendars on one screen two calendars. It had no
+# tests at all: `has_own_key` could be disabled outright and the suite passed,
+# which means the regression it was written to fix could return unnoticed.
+
+def _two_calendars():
+    """One screen, two calendar placements, same upstream shape."""
+    return {"epd": {"approved_at": "2026-01-01T00:00:00Z", "views": {
+        "panel": {"template": "dashboard", "placements": [
+            {"id": "work", "region": "main_left", "component": "calendar",
+             "options": {"url": "https://cal.example/a.ics"}},
+            {"id": "home", "region": "main_right", "component": "calendar",
+             "options": {"url": "https://cal.example/b.ics"}}]}}}}
+
+
+def test_two_placements_with_their_own_credentials_are_two_fetches():
+    # Same question, different account. Without this the second placement
+    # silently showed the first one's data.
+    plan = fetch.derive(_two_calendars(), CFG, has_own_key=lambda p, s: True)
+    scopes = {j.params.get("secret_scope") for j in plan.values()}
+    assert len(plan) == 2, plan
+    assert len(scopes) == 2, scopes
+    assert all(s for s in scopes), "each placement carries its own scope"
+
+
+def test_the_scope_names_the_placement_not_the_view():
+    # Scoping to the view is the exact bug this replaced: two placements in one
+    # view would collapse back onto a single credential.
+    plan = fetch.derive(_two_calendars(), CFG, has_own_key=lambda p, s: True)
+    scopes = sorted(j.params["secret_scope"] for j in plan.values())
+    assert any("work" in s for s in scopes), scopes
+    assert any("home" in s for s in scopes), scopes
+
+
+def test_placements_without_their_own_credentials_still_share_one_fetch():
+    # The default. Scoping every placement unconditionally would multiply
+    # every fetch on the fleet by the number of screens showing it.
+    same = {"epd": {"approved_at": "2026-01-01T00:00:00Z", "views": {
+        "panel": {"template": "dashboard", "placements": [
+            {"id": "a", "region": "main_left", "component": "calendar",
+             "options": {"url": "https://cal.example/a.ics"}},
+            {"id": "b", "region": "main_right", "component": "calendar",
+             "options": {"url": "https://cal.example/a.ics"}}]}}}}
+    plan = fetch.derive(same, CFG, has_own_key=lambda p, s: False)
+    assert len(plan) == 1, plan
+    assert "secret_scope" not in next(iter(plan.values())).params
+
+
+def test_a_scope_reaches_the_credential_lookup_and_not_the_adapter():
+    # `secret_scope` says WHICH key. The adapter is handed parameters without
+    # it -- a provider that saw it would start keying its own cache on it.
+    seen = {}
+
+    class Spy:
+        name = "fake"
+
+        @staticmethod
+        def fetch(params, *, session=None, secrets=None):
+            seen["params"] = dict(params)
+            seen["secrets"] = secrets
+            return {"ok": 1}
+
+    import homescreen.fetch.providers as providers
+    original = providers._modules
+    providers._modules = lambda: {"fake": Spy}
+    try:
+        job = fetch.Job(provider="fake", key="fake-x", interval_s=10,
+                        params={"url": "https://x", "secret_scope": "epd/work/ics"})
+        import tempfile, pathlib
+        fetch.runner.run_once(pathlib.Path(tempfile.mkdtemp()), {"fake-x": job},
+                              {}, now=1.0,
+                              secrets_for=lambda p, s: {"token": f"key-for-{s}"})
+    finally:
+        providers._modules = original
+    assert "secret_scope" not in seen["params"]
+    assert seen["secrets"] == {"token": "key-for-epd/work/ics"}

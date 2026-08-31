@@ -192,6 +192,23 @@ def test_a_url_that_is_not_a_calendar_url_is_refused(bad):
 
 
 def test_webcal_is_accepted_and_fetched_over_https():
+    # Two halves, and only the first was tested: the URL is STORED as the
+    # operator typed it, and REWRITTEN on the way out. Asserting the first on
+    # the string the test itself passed in proved nothing -- the rewrite could
+    # be deleted and every webcal calendar would fail with an unknown-scheme
+    # error that no test would show.
     from homescreen import fetch
     params = fetch.providers.clean_params("ics", {"url": "webcal://x/c.ics"})
     assert params["url"].startswith("webcal://"), "stored as written"
+
+    asked = {}
+
+    class Session:
+        @staticmethod
+        def get(url, **kw):
+            asked["url"] = url
+            raise RuntimeError("far enough -- the scheme is what is on trial")
+
+    with pytest.raises(RuntimeError):
+        fetch.providers.ics.fetch(params, session=Session())
+    assert asked["url"] == "https://x/c.ics", "fetched over https"

@@ -11,7 +11,8 @@ from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._style import page
 
-SURFACES = ({"min_short": 90},)
+SURFACES = ({"min_short": 90},
+            {"min_w": 110, "min_h": 40})   # a number and its label
 
 OPTIONS = (
     {"key": "days", "label": "Días", "type": "int", "default": 30,

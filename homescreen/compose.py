@@ -82,6 +82,28 @@ def fragment(html: str, wrapper: str) -> tuple:
             match.group("body"))
 
 
+def _placed(view, regions):
+    """(index, placement, rect) for each placement that has somewhere to go.
+
+    Slots are assigned from the view rather than from what renders, so a
+    component that fails leaves its slot empty instead of sliding the rest of
+    the column upward -- a panel refreshing every 30s must not reflow itself
+    every time an upstream blips.
+    """
+    valid = [(i, p) for i, p in enumerate(view.get("placements") or ())
+             if isinstance(p, dict) and p.get("region") in regions]
+    counts = {}
+    for _, placement in valid:
+        counts[placement["region"]] = counts.get(placement["region"], 0) + 1
+    cut = {name: layout.slots(regions[name], n) for name, n in counts.items()}
+    taken = {}
+    for index, placement in valid:
+        name = placement["region"]
+        seat = taken[name] = taken.get(name, 0)
+        taken[name] += 1
+        yield index, placement, cut[name][seat]
+
+
 def compose(view: dict, caps: dict, build_scene) -> str:
     """One page from a view's placements. Returns "" if nothing can be drawn.
 
@@ -91,22 +113,16 @@ def compose(view: dict, caps: dict, build_scene) -> str:
     template = layout.template_of(view)
     regions = layout.regions(caps, template)
     styles, bodies = [], []
-    for index, placement in enumerate(view.get("placements") or ()):
-        if not isinstance(placement, dict):
-            continue
-        region = regions.get(placement.get("region"))
-        if region is None:
-            continue
+    for index, placement, rect in _placed(view, regions):
         wrapper = f"rg-{_safe(placement.get('id') or index)}"
+        x, y, w, h = rect
         try:
             html = build_scene(placement.get("component"),
                                placement.get("options") or {},
-                               layout.region_caps(caps, placement["region"],
-                                                  template))
+                               {**caps, "w": w, "h": h})
         except Exception:                               # noqa: BLE001
             continue                                    # one region, not the page
         css, body = fragment(html, wrapper)
-        x, y, w, h = region["rect"]
         # Absolute placement, because the regions are measured rectangles and
         # a flow layout would let one component's content move another's.
         styles.append(f"#{wrapper}{{position:absolute;left:{x}px;top:{y}px;"

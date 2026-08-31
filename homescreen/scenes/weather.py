@@ -21,7 +21,8 @@ def _nothing() -> Reading:
     return Reading.nothing()
 
 #: Anywhere a number and a word are legible.
-SURFACES = ({"min_short": 90},)
+SURFACES = ({"min_short": 90},
+            {"min_w": 110, "min_h": 40})   # "Madrid 21 deg" in a band cell
 
 #: OpenWeather's icon codes, reduced to the shapes we can draw.
 #:

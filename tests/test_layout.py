@@ -63,14 +63,6 @@ def test_every_screen_can_always_show_one_thing():
         assert layout.DEFAULT_TEMPLATE in layout.templates_for(caps)
 
 
-def test_a_component_is_handed_its_regions_geometry_not_the_panels():
-    # The only thing a component needs to know, and it already knows how to
-    # use it -- this is the same value it gets as 240x240 today.
-    caps = layout.region_caps(EPD, "markets", "dashboard")
-    assert (caps["w"], caps["h"]) == (764, 62)
-    assert caps["depth"] == 1, "depth is the hardware's, not the rectangle's"
-
-
 def test_a_placement_in_a_region_this_glass_lacks_is_dropped_not_relocated():
     # Moving it would invent a layout nobody chose.
     got = layout.clean_placement(
@@ -218,3 +210,54 @@ def test_an_unrecognised_shape_is_dropped_rather_than_stored(tmp_path, declared)
                "&components=draw_list")
     caps = registry.load(tmp_path)[HW]["caps"]
     assert caps.get("shape") in (None, "round"), caps
+
+
+# --- Stacked regions ---------------------------------------------------------
+#
+# `holds` and `stack` were in the template model from the first commit, but
+# nothing subdivided a region, so every placement in one was handed the same
+# rectangle. These pin the arithmetic that fixes it.
+
+def test_a_region_holding_one_placement_gives_it_the_whole_rectangle():
+    region = layout.regions(EPD, "dashboard")["main_left"]
+    assert layout.slots(region, 1) == [region["rect"]]
+
+
+def test_a_vertical_stack_tiles_its_region_exactly():
+    region = layout.regions(EPD, "dashboard")["main_left"]
+    x, y, w, h = region["rect"]
+    got = layout.slots(region, 4)
+    assert [r[0] for r in got] == [x] * 4          # column keeps its left edge
+    assert [r[2] for r in got] == [w] * 4          # and its width
+    assert got[0][1] == y                          # starts at the top
+    assert sum(r[3] for r in got) == h             # no gap, no overlap
+    for before, after in zip(got, got[1:]):
+        assert before[1] + before[3] == after[1]   # each abuts the next
+
+
+def test_a_horizontal_stack_tiles_its_region_exactly():
+    region = layout.regions(EPD, "dashboard")["markets"]
+    x, y, w, h = region["rect"]
+    got = layout.slots(region, 6)
+    assert [r[1] for r in got] == [y] * 6
+    assert [r[3] for r in got] == [h] * 6
+    assert sum(r[2] for r in got) == w
+    for before, after in zip(got, got[1:]):
+        assert before[0] + before[2] == after[0]
+
+
+def test_leftover_pixels_go_to_the_leading_slots_rather_than_vanishing():
+    # 62px of height over 4 slots is 15.5 each. Slots must still tile 62.
+    region = {"rect": (0, 0, 100, 62), "stack": "v", "holds": 4}
+    got = layout.slots(region, 4)
+    assert [r[3] for r in got] == [16, 16, 15, 15]
+    assert sum(r[3] for r in got) == 62
+
+
+def test_a_region_with_no_stack_axis_still_divides_rather_than_piling():
+    # `single`'s `full` declares stack None because it holds one thing. If a
+    # stored view ever names it twice, overlapping is the one wrong answer.
+    region = {"rect": (0, 0, 240, 240), "stack": None, "holds": 1}
+    got = layout.slots(region, 2)
+    assert got[0] != got[1]
+    assert sum(r[3] for r in got) == 240

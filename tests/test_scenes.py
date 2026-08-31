@@ -544,3 +544,23 @@ def test_a_full_scene_fits_the_devices_byte_budget(tmp_path, cap, max_bytes):
     assert len(body) <= max_bytes, (
         f"{cap} items serialise to {len(body)} bytes; the device refuses "
         f"anything over its cap and shows nothing at all")
+
+
+def test_a_placement_with_no_options_key_still_renders(tmp_path):
+    # A record written before options existed, or edited by hand, has a
+    # placement with no `options` at all. Indexing it raised, and the device
+    # asking for its scene got a 500 -- so the panel that most needed to say
+    # something showed nothing.
+    from homescreen import registry
+    from homescreen.serve import create_app
+    hw = "aa11bb22cc33"
+    app = create_app({"devices": []}, tmp_path, version="t")
+    client = app.test_client()
+    client.get(f"/api/devices/{hw}/scene?w=240&h=240&depth=16&shape=round")
+    client.put(f"/api/devices/{hw}/membership", json={"approved": True})
+    records = registry.load(tmp_path)
+    records[hw]["views"] = {"panel": {"template": "single", "placements": [
+        {"id": "p1", "region": "full", "component": "clock"}]}}   # no options
+    registry.save(tmp_path, records)
+    got = client.get(f"/api/devices/{hw}/scene?w=240&h=240&depth=16")
+    assert got.status_code == 200, got.get_data(as_text=True)[:300]

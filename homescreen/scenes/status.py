@@ -20,7 +20,9 @@ from homescreen.scenes._style import page
 #: serve.py routes every such device here whatever its glass -- so declaring
 #: itself rect-only was a lie that the router ignored, on the one scene that
 #: has to work on hardware nobody has configured yet.
-SURFACES = ({"min_short": 90},)
+SURFACES = ({"min_short": 90},
+            {"min_w": 90, "min_h": 40})    # the fallback must always have
+                                           # somewhere it can be drawn
 
 CSS = """
 .wrap{padding:18px;display:flex;flex-direction:column;height:100%;

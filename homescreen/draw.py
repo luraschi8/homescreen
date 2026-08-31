@@ -109,6 +109,12 @@ def resolve(draw: list, w: int, h: int) -> list:
         if not isinstance(item, dict):
             continue
         if item.get("t") in ("circle", "line", "tri"):
+            # Three points or it is not a triangle. Padding the missing corner
+            # with a zero draws a wedge to the top-left of the glass, which is
+            # worse than drawing nothing: the firmware drops it, so this must
+            # too or the preview shows a mark the panel will not have.
+            if item["t"] == "tri" and len(item.get("p") or ()) < 6:
+                continue
             out.append(_shape_px(item, w, h))
             continue
         if item.get("t") != "text":
@@ -332,26 +338,40 @@ def icon(name: str, cx: float, cy: float, size: float = 0.22,
 
 
 def _shape_px(item: dict, w: int, h: int) -> dict:
-    """A shape in pixels. Fractions scale off the SHORT side for radii and
-    widths, so a circle stays a circle on a panel that is not square."""
+    """A shape in pixels, in the SAME vocabulary a resolved text uses.
+
+    `x`, `y`, `px` and the extra corners, not `cx`/`r`/`x1` -- because the
+    device stores one `Placement` struct whatever the shape is, and the parity
+    fixture compares field by field. Two names for one resolved position is how
+    the whole shape vocabulary came to be pinned by nothing: the fixture
+    compared `x` against a dict that only had `cx`, read 0 for both sides, and
+    agreed.
+
+    Radii and stroke widths scale off the SHORT side, so a circle stays a
+    circle on a panel that is not square.
+    """
     short = min(int(w), int(h))
     out = {"t": item["t"],
-           "tone": item.get("tone") if item.get("tone") in TONES else "normal"}
+           "tone": item.get("tone") if item.get("tone") in TONES else "normal",
+           "text": "", "x2": 0, "y2": 0, "x3": 0, "y3": 0, "fill": True}
     if item["t"] == "circle":
-        out.update(cx=_round_half_up(item.get("cx", 0.5) * w),
-                   cy=_round_half_up(item.get("cy", 0.5) * h),
-                   r=max(1, _round_half_up(item.get("r", 0.1) * short)),
+        out.update(x=_round_half_up(item.get("cx", 0.5) * w),
+                   y=_round_half_up(item.get("cy", 0.5) * h),
+                   px=max(1, _round_half_up(item.get("r", 0.1) * short)),
                    fill=bool(item.get("fill", True)))
     elif item["t"] == "line":
-        out.update(x1=_round_half_up(item.get("x1", 0) * w),
-                   y1=_round_half_up(item.get("y1", 0) * h),
+        out.update(x=_round_half_up(item.get("x1", 0) * w),
+                   y=_round_half_up(item.get("y1", 0) * h),
                    x2=_round_half_up(item.get("x2", 0) * w),
                    y2=_round_half_up(item.get("y2", 0) * h),
-                   w=max(1, _round_half_up(item.get("w", 0.01) * short)))
+                   px=max(1, _round_half_up(item.get("w", 0.01) * short)))
     else:
         pts = list(item.get("p") or [])[:6]
-        out["p"] = [_round_half_up(v * (w if i % 2 == 0 else h))
-                    for i, v in enumerate(pts)]
+        px = [_round_half_up(v * (w if i % 2 == 0 else h))
+              for i, v in enumerate(pts)]
+        px += [0] * (6 - len(px))
+        out.update(x=px[0], y=px[1], x2=px[2], y2=px[3], x3=px[4], y3=px[5],
+                   px=0)
     return out
 
 
@@ -396,26 +416,30 @@ def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True) -> str:
     # `bad` is brighter than a pure red would be, on purpose: red's luma
     # coefficient is 0.2126, so #ff3431 lands at the same luminance as `dim`
     # -- the tone that must jump out reading as the tone that means ignore me.
-    fill = {"normal": "#ffffff", "dim": "#838183", "good": "#29ce41",
-            "bad": "#ff6b5e", "accent": "#5acae6", "warn": "#ffd23f",
+    # Lifting the red alone was not enough: at #ff6b5e it still came out only
+    # 6% above `dim`. `dim` moved down too, which it wanted anyway -- 52% grey
+    # is loud for a tone whose whole job is to recede. Now 1.36x, and pinned.
+    fill = {"normal": "#ffffff", "dim": "#6f6d6f", "good": "#29ce41",
+            "bad": "#ff7a68", "accent": "#5acae6", "warn": "#ffd23f",
             "cool": "#4d8fff", "hot": "#f6894a"}
     for item in resolve(draw, w, h):
         colour = fill.get(item["tone"], "#fff")
         if item["t"] == "circle":
-            parts.append(f'<circle cx="{item["cx"]}" cy="{item["cy"]}" '
-                         f'r="{item["r"]}" fill="{colour}"/>' if item["fill"]
-                         else f'<circle cx="{item["cx"]}" cy="{item["cy"]}" '
-                              f'r="{item["r"]}" fill="none" stroke="{colour}"/>')
+            parts.append(f'<circle cx="{item["x"]}" cy="{item["y"]}" '
+                         f'r="{item["px"]}" fill="{colour}"/>' if item["fill"]
+                         else f'<circle cx="{item["x"]}" cy="{item["y"]}" '
+                              f'r="{item["px"]}" fill="none" '
+                              f'stroke="{colour}"/>')
             continue
         if item["t"] == "line":
-            parts.append(f'<line x1="{item["x1"]}" y1="{item["y1"]}" '
+            parts.append(f'<line x1="{item["x"]}" y1="{item["y"]}" '
                          f'x2="{item["x2"]}" y2="{item["y2"]}" '
-                         f'stroke="{colour}" stroke-width="{item["w"]}" '
+                         f'stroke="{colour}" stroke-width="{item["px"]}" '
                          f'stroke-linecap="round"/>')
             continue
         if item["t"] == "tri":
-            pts = " ".join(f"{item['p'][i]},{item['p'][i+1]}"
-                           for i in range(0, len(item["p"]), 2))
+            pts = (f'{item["x"]},{item["y"]} {item["x2"]},{item["y2"]} '
+                   f'{item["x3"]},{item["y3"]}')
             parts.append(f'<polygon points="{pts}" fill="{colour}"/>')
             continue
         # dominant-baseline centres the glyph box on the slot's y, which is

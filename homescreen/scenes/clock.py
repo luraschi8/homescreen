@@ -22,7 +22,8 @@ from homescreen.scenes._style import page
 #: rather than three that can disagree.
 #: A clock is the least demanding thing here: a time and a label fit
 #: anywhere text is legible at all, on any shape, at any depth.
-SURFACES = ({"min_short": 100},)
+SURFACES = ({"min_short": 100},
+            {"min_w": 90, "min_h": 40})    # just the time, in a band cell
 
 OPTIONS = (
     {"key": "timezone", "label": "Zona horaria", "type": "text",

@@ -6,6 +6,8 @@ side is a thing to get wrong twice.
 """
 import pytest
 
+import re
+
 from homescreen import draw
 
 
@@ -114,10 +116,38 @@ def test_hostile_text_cannot_break_out_of_the_preview():
     assert "&lt;script&gt;" in svg
 
 
-def test_tones_are_visually_distinct():
-    good = draw.to_svg([draw.text("center", "up", tone="good")], 240, 240)
-    bad = draw.to_svg([draw.text("center", "down", tone="bad")], 240, 240)
-    assert good != bad, "good and bad must not render identically"
+def test_every_tone_renders_as_its_own_colour():
+    # The text is held CONSTANT and only the tone varies. The old version of
+    # this compared "up" against "down", so the two SVGs differed on the words
+    # and the whole palette could be flattened to white with the suite green.
+    seen = {}
+    for tone in draw.TONES:
+        svg = draw.to_svg([draw.text("center", "x", tone=tone)], 240, 240)
+        colour = re.search(r'fill="(#[0-9a-fA-F]{6})"', svg).group(1)
+        assert colour not in seen, f"{tone} renders the same as {seen.get(colour)}"
+        seen[colour] = tone
+    assert len(seen) == len(draw.TONES)
+
+
+def test_a_tone_reaches_a_shape_and_not_only_text():
+    # Shapes take their colour through a different branch of `to_svg`.
+    first = draw.to_svg([draw.circle(0.5, 0.5, 0.2, "good")], 240, 240)
+    second = draw.to_svg([draw.circle(0.5, 0.5, 0.2, "bad")], 240, 240)
+    assert first != second, "a shape's tone must reach its fill"
+
+
+def test_bad_is_lighter_than_dim_so_it_reads_as_urgent():
+    # Red's luma coefficient is 0.2126, so a pure red lands at the same
+    # luminance as `dim` -- the tone that must jump out reading as the tone
+    # that means ignore me. This pins the fix, not the taste.
+    def luma(svg):
+        hexed = re.search(r'fill="#([0-9a-fA-F]{6})"', svg).group(1)
+        r, g, b = (int(hexed[i:i + 2], 16) for i in (0, 2, 4))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    bad = luma(draw.to_svg([draw.text("center", "x", tone="bad")], 240, 240))
+    dim = luma(draw.to_svg([draw.text("center", "x", tone="dim")], 240, 240))
+    assert bad > dim * 1.2, f"bad ({bad:.0f}) must out-read dim ({dim:.0f})"
 
 
 # --- the two resolvers must round identically -------------------------------

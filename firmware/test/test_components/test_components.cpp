@@ -496,10 +496,16 @@ void test_an_icon_arrives_as_primitives_and_is_drawn(void) {
   // every new icon would be a reflash -- the thing draw_list exists to avoid.
   poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"weather\","
        "\"components\":[{\"c\":\"weather\",\"draw\":["
-       "{\"t\":\"circle\",\"cx\":120,\"cy\":84,\"r\":18,\"tone\":\"warn\"},"
-       "{\"t\":\"line\",\"x1\":120,\"y1\":40,\"x2\":120,\"y2\":52,"
-       "\"w\":4,\"tone\":\"warn\"},"
-       "{\"t\":\"tri\",\"p\":[60,200,80,200,70,220],\"tone\":\"good\"},"
+       // FRACTIONS of the panel, which is what the server actually puts on
+       // the wire -- `draw.circle` rounds to 4 decimals and never multiplies.
+       // This test used to carry pixels, which is the resolved PREVIEW output
+       // pasted onto the unresolved parser: the test agreed with the firmware
+       // and both disagreed with the server.
+       "{\"t\":\"circle\",\"cx\":0.5,\"cy\":0.35,\"r\":0.075,\"tone\":\"warn\"},"
+       "{\"t\":\"line\",\"x1\":0.5,\"y1\":0.1667,\"x2\":0.5,\"y2\":0.2167,"
+       "\"w\":0.0154,\"tone\":\"warn\"},"
+       "{\"t\":\"tri\",\"p\":[0.25,0.833,0.333,0.833,0.292,0.917],"
+       "\"tone\":\"good\"},"
        "{\"t\":\"text\",\"slot\":\"below\",\"v\":\"32\","
        "\"size\":\"xl\"}]}]}");
   g_gfx.reset();
@@ -515,6 +521,32 @@ void test_an_icon_arrives_as_primitives_and_is_drawn(void) {
   TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, tris, "the triangle was drawn");
   TEST_ASSERT_TRUE_MESSAGE(g_gfx.textContains("32"),
                            "and the text still arrived alongside them");
+}
+
+
+void test_a_fraction_becomes_a_pixel_rather_than_truncating_to_zero(void) {
+  // The bug this pins: reading `cx` as an int truncated 0.5 to 0, so every
+  // shape the server sent landed in the top-left corner with radius 1 and the
+  // panel showed a speck. Both suites were green while it shipped, because
+  // the firmware fixture had been written in pixels.
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"weather\","
+       "\"components\":[{\"c\":\"weather\",\"draw\":["
+       "{\"t\":\"circle\",\"cx\":0.5,\"cy\":0.5,\"r\":0.25,"
+       "\"tone\":\"warn\"}]}]}");
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  const DrawOp* circle = nullptr;
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind == DrawOp::Circle || op.kind == DrawOp::SmoothCircle) {
+      circle = &op;
+    }
+  }
+  TEST_ASSERT_NOT_NULL_MESSAGE(circle, "a circle was drawn at all");
+  // 240x240 glass: the centre is 120,120 and a quarter-panel radius is 60.
+  TEST_ASSERT_INT_WITHIN_MESSAGE(1, 120, circle->x, "cx scaled off the width");
+  TEST_ASSERT_INT_WITHIN_MESSAGE(1, 120, circle->y, "cy scaled off the height");
+  TEST_ASSERT_INT_WITHIN_MESSAGE(1, 60, circle->r,
+                                 "the radius scaled off the short side");
 }
 
 void test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels(void) {
@@ -546,6 +578,7 @@ void test_a_triangle_without_three_points_is_not_drawn(void) {
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_an_icon_arrives_as_primitives_and_is_drawn);
+  RUN_TEST(test_a_fraction_becomes_a_pixel_rather_than_truncating_to_zero);
   RUN_TEST(test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels);
   RUN_TEST(test_an_absurd_radius_cannot_fill_the_screen);
   RUN_TEST(test_a_triangle_without_three_points_is_not_drawn);

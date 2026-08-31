@@ -57,18 +57,48 @@ void test_every_golden_case_resolves_exactly_as_python_does(void) {
       TEST_ASSERT_EQUAL_STRING_MESSAGE(e["text"].as<const char*>(),
                                        got[i].text, msg);
 
+      // The extra corners and the fill flag, which only shapes use. Asserting
+      // them on every case is deliberate: a text placement must leave them at
+      // zero, and a shape that forgets one is caught by the same line.
+      snprintf(msg, sizeof(msg), "%s: item %u x2", name, (unsigned)i);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(e["x2"].as<int>(), got[i].x2, msg);
+      snprintf(msg, sizeof(msg), "%s: item %u y2", name, (unsigned)i);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(e["y2"].as<int>(), got[i].y2, msg);
+      snprintf(msg, sizeof(msg), "%s: item %u x3", name, (unsigned)i);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(e["x3"].as<int>(), got[i].x3, msg);
+      snprintf(msg, sizeof(msg), "%s: item %u y3", name, (unsigned)i);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(e["y3"].as<int>(), got[i].y3, msg);
+      snprintf(msg, sizeof(msg), "%s: item %u shape", name, (unsigned)i);
+      const char* want_t = e["t"].as<const char*>();
+      const uint8_t want_shape = strcmp(want_t, "circle") == 0 ? kCircle
+                                 : strcmp(want_t, "line") == 0 ? kLine
+                                 : strcmp(want_t, "tri") == 0  ? kTri
+                                                               : kText;
+      TEST_ASSERT_EQUAL_UINT8_MESSAGE(want_shape, got[i].shape, msg);
+      if (want_shape == kCircle) {
+        snprintf(msg, sizeof(msg), "%s: item %u fill", name, (unsigned)i);
+        TEST_ASSERT_EQUAL_MESSAGE(e["fill"].as<bool>(), got[i].fill, msg);
+      }
+
+      // All eight, not the four this knew about. The four colour tones were
+      // asserted as kNormal, so the firmware could have parsed them any way at
+      // all and this line would have agreed.
       const char* want_tone = e["tone"].as<const char*>();
-      const uint8_t want = strcmp(want_tone, "dim") == 0    ? kDim
-                           : strcmp(want_tone, "good") == 0 ? kGood
-                           : strcmp(want_tone, "bad") == 0  ? kBad
-                                                            : kNormal;
+      const uint8_t want = strcmp(want_tone, "dim") == 0      ? kDim
+                           : strcmp(want_tone, "good") == 0   ? kGood
+                           : strcmp(want_tone, "bad") == 0    ? kBad
+                           : strcmp(want_tone, "accent") == 0 ? kAccent
+                           : strcmp(want_tone, "warn") == 0   ? kWarn
+                           : strcmp(want_tone, "cool") == 0   ? kCool
+                           : strcmp(want_tone, "hot") == 0    ? kHot
+                                                              : kNormal;
       snprintf(msg, sizeof(msg), "%s: item %u tone", name, (unsigned)i);
       TEST_ASSERT_EQUAL_UINT8_MESSAGE(want, got[i].tone, msg);
       ++i;
     }
   }
   TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(
-      12, cases, "the fixture shrank -- regenerate it, do not weaken this");
+      20, cases, "the fixture shrank -- regenerate it, do not weaken this");
 }
 
 // --- the tables themselves --------------------------------------------------

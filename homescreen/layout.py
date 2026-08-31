@@ -111,20 +111,33 @@ def regions(caps, template: str = DEFAULT_TEMPLATE) -> dict:
             for name, region in spec["regions"].items()}
 
 
-def region_caps(caps, region: str, template: str = DEFAULT_TEMPLATE) -> dict:
-    """The capabilities a component is handed for one placement.
+def slots(region: dict, count: int) -> list:
+    """`count` sub-rects tiling a region, laid out along its stack axis.
 
-    Its geometry is the REGION's, not the panel's. Everything else -- depth,
-    shape, the device's item ceiling -- carries through, because those are
-    properties of the hardware rather than of the rectangle. A component asked
-    to draw in a 764x62 band on 1-bit glass needs to know both facts.
+    `holds` and `stack` have described every region since the templates were
+    written; this is the arithmetic that finally reads them. Slots tile the
+    region exactly -- leftover pixels go to the leading slots rather than
+    leaving a seam of background between two components.
+
+    `count` is how many placements the region actually carries, not `holds`: a
+    region that can hold four and carries two splits in half. A region with no
+    stack axis still divides if it is somehow asked to carry more than one,
+    because overlapping is the one answer that is never what was meant.
     """
-    base = dict(caps) if isinstance(caps, dict) else {}
-    found = regions(base, template).get(region)
-    if found is None:
-        return base
-    _, _, w, h = found["rect"]
-    return {**base, "w": w, "h": h}
+    x, y, w, h = region["rect"]
+    count = max(1, int(count))
+    if count == 1:
+        return [(x, y, w, h)]
+    horizontal = region.get("stack") == "h"
+    span = w if horizontal else h
+    size, extra = divmod(span, count)
+    out, offset = [], 0
+    for i in range(count):
+        this = size + (1 if i < extra else 0)
+        out.append((x + offset, y, this, h) if horizontal
+                   else (x, y + offset, w, this))
+        offset += this
+    return out
 
 
 def clean_placement(raw, caps, known_components, template=DEFAULT_TEMPLATE):

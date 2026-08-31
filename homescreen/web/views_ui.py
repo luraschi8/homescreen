@@ -11,6 +11,13 @@ elaborate way to say the same thing would be two places to change one fact.
 
 from __future__ import annotations
 
+import re
+
+#: Ends the attribute, or the field key's own separator. Everything else is
+#: somebody's language.
+_UNSAFE_IN_NAME = re.compile(r"""[<>&"'.\\/]+""")
+
+from homescreen import layout
 from homescreen.web.layout import e
 
 CSS = """
@@ -27,6 +34,22 @@ CSS = """
 """
 
 EMPTY = "—"
+
+
+def safe_view_name(raw) -> str:
+    """A view name narrowed to what cannot break the page that renders it.
+
+    View names are operator input that becomes a `name="o.<view>.<region>
+    .<index>.<key>"` attribute and the key the parser splits back out. Only the
+    structurally dangerous characters go: the quotes and angle brackets that
+    would end the attribute, and the `.` that separates the field key's parts.
+
+    Everything else stays, accents included. The UI is Spanish and `mañana` is
+    not a name anybody typed -- folding to ASCII would trade an injection bug
+    for a legibility one.
+    """
+    cleaned = _UNSAFE_IN_NAME.sub("-", str(raw or "")).strip("- ")[:40]
+    return cleaned or "vista"
 
 
 def _placement_options(view_name: str, region: str, index: int,
@@ -55,8 +78,27 @@ def _placement_options(view_name: str, region: str, index: int,
     return (f'<div class="p-opts">{"".join(rendered)}</div>')
 
 
+def _for_slot(offered, slot_caps: dict, fits):
+    """The offered list, re-judged against one slot's measured size.
+
+    `fits(name, caps) -> (ok, why)` is injected rather than imported so this
+    module keeps knowing only about HTML. Without it the list passes through
+    unchanged, which is what the round panel's single full-bleed region wants.
+    """
+    if fits is None:
+        return offered
+    out = []
+    for name, ok, why in offered:
+        if not ok:
+            out.append((name, ok, why))            # already refused, for a
+            continue                               # better reason than size
+        here_ok, here_why = fits(name, slot_caps)
+        out.append((name, here_ok, here_why if not here_ok else why))
+    return out
+
+
 def _region_row(view_name: str, region: str, spec: dict, chosen: list,
-                offered, schemas=None, options=None) -> str:
+                offered, schemas=None, options=None, fits=None) -> str:
     """One region, and what is in it.
 
     A region that holds several gets several selects, because "add another" and
@@ -67,11 +109,18 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
     rows = []
     for index in range(spec["holds"]):
         current = chosen[index] if index < len(chosen) else ""
+        # Judged at the size this slot would ACTUALLY get, not the region's.
+        # A region holding four divides four ways, so offering a component
+        # against the whole rectangle tells the operator it fits and then
+        # renders it into a quarter of that. Slot `index` is measured as the
+        # last one filled, which is what happens when they are filled in order.
+        here = layout.slots(spec, index + 1)[index] if index else spec["rect"]
+        slot_caps = {"w": here[2], "h": here[3]}
         picks = f'<option value="">{EMPTY}</option>' + "".join(
             f'<option value="{e(name)}"{" selected" if name == current else ""}'
             f'{"" if ok else " disabled"}>{e(name)}'
             f'{"" if ok else " — " + e(why)}</option>'
-            for name, ok, why in offered)
+            for name, ok, why in _for_slot(offered, slot_caps, fits))
         rows.append(
             f'<select name="v.{e(view_name)}.{e(region)}.{index}">{picks}</select>'
             + _placement_options(view_name, region, index, current, schemas,
@@ -82,7 +131,7 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
 
 
 def editor(hw: str, views: dict, regions: dict, offered, template: str,
-           schemas=None) -> str:
+           schemas=None, fits=None) -> str:
     """Every view on this screen, and what each holds.
 
     Options are NOT edited here. A placement's settings belong to the component
@@ -103,7 +152,7 @@ def editor(hw: str, views: dict, regions: dict, offered, template: str,
             values[(region, slot)] = placement.get("options") or {}
         rows = "".join(
             _region_row(view_name, region, spec, by_region.get(region, []),
-                        offered, schemas, values)
+                        offered, schemas, values, fits)
             for region, spec in regions.items())
         blocks.append(f'<div class="view"><h3>{e(view_name)}</h3>{rows}</div>')
 

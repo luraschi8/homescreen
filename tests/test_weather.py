@@ -15,9 +15,13 @@ from homescreen.reading import Reading
 CFG = {"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"},
        "feeds": {"adsb": {"endpoint": "https://x"}}}
 
+#: `icon` is what OpenWeather actually returns and what `_sky_icon` reads. It
+#: was missing here, so the only production caller of `draw.icon` never ran in
+#: a test and the whole shape vocabulary could be deleted with the suite green.
 READING = Reading(data={"temp": 21.4, "temp_min": 17.0, "temp_max": 26.0,
                         "description": "cielo claro", "place": "Madrid",
-                        "units": "metric"}, ok=True, age_s=120.0)
+                        "icon": "01d", "units": "metric"}, ok=True,
+                  age_s=120.0)
 
 
 def ctx(caps, options=None, data=None):
@@ -27,9 +31,22 @@ def ctx(caps, options=None, data=None):
         data=data or (lambda req: READING))
 
 
+def instructions(caps, **kw):
+    return scenes.build("weather", ctx(caps, **kw)).components[0]["draw"]
+
+
 def drawn(caps, **kw):
-    return [d["v"] for d in scenes.build("weather", ctx(caps, **kw))
-            .components[0]["draw"]]
+    """The TEXT an instruction list puts on the glass.
+
+    Shape-aware, because a draw list is not all text any more. It used to do
+    `d["v"]` on everything, which is why adding the missing `icon` fixture key
+    broke the helpers -- and presumably why the key was never added.
+    """
+    return [d["v"] for d in instructions(caps, **kw) if d.get("t") == "text"]
+
+
+def shapes(caps, **kw):
+    return [d for d in instructions(caps, **kw) if d.get("t") != "text"]
 
 
 # --- the surface decides the arrangement ------------------------------------
@@ -48,7 +65,7 @@ def test_the_big_number_is_drawable_by_the_bitmap_faces():
     # faces the ladder reaches for at that size cover 0x20-0x7E only.
     scene = scenes.build("weather", ctx({"w": 240, "h": 240, "depth": 16}))
     for item in scene.components[0]["draw"]:
-        if item["size"] == "xl":
+        if item.get("size") == "xl":
             assert all(ord(c) <= 0x7E for c in item["v"]), item["v"]
 
 
@@ -187,3 +204,55 @@ def test_weather_is_offered_on_a_small_panel_and_the_radar_is_not():
     tiny = {"w": 120, "h": 120, "depth": 16, "shape": "round"}
     assert scenes.supports("weather", tiny)[0] is True
     assert scenes.supports("planes", tiny)[0] is False
+
+
+# --- the sky icon ------------------------------------------------------------
+#
+# `weather.py` is the only production caller of `draw.icon`. Until these
+# existed, `icon()` could return `[]` and every test still passed.
+
+def test_the_sky_is_drawn_not_just_described():
+    got = shapes({"w": 240, "h": 240, "depth": 16, "shape": "round"})
+    assert got, "a clear sky draws a sun"
+    assert {s["t"] for s in got} <= {"circle", "line", "tri"}
+    assert any(s["t"] == "circle" for s in got), "the sun has a disc"
+    assert sum(1 for s in got if s["t"] == "line") == 8, "and eight rays"
+
+
+def test_the_icon_is_expanded_server_side_so_the_device_never_sees_a_name():
+    # The whole reason icons are primitives: a new icon must not be a reflash.
+    for item in instructions({"w": 240, "h": 240, "depth": 16}):
+        assert "icon" not in item
+        assert item.get("t") in ("text", "circle", "line", "tri")
+
+
+def test_a_different_sky_draws_a_different_picture():
+    # Holding everything else constant, so it is the icon being tested and not
+    # the temperature that happens to travel with it.
+    def sky(code):
+        data = dict(READING.data, icon=code)
+        reading = Reading(data=data, ok=True, age_s=120.0)
+        return shapes({"w": 240, "h": 240, "depth": 16},
+                      data=lambda req: reading)
+
+    clear, rain = sky("01d"), sky("10d")
+    assert clear and rain
+    assert clear != rain, "a clear sky and a wet one must not draw the same"
+
+
+def test_a_sky_we_have_no_picture_for_still_shows_the_temperature():
+    reading = Reading(data=dict(READING.data, icon="99z"), ok=True, age_s=1.0)
+    caps = {"w": 240, "h": 240, "depth": 16, "shape": "round"}
+    assert shapes(caps, data=lambda req: reading) == []
+    assert drawn(caps, data=lambda req: reading)[0] == "21"
+
+
+def test_the_shapes_stay_on_the_glass():
+    # Fractions, so every coordinate is 0..1 by construction -- and a bug that
+    # broke that would put the sun off the edge of a 240px panel.
+    for item in shapes({"w": 240, "h": 240, "depth": 16}):
+        for key in ("cx", "cy", "x1", "y1", "x2", "y2"):
+            if key in item:
+                assert 0.0 <= item[key] <= 1.0, (key, item)
+        for value in item.get("p", ()):
+            assert 0.0 <= value <= 1.0, item

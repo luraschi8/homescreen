@@ -28,6 +28,17 @@ int clampInt(int v, int lo, int hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/** A panel fraction to a pixel, rounding exactly as the server does.
+ *
+ * `roundf` breaks ties away from zero and `draw.py::_round_half_up` was written
+ * to match it, not the other way round -- Python's built-in round() is
+ * banker's rounding, and the two resolvers disagreed by a pixel on a 241px
+ * panel until the parity fixture caught it. Keep these two together.
+ */
+int scaleFraction(float value, int span) {
+  return static_cast<int>(roundf(value * static_cast<float>(span)));
+}
+
 uint8_t toneFromName(const char* t) {
   if (t == nullptr) return kNormal;
   if (strcmp(t, "dim") == 0) return kDim;
@@ -96,16 +107,25 @@ size_t resolve(const char* draw_json, int w, int h, Placement* out,
     const char* kind = item["t"].as<const char*>();
     const int shorter = w < h ? w : h;
 
+    // Shapes arrive as FRACTIONS of the panel, the same as `to_svg` receives:
+    // one instruction list, two executors, and the multiply belongs to
+    // whichever is drawing. Reading them as ints truncated 0.5 to 0, which put
+    // every shape in the top-left corner with radius 1.
+    const auto frac = [](JsonVariantConst v, int span) -> int {
+      return scaleFraction(v.is<float>() || v.is<int>() ? v.as<float>() : 0.0f,
+                           span);
+    };
+
     if (strcmp(kind, "circle") == 0) {
       Placement& p = out[n];
       p = Placement{};
       p.shape = kCircle;
-      p.x = clampInt(item["cx"] | 0, -w, 2 * w);
-      p.y = clampInt(item["cy"] | 0, -h, 2 * h);
+      p.x = clampInt(frac(item["cx"], w), -w, 2 * w);
+      p.y = clampInt(frac(item["cy"], h), -h, 2 * h);
       // A radius is bounded by the glass. An absurd one is not a big circle,
       // it is a filled screen -- and the server is not the only thing that can
       // put a number on this wire.
-      p.px = clampInt(item["r"] | 1, 1, shorter);
+      p.px = clampInt(frac(item["r"], shorter), 1, shorter);
       p.fill = item["fill"].is<bool>() ? item["fill"].as<bool>() : true;
       p.tone = toneFromName(item["tone"].is<const char*>()
                                 ? item["tone"].as<const char*>() : nullptr);
@@ -116,11 +136,11 @@ size_t resolve(const char* draw_json, int w, int h, Placement* out,
       Placement& p = out[n];
       p = Placement{};
       p.shape = kLine;
-      p.x = clampInt(item["x1"] | 0, -w, 2 * w);
-      p.y = clampInt(item["y1"] | 0, -h, 2 * h);
-      p.x2 = clampInt(item["x2"] | 0, -w, 2 * w);
-      p.y2 = clampInt(item["y2"] | 0, -h, 2 * h);
-      p.px = clampInt(item["w"] | 1, 1, shorter / 4);
+      p.x = clampInt(frac(item["x1"], w), -w, 2 * w);
+      p.y = clampInt(frac(item["y1"], h), -h, 2 * h);
+      p.x2 = clampInt(frac(item["x2"], w), -w, 2 * w);
+      p.y2 = clampInt(frac(item["y2"], h), -h, 2 * h);
+      p.px = clampInt(frac(item["w"], shorter), 1, shorter / 4);
       p.tone = toneFromName(item["tone"].is<const char*>()
                                 ? item["tone"].as<const char*>() : nullptr);
       ++n;
@@ -134,12 +154,12 @@ size_t resolve(const char* draw_json, int w, int h, Placement* out,
       Placement& p = out[n];
       p = Placement{};
       p.shape = kTri;
-      p.x = clampInt(pts[0] | 0, -w, 2 * w);
-      p.y = clampInt(pts[1] | 0, -h, 2 * h);
-      p.x2 = clampInt(pts[2] | 0, -w, 2 * w);
-      p.y2 = clampInt(pts[3] | 0, -h, 2 * h);
-      p.x3 = clampInt(pts[4] | 0, -w, 2 * w);
-      p.y3 = clampInt(pts[5] | 0, -h, 2 * h);
+      p.x = clampInt(frac(pts[0], w), -w, 2 * w);
+      p.y = clampInt(frac(pts[1], h), -h, 2 * h);
+      p.x2 = clampInt(frac(pts[2], w), -w, 2 * w);
+      p.y2 = clampInt(frac(pts[3], h), -h, 2 * h);
+      p.x3 = clampInt(frac(pts[4], w), -w, 2 * w);
+      p.y3 = clampInt(frac(pts[5], h), -h, 2 * h);
       p.tone = toneFromName(item["tone"].is<const char*>()
                                 ? item["tone"].as<const char*>() : nullptr);
       ++n;

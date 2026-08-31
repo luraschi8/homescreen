@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import quote, quote_plus
 import time
 
 from homescreen.fetch import plan as planning, providers, store
@@ -56,8 +57,17 @@ def redact(text: str, values=None) -> str:
     """
     out = _SECRET_IN_URL.sub(r"\1[oculto]", str(text))
     for value in values or ():
-        if value and len(str(value)) >= 8:
-            out = out.replace(str(value), "[oculto]")
+        value = str(value or "")
+        # Three characters, not eight. The old floor exempted every short key
+        # from a redaction whose whole point is that it has no exceptions; the
+        # floor exists only so a one-character credential cannot blank out the
+        # message it was meant to make safe.
+        if len(value) < 3:
+            continue
+        # A vendor quotes the request back re-encoded, so the key arrives as
+        # `a%20b` and a plain replace walks past it.
+        for form in {value, quote(value, safe=""), quote_plus(value)}:
+            out = out.replace(form, "[oculto]")
     return out
 
 
@@ -108,6 +118,10 @@ def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
         last_request[job.provider] = time.monotonic()
         last_run[job.key] = now
         ran += 1
+        # Bound BEFORE the try, not inside it: the handler below reads `creds`,
+        # and `secrets_for` reads a file that can refuse. An unbound name there
+        # escapes `run_once` into a `Restart=always` loop.
+        creds = None
         try:
             # Scoped per provider: a weather key must not be reachable from
             # the quotes adapter. The narrow port makes that enforceable

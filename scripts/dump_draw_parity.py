@@ -60,6 +60,39 @@ CASES = [
     ("an empty string draws nothing", 240, 240, [
         draw.text("center", "", "xl"),
         draw.text("below", "kept", "sm")]),
+    # The shape cases. Until these existed the whole vocabulary could be
+    # deleted with both suites green, and the firmware read fractions as ints
+    # -- so every shape landed at (0,0) with radius 1 and the panel showed a
+    # speck where an icon was meant to be.
+    ("shapes are fractions of the panel, not pixels", 240, 240, [
+        draw.circle(0.5, 0.5, 0.25, "warn"),
+        draw.line(0.1, 0.9, 0.9, 0.9, "dim", 0.02),
+        draw.tri([(0.25, 0.8), (0.35, 0.8), (0.30, 0.9)], "good")]),
+    ("the same shapes on the e-paper scale off the short side", 800, 480, [
+        draw.circle(0.5, 0.5, 0.25, "warn"),
+        draw.line(0.1, 0.9, 0.9, 0.9, "dim", 0.02),
+        draw.tri([(0.25, 0.8), (0.35, 0.8), (0.30, 0.9)], "good")]),
+    ("a whole icon, expanded server-side", 240, 240,
+        draw.icon("sun", 0.5, 0.35, 0.22, "hot")),
+    ("an unfilled circle stays unfilled", 240, 240, [
+        draw.circle(0.5, 0.5, 0.3, "cool", fill=False)]),
+    ("shape rounding on odd dimensions", 241, 241, [
+        draw.circle(0.5, 0.5, 0.25, "normal"),
+        draw.line(0.0, 0.5, 1.0, 0.5, "normal", 0.01)]),
+    ("a degenerate radius still draws something", 240, 240, [
+        draw.circle(0.5, 0.5, 0.0, "bad")]),
+    ("a triangle without three points is dropped", 240, 240, [
+        {"t": "tri", "p": [0.1, 0.1, 0.2, 0.2], "tone": "good"},
+        draw.text("center", "kept", "sm")]),
+    ("every tone reaches a shape, not just text", 240, 240, [
+        draw.circle(0.2, 0.2, 0.05, "normal"),
+        draw.circle(0.4, 0.2, 0.05, "dim"),
+        draw.circle(0.6, 0.2, 0.05, "good"),
+        draw.circle(0.8, 0.2, 0.05, "bad"),
+        draw.circle(0.2, 0.6, 0.05, "accent"),
+        draw.circle(0.4, 0.6, 0.05, "warn"),
+        draw.circle(0.6, 0.6, 0.05, "cool"),
+        draw.circle(0.8, 0.6, 0.05, "hot")]),
 ]
 
 

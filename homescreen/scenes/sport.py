@@ -15,7 +15,8 @@ from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._style import page
 
-SURFACES = ({"min_short": 90},)
+SURFACES = ({"min_short": 90},
+            {"min_w": 150, "min_h": 40})   # two names need the extra width
 
 OPTIONS = (
     {"key": "team", "label": "ID del equipo", "type": "int", "default": 0,
