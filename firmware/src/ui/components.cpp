@@ -39,10 +39,13 @@ uint16_t penFor(uint8_t tone) {
   switch (tone) {
     case ui::drawlist::kDim:    return 0x8410;   // mid grey
     case ui::drawlist::kGood:   return 0x2E68;   // green
-    case ui::drawlist::kBad:    return 0xF9A6;   // red
+    // Lifted off pure red: its luma coefficient is 0.2126, so 0xF9A6 measured
+    // the same luminance as `dim`. The one tone that must be seen was, in
+    // brightness, the tone that means ignore me.
+    case ui::drawlist::kBad:    return 0xFB4D;   // salmon red
     case ui::drawlist::kAccent: return 0x5E5C;   // cyan
-    case ui::drawlist::kWarn:   return 0xE5A7;   // amber
-    case ui::drawlist::kCool:   return 0x6D5E;   // cold blue
+    case ui::drawlist::kWarn:   return 0xFE87;   // yellow, pushed off `hot`
+    case ui::drawlist::kCool:   return 0x4C7F;   // deeper blue, off `accent`
     case ui::drawlist::kHot:    return 0xF449;   // warm orange
     default:                    return config::kTextOnBlack;
   }

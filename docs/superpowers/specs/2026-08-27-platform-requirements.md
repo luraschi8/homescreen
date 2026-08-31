@@ -1662,7 +1662,8 @@ Each of these is a defect or a hole with a file and a reason, not a wish.
 that from the data rather than from a setting, renders both paths, and fits the pairing to
 the glass. It is fed by exactly one provider, `football`, against football-data.org's free
 tier, with a live key on the Pi. The owner wants basketball as well — NBA, and European
-basketball (EuroLeague, and Liga ACB is the obvious Spanish one for a house in Madrid).
+basketball (EuroLeague). Liga ACB is the obvious further guess for a house in Madrid and is
+deliberately **not** in v1 — see §10.4 for why guessing at it costs more than it is worth.
 
 ### 10.2 The recommendation: ONE component, SEVERAL providers
 
@@ -1690,7 +1691,7 @@ The argument is this document's own §2.3 and §3.1, applied without an exceptio
 ```python
 OPTIONS = (
     {"key": "sport", "label": "Deporte", "type": "choice",
-     "choices": ("futbol", "baloncesto"), "default": "futbol"},
+     "choices": ("futbol", "nba", "euroliga"), "default": "futbol"},
     {"key": "team", "label": "Equipo", "type": "text", "default": "",
      "help": "..."},          # interpreted by the provider the sport selects
     {"key": "days", "label": "Días por delante", "type": "int", "default": 30},
@@ -1727,7 +1728,7 @@ translation table for vendors it is not supposed to know exist.
 
 ```python
 {"team": "<as the caller gave it>",
- "sport": "futbol" | "baloncesto",
+ "sport": "futbol" | "nba" | "euroliga",
  "matches": [
    {"when":        "<ISO 8601, UTC, Z>",
     "home":        "<short name, ≤24 chars>",
@@ -1747,70 +1748,90 @@ Renaming the two score fields is a one-line change in `football.py` and `sport.p
 the fixtures. Doing it now costs an hour. Doing it after a second provider ships costs a
 migration of cached envelopes.
 
-### 10.4 Which basketball API
+### 10.4 Which basketball API — verified 2026-08-31
 
-The requirement is narrow, which makes the choice narrower than it looks: **the next fixture
-and the last result for one followed team, in NBA and in European basketball.** No standings,
-no box scores, no live play-by-play. A provider that cannot do those three things well is not
-better for being able to do twenty others.
+**First, narrow the requirement honestly.** The owner asked for **NBA and EuroLeague**. Liga
+ACB is a reasonable guess for a house in Madrid, but nobody asked for it, and it turns out to
+be the most fragile of the three to obtain — so it is **not in v1** and is recorded below as
+an option, not a gap.
 
-Four things decide it, in this order:
+The unit remains: *the next fixture and the last result for one followed team*. No standings,
+no box scores, no play-by-play (item 12, unchanged). That exclusion is what makes this easy —
+standings are the thing the free tiers actually withhold.
 
-1. **Does one adapter cover both NBA *and* EuroLeague/ACB?** Two adapters is two keys, two
-   cadences, two failure modes and two things to maintain, for one component. `football`
-   covers every competition the owner cares about through one key; basketball should too.
-2. **Is there a documented free tier with a stated number?** §3.3 requires that a
-   configuration exceeding a free tier be refused *at startup with the arithmetic in the
-   message*. A vendor that publishes no number cannot have that check written against it.
-3. **Is it documented at all, or is it somebody's site's private JSON?** An undocumented
-   endpoint changes shape without warning. SPEC §14 puts deliveries last for exactly this
-   reason and the same discount applies here.
-4. **Fixtures with tip-off times and final scores in one call per team.** Anything needing a
-   call per fixture multiplies against a daily quota.
+**Recommendation: two keyless adapters, each the league's own feed.**
 
-**Recommendation: API-SPORTS' basketball API (`api-basketball.com`), one adapter, one key.**
+| League | Source | Auth | Fixtures | Scores |
+|---|---|---|---|---|
+| NBA | `cdn.nba.com` static schedule JSON | none — but a **required header set**, see below | ✅ | ✅ |
+| EuroLeague | `api-live.euroleague.net` | **none at all** | ✅ | ✅ |
 
-It is the only candidate that is documented, has a published free tier, and covers **NBA,
-EuroLeague and Liga ACB from one key** — so it answers the whole of what was asked with the
-same shape `football` already has. Its `/games` endpoint takes a team and a season and
-returns fixtures with tip-off timestamps, status and final scores, which is one call per
-followed team per cycle.
+Both were fetched successfully on 2026-08-31. The NBA file is the full season schedule
+(~189 KB, 173 game dates), which is one request for everything and then a local filter to the
+followed team — better than a per-team endpoint against a quota.
 
-**The one thing to check before writing a line of it, because it may change the design:**
-the free tier is understood to be on the order of **100 requests/day**, and
-`football.DEFAULT_INTERVAL_S = 1800` would spend 48 of them per job. That means roughly
-**two basketball jobs fit in the free tier and three do not** — and under §3.2 a job is
-per *(provider, params)*, so two screens following two different teams is already two jobs.
-So:
+**This reverses the shape I first recommended, and the reversal is the honest answer.** My
+instinct was one *documented* keyed vendor (`api-basketball.com`) over several undocumented
+league feeds, on the grounds that one adapter and one key beats two of each. That argument
+loses on the facts:
 
-> Verify the published free-tier number, then set `DEFAULT_INTERVAL_S` from it — not from
-> football's — and write the startup arithmetic check against it. If the number turns out
-> tighter than two teams, the interval goes up (fixtures move on the scale of days; only a
-> live score needs minutes) and the component polls harder only while a match is in play.
+- Its free plan carries an **undocumented season restriction** — "free plans are limited in
+  terms of available seasons". If that caps below the current season the plan does not
+  degrade, it collapses, and there is no way to know from the documentation.
+- Its RapidAPI listings now 404, so the distribution channel that made it "documented" is
+  itself in flux.
+- The free tier is **100 requests/day**, which under §3.2's per-`(provider, params)` job
+  keying is genuinely tight for two followed teams.
+- Against that, `api-live.euroleague.net` needs **no key, no account, no quota and no
+  free-tier arithmetic at all** — which removes an entire class of §3.3 and §3.6 work.
 
-**Fallback, if the free tier is unusably tight or an account is unwanted:** two keyless
-adapters — the NBA's own schedule/scoreboard JSON on `cdn.nba.com` for NBA, and
-EuroLeague's own live feed for EuroLeague. Both need no signup and no key. Both are
-**undocumented private feeds** that can change shape without notice, and taking them means
-accepting the maintenance profile SPEC §14 assigned to deliveries. Take this path only if
-option one is actually blocked, and if taken, take it for both — a mixed keyed/keyless pair
-is the worst of both.
+The remaining objection to league feeds — that they are undocumented and can change shape —
+is real and is **already survivable by design**: §3.5 says a fetch failure keeps the previous
+envelope and sets `ok: false`, and §2.5 says the component renders last-good-marked-stale or
+"sin datos". A vendor changing a field name costs a stale tile, not a broken panel. That is a
+materially smaller blast radius than a free plan silently having no current season in it.
+
+Note also that §10.2 already made the adapter count a non-issue: the component maps
+`sport -> provider` and never learns which vendor answered. "One adapter" was a maintenance
+preference of mine, not a design constraint, and it should not have been argued as though it
+were one.
+
+**The NBA header set is load-bearing and must be commented as such.** `cdn.nba.com` returns
+**403** without a browser-shaped request. Verified: it needs `Accept-Encoding` for compressed
+responses, the `Sec-Fetch-Dest` / `Sec-Fetch-Mode` / `Sec-Fetch-Site` trio, `Accept-Language`,
+and an `nba.com` Referer. Dropping the encoding header *or* the `Sec-Fetch-*` trio alone flips
+it to 403. Write them with the reason beside them, in the style `render.py` uses for
+`THRESHOLD = 160` — otherwise the first person tidying the module deletes them and gets a 403
+that looks like an outage. (The older `x-nba-stats-origin` / `x-nba-stats-token` headers are
+obsolete; do not add them.)
 
 **Rejected, with reasons, so they are not re-proposed:**
 
 | Candidate | Why not |
 |---|---|
-| `balldontlie.io` | NBA only. It solves half the request and leaves EuroLeague and ACB needing a second adapter anyway — which is the cost the recommendation exists to avoid. Also moved from keyless to a keyed free tier |
-| TheSportsDB | Broad but thin: European basketball fixture coverage is unreliable and the endpoints that answer "next event for this team" moved behind a paid key. It is already named in item 12 as a football fallback; that is where it should stay |
-| ESPN's `site.api.espn.com` | Keyless and reliable in practice, but undocumented and with no stated terms — same objection as the fallback above, without the fallback's advantage of being the league's own feed |
-| football-data.org | Football only. Confirmed: it does not serve basketball, so the existing key buys nothing here |
+| ESPN `site.api.espn.com` | **Verified dead for this purpose.** `euroleague` and `acb` are stubs: teams resolve (20 and 18) but events return `count: 0`, against `count: 1` for NBA as a control. Neither appears in ESPN's own 15-league basketball index. Separately, Disney's ToU §2.B.x explicitly bars robots and scripts — the cleanest prohibition of any candidate, and since `cdn.nba.com` works there is no reason to accept it |
+| `balldontlie.io` | NBA only, so it leaves EuroLeague needing a second adapter anyway — and now keyed, where the league's own feed is not |
+| TheSportsDB | Usable as a **fixtures fallback** (league `4546` is EuroLeague with real fixtures; `4408` is ACB) and it is already named in item 12 as a football fallback, so it stays. Not the primary: its free standings are soccer-only, and the useful team-next-event endpoints moved behind a paid key. Rate limit measured at ~30/min |
+| SportsDataIO | The free trial serves **deliberately scrambled** data, and their basketball line is NBA/WNBA/NCAA — no EuroLeague at any price |
+| `api-basketball.com` / Highlightly | The escape hatch if maintaining two league feeds ever becomes tiresome: both cover all three leagues under one schema at 100 req/day. Highlightly publishes no season restriction and is the safer of the two. **Do not adopt either without first calling `/games` for the current season on a live free key** — that single call is what the undocumented restriction hides behind |
+| football-data.org | Football only. Confirmed. The existing key buys nothing here |
 
-**Verify these three before implementation, in this order** — this is the same discipline §7
-applied to Q5 and it is not optional:
-(a) the published free-tier request limit and window; (b) that NBA, EuroLeague **and** Liga
-ACB are all on the free plan rather than a paid one; (c) that one call returns a team's
-fixtures *and* results together. If (a) or (b) fails, the fallback becomes the recommendation
-and 10.5's criteria apply to two adapters instead of one.
+**Liga ACB, if it is ever wanted.** `api2.acb.com` serves fixtures *and* standings free, using
+a public key lifted from acb.com's own frontend JavaScript. Two reasons it is not in v1:
+the key is undocumented and revocable without notice, and nobody asked for the league. If it
+is added, one trap is already known and belongs in its acceptance criteria: **the parameter is
+`editionId`, not `seasonId`** — passing `seasonId` returns `200` with silently empty arrays,
+which is the worst failure shape there is, because `ok: true` with no matches renders "sin
+partidos" forever and looks like a quiet weekend.
+
+**Terms of service, stated rather than assumed.** The NBA's restriction carries a *"for
+commercial purposes"* qualifier that a private LAN dashboard on a 30-minute cadence plausibly
+falls outside; no enforcement against hobby use surfaced, and the gate appears purely
+technical. EuroLeague's terms page answered `429` and **was not read** — that is unverified,
+not permissive, and it should be read once before this ships. ESPN's prohibition is explicit,
+which is one more reason it is rejected above. Rate limits are real but nowhere near a
+concern here: bursts of ~12 rapid requests tripped 403s on ESPN and stats.nba.com, and this
+component polls twice an hour.
 
 ### 10.5 Acceptance criteria
 
@@ -1826,26 +1847,37 @@ and 10.5's criteria apply to two adapters instead of one.
 - The rendered round-panel output for a football team is **byte-identical** before and after —
   pinned, because this refactor must be provably invisible.
 
-**The second provider:**
-- A new module under `homescreen/fetch/providers/` satisfying `ProviderPort`, registered in
+**Each new provider** (`nba` and `euroleague` — the same list applies to both):
+- A module under `homescreen/fetch/providers/` satisfying `ProviderPort`, registered in
   `providers._modules()`, with `NAME`, `PARAMS`, `SECRETS`, `DEFAULT_INTERVAL_S`,
   `MIN_SPACING_S`, `clean_params` and `fetch`. The contract test that walks the registry
   passes with no special case.
 - **Metadata importable without `requests`** — `import requests` inside `fetch`, per §3.1, and
   the C7 import-graph guard on `serve.py` still passes.
 - `fetch` unit-tested against a **recorded fixture** in `tests/fixtures/`, with no network.
-- `DEFAULT_INTERVAL_S` and `MIN_SPACING_S` are set from the vendor's **documented** limits, and
-  a configuration that would exceed the free tier is refused **at startup with the arithmetic
-  in the message** (§3.3, the `check_cadence` style).
-- If it needs a key: `SECRETS = ("api_key",)`, set write-only from the dashboard, and the
-  §3.6 sentinel test — which walks the app's URL map — covers it with no new assertion.
-  A missing key is a job with `ok: false` and a Spanish reason; the component renders
-  "sin clave"; no traceback and no blank panel.
+  Record the fixture from a real response at the time of writing, because these feeds are
+  undocumented and the fixture is the only specification of their shape that will exist.
+- `SECRETS = ()`. Both feeds are keyless, which means **no `sin clave` state, no free-tier
+  arithmetic and no §3.6 surface at all** for either. If a future provider here does need a
+  key, §3.6 and §3.3 apply unchanged — but neither of these does, and no key should be
+  invented for them.
+- **The NBA adapter's request headers are load-bearing and carry their reason in a comment**
+  (§10.4). A test asserts the header set is present on the outgoing request, so deleting one
+  fails a test rather than producing a 403 at 14:00 that reads as an upstream outage.
+- **`DEFAULT_INTERVAL_S` is set from what the data is worth, not from a quota**, since there
+  is no quota: fixtures move on the scale of days, so 1800 s as `football` uses, and the
+  component polls no harder. `MIN_SPACING_S` stays conservative for a feed nobody owes us.
+- **An empty result is distinguished from a broken one.** A response that parses but contains
+  no matches renders "sin partidos"; a response that fails to parse, or a 403, is `ok: false`
+  with a Spanish reason. Conflating them is the ACB `editionId` trap (§10.4) in a different
+  costume, and it is the failure that looks healthy for a whole season.
 
 **The component with two sports:**
-- `needs()` returns the football provider for `sport=futbol` and the basketball provider for
-  `sport=baloncesto`. **One test per branch**, asserting the provider name, so the mapping
-  cannot silently collapse to one.
+- `needs()` maps `sport=futbol` to `football`, `sport=nba` to `nba`, and
+  `sport=euroliga` to `euroleague`. **One test per branch**, asserting the provider name, so
+  the mapping cannot silently collapse to one. The `sport` choice is therefore three values,
+  not two — NBA and EuroLeague are different feeds and there is nothing to gain by hiding
+  that behind a shared "baloncesto" that then needs a second option to disambiguate.
 - Two placements on two screens, same sport and team, produce **one** job; different sports
   produce two (§3.2's dedup, re-asserted here because a new provider is where it breaks).
 - A **three-digit score renders inside the glass on both surfaces**: `112 - 108` at size `lg`
@@ -1876,8 +1908,12 @@ This slots into §6's backlog as **item 12's second half**, and it is small:
 1. **12a — normalise the envelope.** One session. No new dependency, no key, no new API.
    Ships alone and invisibly. **Do this even if basketball never happens** — it removes a
    vendor's enum from a component, which is a defect on its own terms.
-2. **12b — the basketball provider.** One session against a recorded fixture, plus whatever
-   the account signup costs.
+2. **12b — the two basketball providers.** One session each against a recorded fixture.
+   **No signup, no key, no quota** (§10.4), so there is no lead time and nothing to wait on.
+   EuroLeague first: it needs no headers, so it proves the normalised envelope against a
+   second sport with the fewest moving parts. NBA second, where the header set is the only
+   new risk. Read EuroLeague's terms page once before shipping — it answered 429 and is
+   unverified, not cleared.
 3. **12c — the `sport` option and the second branch of `needs()`.** One session.
 
 None of it blocks or is blocked by §9. They are the two independent tracks in front of the

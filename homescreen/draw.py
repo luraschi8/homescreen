@@ -179,7 +179,10 @@ def lines_fit(lines, w: int, h: int, *, size: str = "sm",
 DEVICE_SUBSTITUTIONS = {
     "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ü": "u", "ñ": "n",
     "Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ü": "U", "Ñ": "N",
-    "¿": "", "¡": "", "·": "-", "—": "-", "–": "-",
+    "¿": "", "¡": "", "—": "-", "–": "-",
+    # A separator, not a dash. Mapping it to "-" put a minus sign immediately
+    # before a number: "tokens - 30 dias" reads as arithmetic.
+    "·": " ",
     "▲": "+", "▼": "-", "“": '"', "”": '"', "‘": "'", "’": "'",
     "€": "EUR", "£": "GBP", "…": "...",
 }
@@ -387,9 +390,15 @@ def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True) -> str:
 
     # The preview's colours are the panel's, so a preview is not a nicer
     # picture of a duller screen.
-    fill = {"normal": "#ffffff", "dim": "#8a8a8a", "good": "#5ad16b",
-            "bad": "#e05a5a", "accent": "#5ac8e0", "warn": "#e8b23a",
-            "cool": "#6aa9f0", "hot": "#f08a4b"}
+    # These are the DEVICE's colours, converted from its RGB565. A preview in
+    # different colours is a prettier picture of a duller screen.
+    #
+    # `bad` is brighter than a pure red would be, on purpose: red's luma
+    # coefficient is 0.2126, so #ff3431 lands at the same luminance as `dim`
+    # -- the tone that must jump out reading as the tone that means ignore me.
+    fill = {"normal": "#ffffff", "dim": "#838183", "good": "#29ce41",
+            "bad": "#ff6b5e", "accent": "#5acae6", "warn": "#ffd23f",
+            "cool": "#4d8fff", "hot": "#f6894a"}
     for item in resolve(draw, w, h):
         colour = fill.get(item["tone"], "#fff")
         if item["t"] == "circle":

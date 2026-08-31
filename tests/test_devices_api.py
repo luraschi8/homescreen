@@ -792,12 +792,17 @@ def test_a_disabled_option_says_why(ctx):
     # A reason beats a silent grey row -- and it is in the page's own language
     # now, rather than English leaking into a Spanish dashboard.
     client, cache, _ = ctx
+    # Two kinds of reason, each naming the actual obstacle. They need two
+    # different screens to show: the delivery-path reason fires first when a
+    # device declares almost nothing, so it hides the size one.
     client.get(f"/api/devices/{HW}/scene?w=240&h=240&depth=16&components=radar")
-    html = _device(client)
-    # Two kinds of reason, and each names the actual obstacle: what this
-    # screen cannot carry, and what a component needs that it does not have.
-    assert "la pantalla no declara clock" in html
-    assert "necesita al menos 320px" in html, "the component's own requirement"
+    assert "la pantalla no declara clock" in _device(client)
+
+    tiny = "cc00000000ff"
+    client.get(f"/api/devices/{tiny}/scene?w=120&h=120&depth=16&shape=round"
+               "&components=radar,draw_list")
+    assert "necesita al menos 160px" in _device(client, tiny), \
+        "the radar's own requirement, on glass too small for it"
 
 
 def test_a_pixel_push_device_is_offered_every_scene(ctx):
