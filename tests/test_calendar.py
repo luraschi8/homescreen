@@ -82,12 +82,20 @@ def test_the_fitting_rule_measures_the_longest_line():
 
 
 def test_a_circle_has_less_usable_width_than_its_diameter():
-    # 20 characters at `sm` on 240px: comfortable across a square, off the
-    # edge of a circle, because the rows a list occupies sit where the chord
-    # is well short of the diameter.
-    line = ["x" * 20]
-    assert draw.lines_fit(line, 240, 240, shape="rect")
-    assert not draw.lines_fit(line, 240, 240, shape="round")
+    # FIVE rows of 16 characters at `sm` on 240px: comfortable on a square,
+    # off the edge of a circle, because the outermost rows of a list sit near
+    # the rim where the chord is a little over half the diameter.
+    rows = ["x" * 16] * 5
+    assert draw.lines_fit(rows, 240, 240, shape="rect")
+    assert not draw.lines_fit(rows, 240, 240, shape="round")
+
+
+def test_a_single_row_gets_the_full_chord_across_the_middle():
+    # The other half of the same rule, and the half the old flat ratio got
+    # wrong: one line sits on the centre line, where the chord IS the
+    # diameter. 20 characters at `sm` is 209px of a 224px opening -- it fits,
+    # and a constant that refused it cost a third of the panel's width.
+    assert draw.lines_fit(["x" * 20], 240, 240, shape="round")
 
 
 def test_more_rows_than_the_vocabulary_has_never_fit():

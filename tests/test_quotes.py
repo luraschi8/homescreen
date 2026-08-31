@@ -88,8 +88,15 @@ def test_one_symbol_never_shows_a_counter():
 # --- what it says when it has nothing ---------------------------------------
 
 def test_with_no_data_it_draws_dashes_rather_than_a_price_of_zero():
+    # Every symbol keeps its row and shows a dash. It used to collapse to one
+    # bare "--" because the old flat width ratio said three rows could not fit
+    # across a 240px circle; measured as a chord they can, and "AAPL --" says
+    # more than "--" does.
     values = drawn(ROUND, data=lambda req: Reading.nothing())
-    assert "--" in values
+    assert values, "something is drawn"
+    assert all("--" in v for v in values), values
+    assert any("AAPL" in v for v in values), values
+    assert not any("0.00" in v or " 0 " in v for v in values), values
 
 
 def test_with_no_symbols_it_says_so():

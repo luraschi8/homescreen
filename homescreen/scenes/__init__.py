@@ -20,6 +20,7 @@ import dataclasses
 import logging
 import sys
 
+from homescreen import draw
 from homescreen import reading as _reading
 from pathlib import Path
 
@@ -238,7 +239,50 @@ def names() -> tuple[str, ...]:
 
 def build(name: str, ctx: SceneContext) -> Scene:
     """Build a scene by name. Raises KeyError if unknown."""
-    return _registry()[name](ctx)
+    return _fit_to_glass(_registry()[name](ctx), ctx.caps)
+
+
+def _fit_item(item: dict, w: int, h: int, shape: str) -> dict:
+    if item.get("t") != "text":
+        return item
+    value, size = draw.fit(item.get("v", ""), item.get("slot", "center"),
+                           item.get("size", "md"), w, h, shape)
+    if value == item.get("v") and size == item.get("size"):
+        return item                      # untouched, so not rebuilt
+    return {**item, "v": value, "size": size}
+
+
+def _fit_to_glass(scene: Scene, caps: dict) -> Scene:
+    """Shorten any line that would run off the panel it is bound for.
+
+    Done HERE, once, rather than in each component: eight components each
+    remembering to measure is eight chances to forget, and the two that did
+    forget were only found by measuring every scene at once. A component says
+    what it means; how much of that survives a 240px circle is a property of
+    the glass.
+
+    Server-side and final -- the device receives the string it should draw, so
+    there is no second truncation rule that has to stay in step with this one.
+    """
+    if not scene.components:
+        return scene
+    caps = caps if isinstance(caps, dict) else {}
+    try:
+        w, h = int(caps.get("w") or 0), int(caps.get("h") or 0)
+    except (TypeError, ValueError):
+        return scene
+    if w <= 0 or h <= 0:
+        return scene
+    shape = str(caps.get("shape") or "rect")
+    changed = []
+    for component in scene.components:
+        instructions = component.get("draw")
+        if not instructions:
+            changed.append(component)
+            continue
+        changed.append({**component, "draw": [_fit_item(item, w, h, shape)
+                                              for item in instructions]})
+    return dataclasses.replace(scene, components=tuple(changed))
 
 
 def safe_build(name: str, ctx: SceneContext) -> Scene:

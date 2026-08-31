@@ -302,3 +302,78 @@ def test_a_full_instruction_list_still_fits():
     worst = [draw.line(0.1234, 0.1234, 0.9876, 0.9876, "accent", 0.0123)
              for _ in range(draw.MAX_INSTRUCTIONS)]
     assert _wire(worst) < DEVICE_DRAW_BYTES, _wire(worst)
+
+
+# --- how wide a slot actually is --------------------------------------------
+#
+# `ROUND_USABLE = 0.72` was one constant standing in for a function. On a round
+# panel the usable width is a CHORD: nearly the full diameter across the middle
+# and much less at the rim, so a single ratio is simultaneously too generous at
+# the top and too mean in the centre.
+
+def test_a_round_panel_is_widest_across_its_middle():
+    centre = draw.slot_width("center", 240, 240, "round", 62)
+    rim = draw.slot_width("rim_bottom", 240, 240, "round", 13)
+    assert centre > rim * 1.4, (centre, rim)
+    assert centre <= 240, "still cannot exceed the glass"
+
+
+def test_the_rim_slots_are_symmetric():
+    top = draw.slot_width("rim_top", 240, 240, "round", 13)
+    bottom = draw.slot_width("rim_bottom", 240, 240, "round", 13)
+    assert top == bottom
+
+
+def test_taller_text_is_narrower_at_the_rim():
+    # Text is centred on the slot, so it extends above and below it. Near the
+    # rim the far edge is what runs out of glass first.
+    small = draw.slot_width("rim_bottom", 240, 240, "round", 12)
+    large = draw.slot_width("rim_bottom", 240, 240, "round", 40)
+    assert large < small, (small, large)
+
+
+def test_a_rectangular_panel_is_the_same_width_everywhere():
+    widths = {draw.slot_width(slot, 800, 480, "rect", 20) for slot in draw.SLOTS}
+    assert len(widths) == 1, widths
+
+
+def test_the_chord_never_exceeds_the_glass_on_any_slot_or_size():
+    for slot in draw.SLOTS:
+        for px in (10, 30, 62, 120):
+            got = draw.slot_width(slot, 240, 240, "round", px)
+            assert 0 <= got <= 240, (slot, px, got)
+
+
+def test_a_slot_with_no_room_left_says_zero_rather_than_a_negative():
+    # 120px of type centred on the rim reaches past the edge of the glass.
+    # There is no width to be had, and the honest answer is none.
+    assert draw.slot_width("rim_top", 240, 240, "round", 120) == 0
+    assert draw.slot_width("center", 240, 240, "round", 30) > 0
+
+
+# --- nothing runs off the glass ---------------------------------------------
+
+def test_a_line_too_long_for_its_slot_is_truncated_not_clipped():
+    long = "seguimiento del proyecto de la casa"
+    got = draw.clip(long, "rim_bottom", "xs", 240, 240, "round")
+    assert got != long
+    assert got.endswith("...")
+    assert len(got) < len(long)
+
+
+def test_a_line_that_fits_is_left_exactly_alone():
+    assert draw.clip("22:53", "center", "xl", 240, 240, "round") == "22:53"
+
+
+def test_truncation_uses_glyphs_the_panel_actually_has():
+    # The embedded face is 95 glyphs and has no ellipsis character.
+    got = draw.clip("x" * 200, "rim_bottom", "sm", 240, 240, "round")
+    assert "…" not in got
+    assert all(ord(c) <= 0x7E or c == "°" for c in got), got
+
+
+def test_clipping_never_returns_nothing():
+    # A slot too narrow for any text must still say something rather than
+    # going blank: "..." is a better answer than an empty panel.
+    got = draw.clip("something", "rim_bottom", "xl", 240, 240, "round")
+    assert got, "never empty"

@@ -144,9 +144,24 @@ CHAR_WIDTH_RATIO = 0.58
 #: at 12% and 88% of the height, where the chord is well short of the diameter.
 ROUND_USABLE = 0.72
 
+#: Kept off the bezel. A chord measured to the very edge of the glass puts the
+#: last pixel of a glyph under the rim, so both shapes hold a little back.
+ROUND_INSET = 0.94
+RECT_USABLE = 0.94
+
+#: What a shortened line ends with. Three dots, not an ellipsis: the panel's
+#: embedded face has 95 glyphs and no U+2026.
+TRUNCATION = "..."
+
 #: Vertical room one row needs, as a multiple of its type height, before rows
 #: start touching.
 ROW_PITCH = 2.0
+
+
+def _slots_for(count: int) -> tuple:
+    """The `count` slots a centred list occupies, middle outward."""
+    order = sorted(SLOTS, key=lambda name: abs(SLOTS[name] - 0.5))
+    return tuple(order[:max(1, min(int(count), len(order)))])
 
 
 def lines_fit(lines, w: int, h: int, *, size: str = "sm",
@@ -168,7 +183,13 @@ def lines_fit(lines, w: int, h: int, *, size: str = "sm",
     px = size_px(size, w, h)
     if h / len(lines) < px * ROW_PITCH:
         return False                     # rows would touch
-    usable = w * (ROUND_USABLE if shape == "round" else 0.94)
+    # The NARROWEST slot these rows will occupy, not a flat ratio. A list
+    # spreads outward from the middle, so the more rows there are the closer
+    # the outermost one sits to the rim and the less width it has. Measuring
+    # the widest row against the centre's chord is how three rows came to be
+    # accepted and then drawn running off both edges.
+    usable = min(slot_width(slot, w, h, shape, px)
+                 for slot in _slots_for(len(lines)))
     return max(len(line) for line in lines) * px * CHAR_WIDTH_RATIO <= usable
 
 
@@ -398,6 +419,123 @@ def _shape_px(item: dict, w: int, h: int) -> dict:
         out.update(x=px[0], y=px[1], x2=px[2], y2=px[3], x3=px[4], y3=px[5],
                    px=0)
     return out
+
+
+def slot_width(slot: str, w: int, h: int, shape: str = "rect",
+               px: int = 0) -> int:
+    """How many pixels of glass a line in this slot actually has.
+
+    On a round panel this is a CHORD, not a constant. `ROUND_USABLE = 0.72
+
+#: Kept off the bezel. A chord measured to the very edge of the glass puts the
+#: last pixel of a glyph under the rim, so both shapes hold a little back.
+ROUND_INSET = 0.94
+RECT_USABLE = 0.94
+
+#: What a shortened line ends with. Three dots, not an ellipsis: the panel's
+#: embedded face has 95 glyphs and no U+2026.
+TRUNCATION = "..."`
+    was one number standing in for a function, and it was wrong in both
+    directions at once: too generous at the rim, where text slid under the
+    bezel, and far too mean across the middle, where a headline had a third
+    more room than it was allowed to use.
+
+    Text is centred on the slot, so it occupies a BAND from `y - px/2` to
+    `y + px/2`. The edge of that band furthest from the centre line is the one
+    that runs out of glass first, and it is the one measured here.
+    """
+    w, h = int(w), int(h)
+    if str(shape) != "round":
+        return int(w * RECT_USABLE)
+    radius = min(w, h) / 2.0
+    centre_y = h / 2.0
+    y = SLOTS.get(str(slot), SLOTS["center"]) * h
+    # The worse of the two edges of the text band.
+    far = max(abs(y - px / 2.0 - centre_y), abs(y + px / 2.0 - centre_y))
+    if far >= radius:
+        return 0                         # no glass here at this size
+    # Whole pixels: `0.12 * 240` and `0.88 * 240` are not equidistant from the
+    # centre in binary, and two slots that are mirror images should not differ
+    # by a hundredth of a pixel.
+    return int(2.0 * math.sqrt(radius * radius - far * far) * ROUND_INSET)
+
+
+def text_width(value: str, px: int) -> float:
+    """Estimated width of a rendered line. Approximate on purpose.
+
+    The real metrics live in the panel's font file and the server does not
+    have them, so this is an average advance width. It is used to DECIDE
+    (truncate, or step a size down), never to position: everything is centred,
+    so an estimate that is a few percent out costs a few percent of margin
+    rather than a misplaced glyph.
+    """
+    return len(str(value)) * int(px) * CHAR_WIDTH_RATIO
+
+
+def clip(value: str, slot: str, size: str, w: int, h: int,
+         shape: str = "rect") -> str:
+    """`value`, shortened until it fits its slot on this glass.
+
+    Server-side and final: the device is sent the string it should draw, so
+    there is no second truncation rule to keep in step with this one. That is
+    also why the marker is "..." rather than an ellipsis -- the embedded face
+    is 95 glyphs and has neither.
+    """
+    value = str(value)
+    if not value:
+        return value
+    px = size_px(size, w, h)
+    room = slot_width(slot, w, h, shape, px)
+    if text_width(value, px) <= room:
+        return value
+    per_char = max(1.0, px * CHAR_WIDTH_RATIO)
+    keep = int(room / per_char) - len(TRUNCATION)
+    if keep <= 0:
+        # Narrower than the marker itself. Say something rather than nothing:
+        # a blank line reads as a broken panel, three dots as a full one.
+        return TRUNCATION
+    return value[:keep].rstrip() + TRUNCATION
+
+
+#: Largest to smallest. The ladder `fit` walks when a line is too wide.
+SIZE_ORDER = ("xl", "lg", "md", "sm", "xs")
+
+#: How far `fit` may shrink a line before it truncates instead.
+#:
+#: Two steps, not five. A headline that drops from `xl` to `xs` to avoid losing
+#: a character has kept the text and thrown away the hierarchy, which is the
+#: thing the size token was chosen for. Past two steps, cutting is the more
+#: honest answer.
+MAX_STEPS_DOWN = 2
+
+
+def fit(value: str, slot: str, size: str, w: int, h: int,
+        shape: str = "rect") -> tuple:
+    """`(text, size)` that will actually fit this slot on this glass.
+
+    Shrink first, cut second. `21:00:00` at `xl` is wider than a 240px circle,
+    and the useful answer is a slightly smaller clock rather than `21:...` --
+    truncation is right for prose and wrong for a number. Only once the line
+    has shrunk as far as it is allowed to does it lose characters.
+
+    Returns the size too, because that is the whole point: the wire carries the
+    token the device should draw, so there is no second rule on the far side.
+    """
+    value = str(value)
+    if not value:
+        return value, size
+    try:
+        start = SIZE_ORDER.index(str(size))
+    except ValueError:
+        start = SIZE_ORDER.index("md")
+    floor = min(start + MAX_STEPS_DOWN, len(SIZE_ORDER) - 1)
+    for index in range(start, floor + 1):
+        token = SIZE_ORDER[index]
+        px = size_px(token, w, h)
+        if text_width(value, px) <= slot_width(slot, w, h, shape, px):
+            return value, token
+    token = SIZE_ORDER[floor]
+    return clip(value, slot, token, w, h, shape), token
 
 
 def text(slot: str, value: str, size: str = "md",
