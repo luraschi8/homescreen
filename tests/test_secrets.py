@@ -198,3 +198,61 @@ def test_a_credential_that_does_not_exist_is_refused(ctx, form):
     r = client.post("/settings/secrets", data=form)
     assert r.status_code in (302, 303)
     assert secrets._load(cache) == {}
+
+
+# --- a failing request must not publish the key -----------------------------
+
+def test_a_failed_fetch_does_not_write_the_key_into_the_job_store(tmp_path,
+                                                                  monkeypatch):
+    """Found by running a real request against Finnhub.
+
+    It answered 403 and `requests` put the whole URL -- including
+    `&token=...` -- into the exception. That string goes into the job
+    envelope, which /api/jobs and the settings page render on an
+    unauthenticated LAN dashboard. One failed fetch published the key.
+    """
+    from homescreen import fetch
+
+    class Leaky:
+        NAME = "leaky"
+        PARAMS = ()
+        SECRETS = ("api_key",)
+        DEFAULT_INTERVAL_S = 60
+
+        @staticmethod
+        def clean_params(raw):
+            return dict(raw)
+
+        @staticmethod
+        def fetch(params, *, session=None, secrets=None):
+            raise RuntimeError(
+                "403 for url: https://v/api?symbol=AAPL&token=SUPERSECRET123")
+
+    monkeypatch.setattr(fetch.providers, "_modules", lambda: {"leaky": Leaky})
+    job = fetch.Job(provider="leaky", key="leaky-abc123", params={},
+                    interval_s=60)
+    fetch.runner.run_once(tmp_path, {"leaky-abc123": job}, {}, now=1.0,
+                          secrets_for=lambda n, s=None: {"api_key": "SUPERSECRET123"})
+    env = fetch.read(tmp_path, "leaky-abc123")
+    assert "SUPERSECRET123" not in json.dumps(env)
+    assert "oculto" in env["error"]
+
+
+@pytest.mark.parametrize("param", ["token", "key", "apikey", "appid",
+                                   "access_key", "api_key"])
+def test_every_common_credential_parameter_is_redacted(param):
+    from homescreen.fetch.runner import redact
+    got = redact(f"error for https://v/api?x=1&{param}=SUPERSECRET123")
+    assert "SUPERSECRET123" not in got
+
+
+def test_a_key_quoted_back_in_prose_is_redacted_too():
+    # The URL pattern cannot catch a vendor echoing the key in its own message.
+    from homescreen.fetch.runner import redact
+    got = redact("your key sk-abcdefgh is invalid", ["sk-abcdefgh"])
+    assert "sk-abcdefgh" not in got
+
+
+def test_redaction_does_not_mangle_an_ordinary_message():
+    from homescreen.fetch.runner import redact
+    assert redact("connection timed out", ["k"]) == "connection timed out"

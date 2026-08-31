@@ -100,13 +100,25 @@ def test_rows_that_would_touch_do_not_fit():
 
 # --- the provider -----------------------------------------------------------
 
-SAMPLE = """BEGIN:VCALENDAR
+def _sample(days_ahead=(1, 2)):
+    """An ICS feed whose events are always upcoming.
+
+    The first version hardcoded 28 and 29 August. They were upcoming the day
+    it was written and in the past three days later, so the provider filtered
+    them out and two tests started failing for a reason that had nothing to do
+    with the code. A fixture that expires is a fixture that lies about when it
+    broke.
+    """
+    soon = [(datetime.datetime.now(datetime.timezone.utc)
+             + datetime.timedelta(days=d)).strftime("%Y%m%dT%H%M%SZ")
+            for d in days_ahead]
+    return f"""BEGIN:VCALENDAR
 BEGIN:VEVENT
-DTSTART:20260828T140000Z
+DTSTART:{soon[0]}
 SUMMARY:Dentista
 END:VEVENT
 BEGIN:VEVENT
-DTSTART:20260829T090000Z
+DTSTART:{soon[1]}
 SUMMARY:Reunión con el equipo de
   producto
 END:VEVENT
@@ -115,6 +127,9 @@ DTSTART:20200101T090000Z
 SUMMARY:Hace años
 END:VEVENT
 END:VCALENDAR"""
+
+
+SAMPLE = _sample()
 
 
 class _Resp:
@@ -161,7 +176,9 @@ def test_a_login_page_is_not_an_empty_calendar():
 
 def test_one_malformed_event_does_not_hide_the_others():
     from homescreen.fetch.providers import ics
-    broken = SAMPLE.replace("DTSTART:20260828T140000Z", "DTSTART:nonsense")
+    sample = _sample()
+    first = sample.split("DTSTART:")[1].split("\n")[0]
+    broken = sample.replace(f"DTSTART:{first}", "DTSTART:nonsense")
     got = ics.fetch({"url": "https://x/c.ics", "days": 3650},
                     session=_Session(broken))
     assert any("producto" in e["summary"] for e in got["events"])

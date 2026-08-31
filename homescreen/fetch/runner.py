@@ -12,6 +12,7 @@ a comment claiming "it waits the right amount" is not a guarantee.
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from homescreen.fetch import plan as planning, providers, store
@@ -28,6 +29,36 @@ RELOAD_EVERY_S = 30.0
 def due(job, last_run: dict, now: float) -> bool:
     ran = last_run.get(job.key)
     return ran is None or (now - ran) >= job.interval_s
+
+
+#: Query parameters that carry credentials. Vendors disagree about the name,
+#: and every one of them puts it in the URL that ends up in an exception.
+_SECRET_PARAMS = ("token", "key", "apikey", "api_key", "appid", "access_key",
+                  "auth", "password", "secret")
+
+_SECRET_IN_URL = re.compile(
+    r"([?&](?:" + "|".join(_SECRET_PARAMS) + r")=)[^&\s\"\']+",
+    re.IGNORECASE)
+
+
+def redact(text: str, values=None) -> str:
+    """Strip credentials out of a message before it is stored or shown.
+
+    Found by running a real request: Finnhub answered 403, and `requests` put
+    the whole URL -- including `&token=...` -- into the exception. That string
+    goes into the job envelope, which `/api/jobs` and the settings page render
+    on an unauthenticated LAN dashboard. One failed fetch published the key.
+
+    Two passes, because either alone is insufficient. The pattern catches a
+    credential in a URL whatever its value; the exact values catch a key that
+    appears somewhere the pattern does not expect -- a body echo, a header
+    dump, a vendor's own error text quoting it back.
+    """
+    out = _SECRET_IN_URL.sub(r"\1[oculto]", str(text))
+    for value in values or ():
+        if value and len(str(value)) >= 8:
+            out = out.replace(str(value), "[oculto]")
+    return out
 
 
 def _record_failure_safely(cache_dir, key: str, error: str) -> None:
@@ -91,8 +122,11 @@ def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
                       if k != "secret_scope"}
             payload = provider.fetch(params, session=session, secrets=creds)
         except Exception as exc:                        # noqa: BLE001
-            log.warning("job %s failed: %s", job.key, exc)
-            _record_failure_safely(cache_dir, job.key, str(exc))
+            # Redacted BEFORE it is logged or stored: the log is on disk and
+            # the store is rendered on an unauthenticated page.
+            safe = redact(exc, (creds or {}).values())
+            log.warning("job %s failed: %s", job.key, safe)
+            _record_failure_safely(cache_dir, job.key, safe)
             continue
         try:
             store.save(cache_dir, job.key, payload)
@@ -100,9 +134,10 @@ def run_once(cache_dir, plan: dict, last_run: dict, *, now: float,
             # write_cache refuses to serialise a non-finite, and that refusal
             # must become a recorded failure rather than an exception escaping
             # into a Restart=always loop.
-            log.warning("job %s could not be stored: %s", job.key, exc)
+            safe = redact(exc, (creds or {}).values())
+            log.warning("job %s could not be stored: %s", job.key, safe)
             _record_failure_safely(cache_dir, job.key,
-                                   f"store failed: {exc}")
+                                   f"store failed: {safe}")
     return ran
 
 
