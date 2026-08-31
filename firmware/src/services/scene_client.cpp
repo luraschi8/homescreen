@@ -111,6 +111,29 @@ struct Parsed {
   char component[16] = {0};
   char message[80] = {0};
   char draw[kMaxDrawBytes] = {0};
+
+  /** Back to first-poll state, WITHOUT constructing a temporary.
+   *
+   * `p = Parsed{}` reads as the obvious way to do this and puts a 4 KB
+   * temporary on a 6 KB task stack -- it overflowed on the first real boot.
+   * Only the first byte of each string matters, so this is a handful of
+   * stores rather than a memset of the whole buffer.
+   *
+   * Resetting at all is required, not tidy: the instance is static, so a
+   * component that ships no draw list would otherwise inherit the previous
+   * poll's and draw stale content indefinitely.
+   */
+  void reset() {
+    count = 0;
+    assigned = false;
+    feed_ok = false;
+    feed_age_s = -1.0f;
+    radius_km = 0.0f;
+    scene[0] = '\0';
+    component[0] = '\0';
+    message[0] = '\0';
+    draw[0] = '\0';
+  }
 };
 
 void copyTrimmed(JsonObjectConst obj, const char* key, char* out, size_t len) {
@@ -328,10 +351,12 @@ bool pollOnce() {
 
   JsonObjectConst root = doc.as<JsonObjectConst>();
   // Static, not automatic: the poll task's stack is 6144 bytes and `Parsed`
-  // now carries a 2 KB draw buffer. There is exactly one poll task, so the
-  // sharing this implies is not sharing at all.
+  // carries a 4 KB draw buffer. There is exactly one poll task, so the
+  // sharing this implies is not sharing at all -- but it does mean the
+  // instance must be reset explicitly, which `reset()` does without putting
+  // a second copy on the stack.
   static Parsed p;
-  p = Parsed{};
+  p.reset();
   p.assigned = root["assigned"].is<bool>() && root["assigned"].as<bool>();
   copyTrimmed(root, "scene", p.scene, sizeof(p.scene));
   copyTrimmed(root, "message", p.message, sizeof(p.message));

@@ -585,6 +585,34 @@ void test_a_real_weather_scene_fits_the_draw_buffer(void) {
                             "and emphatically not SIN ASIGNAR");
 }
 
+void test_a_scene_without_a_draw_list_does_not_inherit_the_last_one(void) {
+  // The parse buffer is static so it stays off a 6 KB task stack, which means
+  // it survives between polls. A component shipping no draw list must not
+  // therefore be drawn with the previous poll's -- a panel showing yesterday's
+  // weather forever is worse than one showing nothing.
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"weather\","
+       "\"components\":[{\"c\":\"weather\",\"draw\":["
+       "{\"t\":\"circle\",\"cx\":0.5,\"cy\":0.5,\"r\":0.25,"
+       "\"tone\":\"warn\"}]}]}");
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  int before = 0;
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind == DrawOp::Circle || op.kind == DrawOp::SmoothCircle) ++before;
+  }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, before, "the first scene drew its circle");
+
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"radar\","
+       "\"components\":[{\"c\":\"radar\",\"aircraft\":[]}]}");
+  g_gfx.reset();
+  ui::renderScene();
+  for (const auto& op : g_gfx.ops) {
+    TEST_ASSERT_TRUE_MESSAGE(
+        op.kind != DrawOp::SmoothCircle || op.r != 60,
+        "the previous scene's circle must not survive into this one");
+  }
+}
+
 void test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels(void) {
   // One icon is nine primitives. The cap was twelve, sized for when every
   // instruction was a line of text, so a sun plus four labels silently lost
@@ -616,6 +644,7 @@ int main(void) {
   RUN_TEST(test_an_icon_arrives_as_primitives_and_is_drawn);
   RUN_TEST(test_a_fraction_becomes_a_pixel_rather_than_truncating_to_zero);
   RUN_TEST(test_a_real_weather_scene_fits_the_draw_buffer);
+  RUN_TEST(test_a_scene_without_a_draw_list_does_not_inherit_the_last_one);
   RUN_TEST(test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels);
   RUN_TEST(test_an_absurd_radius_cannot_fill_the_screen);
   RUN_TEST(test_a_triangle_without_three_points_is_not_drawn);
