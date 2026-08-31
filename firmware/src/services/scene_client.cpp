@@ -58,8 +58,20 @@ char s_etag[40] = {0};
 char s_scene[24] = {0};
 char s_component[16] = {0};
 char s_message[80] = {0};
-/** Verbatim `draw` array for a component that ships one. */
-char s_draw[768] = {0};
+/** Verbatim `draw` array for a component that ships one.
+ *
+ * Sized against the RICHEST scene the server can send, not the simplest. A
+ * clear-sky weather panel is a nine-shape sun plus three lines of text and
+ * serialises to ~912 bytes; at 768 the parser correctly refused it and the
+ * panel drew SIN ASIGNAR, which is the honest failure but not the useful one.
+ * Sized to the vocabulary's CEILING, not to today's scenes: MAX_INSTRUCTIONS
+ * of the widest instruction is 3321 bytes, and a server that considers 40
+ * instructions legal must not send a list this refuses. `tests/test_draw.py`
+ * reads this constant out of the source and pins both, so the two cannot
+ * drift apart silently again.
+ */
+constexpr size_t kMaxDrawBytes = 4096;
+char s_draw[kMaxDrawBytes] = {0};
 bool s_assigned = false;
 bool s_feed_ok = false;
 float s_feed_age_s = -1.0f;
@@ -98,7 +110,7 @@ struct Parsed {
   char scene[24] = {0};
   char component[16] = {0};
   char message[80] = {0};
-  char draw[768] = {0};
+  char draw[kMaxDrawBytes] = {0};
 };
 
 void copyTrimmed(JsonObjectConst obj, const char* key, char* out, size_t len) {
@@ -315,7 +327,11 @@ bool pollOnce() {
   }
 
   JsonObjectConst root = doc.as<JsonObjectConst>();
-  Parsed p;
+  // Static, not automatic: the poll task's stack is 6144 bytes and `Parsed`
+  // now carries a 2 KB draw buffer. There is exactly one poll task, so the
+  // sharing this implies is not sharing at all.
+  static Parsed p;
+  p = Parsed{};
   p.assigned = root["assigned"].is<bool>() && root["assigned"].as<bool>();
   copyTrimmed(root, "scene", p.scene, sizeof(p.scene));
   copyTrimmed(root, "message", p.message, sizeof(p.message));

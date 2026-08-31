@@ -228,23 +228,48 @@ def for_device(value) -> str:
 # lands in the same place on any glass.
 
 
+#: Fractions are rounded to this many places on the wire. Three is a third of
+#: a pixel on an 800px panel and half a pixel on a 240px one -- below what
+#: either resolver can draw, and it is 8 bytes a coordinate rather than 9.
+_WIRE_DP = 3
+
+
+def _defaults_off(item: dict, tone: str) -> dict:
+    """Drop what the device would assume anyway.
+
+    Every byte here is multiplied by the instruction count and measured against
+    a fixed device buffer: a sun is nine shapes, and `"tone":"normal"` on each
+    of them is 96 bytes of saying nothing. Both resolvers already default a
+    missing tone to `normal` and a missing `fill` to true, so silence and the
+    explicit value mean the same thing -- which is what makes this safe rather
+    than clever.
+    """
+    if tone != "normal":
+        item["tone"] = tone
+    return item
+
+
 def circle(cx: float, cy: float, r: float, tone: str = "normal",
            fill: bool = True) -> dict:
-    return {"t": "circle", "cx": round(cx, 4), "cy": round(cy, 4),
-            "r": round(r, 4), "tone": tone, "fill": bool(fill)}
+    out = {"t": "circle", "cx": round(cx, _WIRE_DP), "cy": round(cy, _WIRE_DP),
+           "r": round(r, _WIRE_DP)}
+    if not fill:
+        out["fill"] = False
+    return _defaults_off(out, tone)
 
 
 def line(x1: float, y1: float, x2: float, y2: float, tone: str = "normal",
          w: float = 0.012) -> dict:
-    return {"t": "line", "x1": round(x1, 4), "y1": round(y1, 4),
-            "x2": round(x2, 4), "y2": round(y2, 4), "w": round(w, 4),
-            "tone": tone}
+    return _defaults_off(
+        {"t": "line", "x1": round(x1, _WIRE_DP), "y1": round(y1, _WIRE_DP),
+         "x2": round(x2, _WIRE_DP), "y2": round(y2, _WIRE_DP),
+         "w": round(w, _WIRE_DP)}, tone)
 
 
 def tri(points, tone: str = "normal") -> dict:
     """A filled triangle from three (x, y) fractions."""
-    flat = [round(v, 4) for point in points for v in point]
-    return {"t": "tri", "p": flat, "tone": tone}
+    flat = [round(v, _WIRE_DP) for point in points for v in point]
+    return _defaults_off({"t": "tri", "p": flat}, tone)
 
 
 #: Icons, as functions of (cx, cy, size) in panel fractions.

@@ -6,6 +6,8 @@ side is a thing to get wrong twice.
 """
 import pytest
 
+import json
+import tempfile
 import re
 
 from homescreen import draw
@@ -245,3 +247,58 @@ def test_the_preview_shows_exactly_what_the_panel_will_show():
     # sign immediately before a number.
     assert instruction["v"] == "manana   21°"
     assert "manana   21°" in draw.to_svg([instruction], 240, 240)
+
+
+# --- the wire has to fit the device that reads it ---------------------------
+#
+# `scene_client.cpp` holds the draw array in a fixed buffer and REFUSES a list
+# that does not fit, which is the right failure and an invisible one: the panel
+# draws SIN ASIGNAR and nothing says why. A clear-sky weather scene grew to 942
+# bytes against a 768-byte buffer and did exactly that on real glass.
+
+#: Must equal `kMaxDrawBytes` in firmware/src/services/scene_client.cpp.
+DEVICE_DRAW_BYTES = 4096
+
+
+def _wire(instructions):
+    return len(json.dumps(instructions, separators=(",", ":")))
+
+
+def test_the_firmware_buffer_this_is_measured_against_is_the_real_one():
+    # Reads the constant out of the C++ rather than trusting a copy of it: two
+    # numbers that must agree, with only a comment holding them together, is
+    # how they came to disagree in the first place.
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "firmware" / "src" / "services" / "scene_client.cpp").read_text()
+    found = re.search(r"constexpr size_t kMaxDrawBytes = (\d+);", src)
+    assert found, "kMaxDrawBytes disappeared from the firmware"
+    assert int(found.group(1)) == DEVICE_DRAW_BYTES
+
+
+def test_every_scene_fits_the_device_buffer_on_the_smallest_panel():
+    # The round panel is the one with a fixed buffer. Built for real, not with
+    # a synthetic list, so a component that grows an icon is caught here.
+    from homescreen import scenes
+    caps = {"w": 240, "h": 240, "depth": 16, "shape": "round",
+            "components": ["radar", "draw_list"], "max_items": 40}
+    for name in scenes.names():
+        ctx = scenes.SceneContext(
+            cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"},
+                 "feeds": {"adsb": {"endpoint": "https://x"}}},
+            cache_dir=pathlib.Path(tempfile.mkdtemp()), caps=caps,
+            now=1_787_000_000.0, device={"hw": "aa", "id": "aa"},
+            options=scenes.defaults(name))
+        for component in scenes.build(name, ctx).components or ():
+            size = _wire(component.get("draw") or [])
+            assert size < DEVICE_DRAW_BYTES, (
+                f"{name} sends {size} B, buffer is {DEVICE_DRAW_BYTES}")
+
+
+def test_a_full_instruction_list_still_fits():
+    # The ceiling, not the typical case: MAX_INSTRUCTIONS of the widest
+    # instruction the vocabulary has. If this ever exceeds the buffer the cap
+    # is in the wrong place, and the panel will refuse a list the server
+    # considers legal.
+    worst = [draw.line(0.1234, 0.1234, 0.9876, 0.9876, "accent", 0.0123)
+             for _ in range(draw.MAX_INSTRUCTIONS)]
+    assert _wire(worst) < DEVICE_DRAW_BYTES, _wire(worst)

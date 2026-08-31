@@ -549,6 +549,42 @@ void test_a_fraction_becomes_a_pixel_rather_than_truncating_to_zero(void) {
                                  "the radius scaled off the short side");
 }
 
+void test_a_real_weather_scene_fits_the_draw_buffer(void) {
+  // The exact payload that broke a real panel: a clear-sky sun is nine shapes
+  // plus three lines of text, 987 bytes against a 768-byte buffer. The parser
+  // refused it -- correctly -- and the fallback drew SIN ASIGNAR, so the glass
+  // said "unassigned" while the server was serving weather perfectly.
+  poll(
+       "{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"weather\",\"components\":[{\"c"
+       "\":\"weather\",\"draw\":[{\"t\":\"circle\",\"cx\":0.5,\"cy\":0.2,\"r\":0.054,\"tone\""
+       ":\"warn\"},{\"t\":\"line\",\"x1\":0.576,\"y1\":0.2,\"x2\":0.594,\"y2\":0.2,\"w\":0.0"
+       "13,\"tone\":\"warn\"},{\"t\":\"line\",\"x1\":0.553,\"y1\":0.253,\"x2\":0.566,\"y2\":"
+       "0.266,\"w\":0.013,\"tone\":\"warn\"},{\"t\":\"line\",\"x1\":0.5,\"y1\":0.276,\"x2\":"
+       "0.5,\"y2\":0.294,\"w\":0.013,\"tone\":\"warn\"},{\"t\":\"line\",\"x1\":0.447,\"y1\":"
+       "0.253,\"x2\":0.434,\"y2\":0.266,\"w\":0.013,\"tone\":\"warn\"},{\"t\":\"line\",\"x1"
+       "\":0.424,\"y1\":0.2,\"x2\":0.406,\"y2\":0.2,\"w\":0.013,\"tone\":\"warn\"},{\"t\":\""
+       "line\",\"x1\":0.447,\"y1\":0.147,\"x2\":0.434,\"y2\":0.134,\"w\":0.013,\"tone\":\""
+       "warn\"},{\"t\":\"line\",\"x1\":0.5,\"y1\":0.124,\"x2\":0.5,\"y2\":0.106,\"w\":0.013"
+       ",\"tone\":\"warn\"},{\"t\":\"line\",\"x1\":0.553,\"y1\":0.147,\"x2\":0.566,\"y2\":0."
+       "134,\"w\":0.013,\"tone\":\"warn\"},{\"t\":\"text\",\"slot\":\"center\",\"v\":\"32\",\"s"
+       "ize\":\"xl\",\"tone\":\"hot\"},{\"t\":\"text\",\"slot\":\"below\",\"v\":\"Sol 26 C\",\"s"
+       "ize\":\"sm\",\"tone\":\"accent\"},{\"t\":\"text\",\"slot\":\"rim_bottom\",\"v\":\"31 /"
+       " 33\",\"size\":\"xs\",\"tone\":\"cool\"}]}]}");
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  int circles = 0, lines = 0;
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind == DrawOp::Circle || op.kind == DrawOp::SmoothCircle) ++circles;
+    if (op.kind == DrawOp::WideLine) ++lines;
+  }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, circles, "the sun's disc");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(8, lines, "and all eight rays");
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.textContains("32"),
+                           "the temperature, not a status screen");
+  TEST_ASSERT_FALSE_MESSAGE(g_gfx.textContains("SIN ASIGNAR"),
+                            "and emphatically not SIN ASIGNAR");
+}
+
 void test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels(void) {
   // One icon is nine primitives. The cap was twelve, sized for when every
   // instruction was a line of text, so a sun plus four labels silently lost
@@ -579,6 +615,7 @@ int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_an_icon_arrives_as_primitives_and_is_drawn);
   RUN_TEST(test_a_fraction_becomes_a_pixel_rather_than_truncating_to_zero);
+  RUN_TEST(test_a_real_weather_scene_fits_the_draw_buffer);
   RUN_TEST(test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels);
   RUN_TEST(test_an_absurd_radius_cannot_fill_the_screen);
   RUN_TEST(test_a_triangle_without_three_points_is_not_drawn);
