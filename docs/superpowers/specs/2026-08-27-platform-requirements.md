@@ -1,6 +1,9 @@
 # HomeScreen Platform — Requirements
 
 **Status:** Revised 2026-08-27 after the owner answered the first round of open questions.
+**Extended 2026-08-31** — see the addendum at §9: the 7.5" panel is physically in hand, sport
+grows beyond football, coverage is audited, and "crisp and attractive" is made checkable.
+Where the addendum contradicts §1–§8 it wins; it contradicts nothing today.
 **Scope:** What a component is, what a provider is, what an assignment is, what the API
 looks like, and the order to build them in.
 **Precedence:** Below `CLAUDE.md`. Extends the
@@ -1343,3 +1346,710 @@ anyway.
   no multi-tenancy.
 - **No build step and no CDN.** No bundler, no npm, no webfont fetched at boot. The dashboard
   must render when the network is the thing being debugged.
+
+---
+
+# Addendum, 2026-08-31 — the panel is real
+
+**Status:** appended after the owner reported the 7.5" 800×480 1-bit panel is physically in
+hand, asked for basketball alongside football, and asked that both the display and the web
+app be "crisp and attractive" in a way somebody can check.
+
+**Precedence:** same as the document it extends — below `CLAUDE.md`, above `SPEC.md`. §9–§12
+are new sections; nothing in §1–§8 is withdrawn.
+
+**What changed underneath this document.** CLAUDE.md §2's hardware table said *"e-paper
+panel — not purchased yet"* and PLAN §6 was a shopping list. That line is now false and
+every item that read "waits on hardware" is unblocked: backlog item 14 (the e-paper
+compositor), PLAN phases B and C, and validation questions V6, V2b, V5b, V8b, V9, V10, V11.
+The gate that all of them sit behind — **B2, is 10px type legible on real glass** — can be
+answered this week, and until it is, nothing downstream of it should be designed, because
+its answer changes the type scale and the type scale changes what a region is worth.
+
+---
+
+## 9. Bringing up the e-paper panel
+
+### 9.1 The decision: PIXEL PUSH, and it is not close
+
+The panel takes a rendered framebuffer from `GET /api/devices/{hw}/frame`. It does not
+execute instruction lists for its content.
+
+Both paths exist in the tree and both work. The case for choosing between them is not about
+bytes on the wire; it is about **what this particular panel is for**.
+
+**The draw vocabulary cannot express this panel's design, and growing it to fit would be
+reinventing CSS in JSON and then implementing it twice.** `homescreen/draw.py` offers five
+vertical slots (`rim_top`, `above`, `center`, `below`, `rim_bottom`), five size tokens as
+fractions of the panel's *short* side, and horizontal centring with no other option. That is
+a watch-face vocabulary and it is exactly right for the 240×240 round panel it was written
+for. On 800×480 the short side is 480, so `xs` resolves to 26px and `md` to 53px — there is
+no size token in the vocabulary that can draw 13px body text, and no slot arithmetic that can
+draw a five-row agenda in the left column while a six-cell markets band runs along the
+bottom. SPEC §9's design is a *typographic layout*: columns, baselines, rules, tables,
+inverted pills, a 13/13/11/10px scale. Every one of those is a CSS declaration today and a
+new wire primitive, a new Python resolver, a new C++ executor and a new golden fixture
+tomorrow.
+
+**CLAUDE.md's own decision rule already answers it.** *"Text layout → server renders;
+geometry → device renders."* An 800×480 composed dashboard is almost entirely text layout.
+The round radar is geometry, which is why it is data push and stays data push.
+
+**The pixel path is the one that is already built, and the data path is the one that would
+have to be built.** `render.py` (threshold 160, polarity, the two-slot semaphore, the
+content-keyed frame cache), `compose.py` (per-placement CSS scoping, absolute region
+rectangles), `layout.py`'s `dashboard` template, the `/api/devices/{hw}/frame` route with its
+ETag and its cold-render budget, `mockdevice.py --kind epaper` decoding a frame back to a
+PNG, and an `html` body on every one of the eight components — all of that exists, is tested,
+and assumes pixel push. Choosing data push strands it *and* incurs the vocabulary work above.
+
+**The counter-arguments, taken seriously, and why they lose:**
+
+| Objection | Answer |
+|---|---|
+| Chromium is not installed on the Pi (CLAUDE.md §2) | It is one `apt install`, and it is PLAN B0 — a provisioning step, not a design constraint. `render.find_chromium()` already detects trixie's `chromium` name. The cost is real and bounded: ~200 MB and ~3 s per invocation against 1.8 GB usable, which is why `_RENDER_SLOTS` is 2 and why the frame cache is keyed on content. Both were designed for this |
+| 48,000 bytes versus <1 KB | Over the house WiFi with no TLS, on a C3, this is on the order of a second — measure it at E6 rather than trusting either of us. It is not free, and 9.3's streaming requirement is the reason it is not a heap problem either; but it is not the expensive part of a 3-second refresh that happens twice a minute at most |
+| Two render slots for the whole fleet | The fleet is one e-paper and one round panel. The round panel does not render. The floor already holds: `registry.poll_floor` returns 30 s for `depth == 1`, so a single panel can request at most two frames a minute, and identical HTML does not fork a browser at all |
+| A 1-bit panel refreshes in ~3 s, so why send more than it can show | This argues for fewer frames, not for a different payload. It is already answered by the 30 s floor |
+| Partial refresh for a ticking clock (PLAN S2) | The strongest objection, and it still loses. See 9.2 |
+
+### 9.2 Where data push survives, and it is not a compromise
+
+Two places, both narrow, both permanent.
+
+**Status screens and the cold-boot fallback (PLAN S6).** A panel that cannot reach the Pi,
+or is not yet approved, or is on the wrong network, must say so *on its own glass* with no
+server involved. That is one or two lines of centred text — precisely what the draw
+vocabulary is for. So the e-paper firmware **also** declares `draw_list` and polls `/scene`,
+and uses `/frame` only for content. This is not a second rendering path for the dashboard; it
+is the panel's ability to explain itself, which §5.4 already established is non-negotiable
+("a board that spent a year in a drawer must be able to tell you why it is not working").
+
+**The partial-refresh window is a cropped sub-frame, not an instruction list.** A ticking
+clock through the draw vocabulary would put a second type engine on the glass, and the two
+engines would disagree at the seam — different face, different metrics, a minute digit that
+does not sit where the hour digit sits. The clock region must come from the same render as
+the rest of the page. So partial refresh is **the same pixel payload, cropped**:
+
+- The server knows which rectangle changed, because it holds both frames.
+- A view declares which placement, if any, owns the partial window (§4.2, PLAN S2). A view
+  with no clock in the top-left has none and refreshes fully.
+- Window x-bounds are multiples of 8 (CLAUDE.md §6). The desk template's `(16,72)–(280,140)`
+  is 264 = 33×8 and must contain **only** the numerals.
+- The wire shape is decided at E5 below, with E4's measurement in hand, between
+  `X-Partial-Window: x0,y0,x1,y1` alongside a full frame and a `?window=` sub-frame request.
+  **The sub-frame is the recommended default** — it sends 2 KB instead of 48 KB, and a device
+  that cannot check a body's length must never be asked to crop one.
+
+### 9.3 Hardware and firmware
+
+**Board.** The ESP32-C3 Super Mini already in hand is the default, with one measurement
+gating it. V10 asks whether a 48 KB contiguous allocation survives fragmentation on a C3;
+the answer is to **never make that allocation**. Stream the HTTP body in ~1–4 KB chunks
+straight into the driver, band by band, and the largest block ever needed is the chunk. If
+V8b comes back saying GxEPD2 will not accept a pushed window buffer through `writeImage` /
+`writeImagePart` and insists on locally-drawn bitmaps, then and only then move to an
+**ESP32-S3 with ≥2 MB PSRAM**, where a full framebuffer is trivial. State the rule so the
+board is chosen by a measurement rather than a preference:
+
+> Stream if the driver permits it; buy PSRAM if it does not. Do not allocate 48 KB on a C3.
+
+**Driver library.** `GxEPD2_BW` with `GxEPD2_750_T7` (800×480, the `epd7in5_V2` silicon).
+**Never Waveshare's Arduino library** — CLAUDE.md §6, it has no partial refresh and therefore
+no ticking clock. Every polarity and alignment finding in `VALIDATION-01` #1 and #3 was
+measured against the **Python** driver; V9 says they must be re-measured against GxEPD2, and
+E6 below is where.
+
+**Breakout.** PLAN §6 assumes the Waveshare e-Paper Driver HAT breaks the FFC out for both
+the Pi and a C3. Verify that before wiring: the HAT is a 40-pin Raspberry Pi form factor, and
+if it does not expose usable pins for an ESP32 the part needed is the separate Waveshare
+**ESP32 e-Paper Driver Board**. This is a ten-minute check against the product page and it
+blocks E6, not E2.
+
+**Capability declaration.** Exactly the existing query string, with nothing new to build:
+
+```
+GET /api/devices/{hw}/scene?w=800&h=480&depth=1&shape=rect
+    &components=draw_list&max_items=40&fw=…
+GET /api/devices/{hw}/frame?w=800&h=480
+```
+
+`registry.clean_caps` already accepts `w`, `h`, `depth`, `max_items` through `CAP_INTS`,
+already validates `shape` against `surface.SHAPES`, and already truncates capability lists.
+`surface.describe` already turns `depth: 1` into `monochrome: True`, and `poll_floor` already
+returns 30 s for it. **Nothing in the capability layer needs to change for this panel**, and
+that is the payoff for having described glass rather than enumerated it.
+
+Note what `/frame` does *not* take: `depth` and `shape` are absent from its query, by design —
+§5.2 fixed the frame's length to what the caller asked for and nothing else. The scene it
+builds must still know the depth. See 9.5 item 1, which is a bug.
+
+**Tones on one ink.** `draw.TONES` has eight entries and the C3 maps each to an RGB565 pen
+(`firmware/src/ui/components.cpp`). On 1-bit glass there are two inks, so a tone cannot be a
+colour and must become a **treatment**. The mapping is small, it is the honest one, and it
+lives in **one server-side function** so the two executors cannot drift:
+
+| Tone | On 1-bit glass | Why |
+|---|---|---|
+| `normal` | black, 13px/500 | |
+| `dim` | black, 11px/400 | **Never grey.** CLAUDE.md §6: greys forfeit partial refresh, and grey text at 10–13px thresholds to speckle. Hierarchy is size and weight only |
+| `accent` | black, 10px/500 uppercase, `.14em` tracking — the existing `.lab` | An identity is a label, and a label is already a treatment in `BASE_CSS` |
+| `good`, `cool` | **`normal`** | Untreated. Direction is carried by the `▲`/`▼` glyph already in the string, not by the ink |
+| `hot` | **`normal`** | The honest answer. "Hot" is a property of the number, and 32° says it. One ink cannot say it twice, and inventing a treatment for it spends the pill budget on the least urgent tone on the panel |
+| `bad`, `warn` | inverted pill (`.pill`: white on black) | The only tones that mean *look here now* |
+
+**Two pills on a composed page, fleet-wide** (SPEC §3). A third `bad` degrades to `normal`
+rather than being drawn — a page of inverted blocks has no emphasis at all. Enforced at
+compose time, asserted by a test (§12, C5).
+
+### 9.4 Staged bring-up
+
+Seven stages. Each has one observable outcome; each is falsifiable; none begins before the
+one above it has answered.
+
+**E0 — Prove the whole pixel pipeline with no panel and no Pi.** *(do this first, it costs
+nothing)*
+Serve locally on the Mac, where Chrome exists. Assign a `dashboard`-template view with a
+masthead, two column components and a markets band. Run
+`python -m homescreen.mockdevice --kind epaper --once --out /tmp/screen.png`.
+**Observable:** a PNG that is 800×480, not a negative, and recognisably SPEC §9.
+**This is where the design iteration happens** — the owner's "crisp and attractive" is
+answered here on a screenshot loop of seconds, not on glass at 3 s a refresh over SSH
+(CLAUDE.md §5).
+*Blocker to fix first:* `mockdevice.KINDS["epaper"]` declares `components: "text"` and no
+`shape`. It must declare `shape: "rect"` and `components: "draw_list"` or it is not
+simulating the device that was just bought.
+
+**E1 — Pi render subset (PLAN B0).**
+`apt install chromium fontconfig`, install Inter system-wide, `raspi-config nonint do_spi 0`,
+reboot, confirm `/dev/spidev0.0`. Cap journald retention first — the card is a 15 GB microSD
+and SPEC §16's wear risk is live.
+**Observable:** `curl 'http://dashboard.local:8080/api/devices/<hw>/frame?w=800&h=480'`
+returns **exactly 48,000 bytes** from the Pi, and the run reports `render.grey_fraction` of
+the intermediate PNG. That number answers **V5b** (does the Pi's Chromium honour
+`-webkit-font-smoothing: none`); macOS measured 0.010%, the Pi is expected worse, and the 160
+threshold exists for that gap.
+
+**E2 — Panel hello-world, wired to the Pi (PLAN B1).**
+Vendored `epd7in5_V2`, **PWR wired to BCM 18 / physical 12** — `module_init()` asserts it and
+SPEC §2's wiring table omits it, so without it the panel is silent and says nothing about
+why. `epd.sleep()` in a `try/finally` on every path.
+**Observable:** the asymmetric polarity vector. Black at (0,0) and (7,1) in an 8×2 image
+serialises to `0x80 0x01`, and on the glass that is the top-left pixel and the *eighth* pixel
+of the second row — asymmetric in both axes, so a mirrored, rotated or inverted buffer is
+visible rather than plausible. Also answers **V2b** (is writing only `0x13` a clean full
+refresh).
+
+**E3 — The legibility gate (PLAN B2). THE GATE. Nothing below it is designed until it
+answers.**
+Push E0's composed dashboard through E2's wire.
+**Observable:** a photograph of the panel at 60 cm, and a written yes/no on whether the 10px
+`.lab` and the 11px `.ter` are readable. Also: the real full-refresh duration, and whether
+the dotted rule stipples.
+**If the answer is no, the type scale changes, and a bigger scale means fewer rows per
+region — which changes `layout.TEMPLATES`' `holds` counts and therefore what every view can
+contain.** This is exactly why PLAN §6 says buy one panel, not several.
+
+**E4 — Partial refresh through our own wrapper (PLAN B5, S2).**
+`epaper/driver.py` owning cropping, packing and polarity in one auditable place. `init_part()`,
+never `init()`. **Never call the vendored `display_Partial()` directly** — broken x-alignment
+guard, expects a window-cropped buffer, opposite polarity to `display()` (VALIDATION #3).
+**Observable:** the minute digit changes with the rest of the page untouched; the measured
+duration (**V11** — GxEPD2 says 1600 ms, SPEC §2 claims 300 ms, and one of them is wrong);
+and the visible ghost after 60 consecutive partials, which is what sets the full-refresh
+interval and the per-device ghosting counter (PLAN S3).
+
+**E5 — The partial window reaches the wire (PLAN S1).**
+Decide the shape here, with E4's number in hand. Recommended: `GET /frame?window=<region-id>`
+returning the cropped sub-frame, plus `X-Partial-Window: x0,y0,x1,y1` echoing the rectangle
+the body covers, x-bounds multiples of 8. The view declares which placement owns the window.
+**Observable:** a device presenting `If-None-Match` for an unchanged page but a changed clock
+receives ~2 KB and performs one partial refresh, not one full one — and the ghost counter
+increments on the full refreshes only.
+
+**E6 — The panel becomes a client (PLAN C3).**
+C3 (or S3, per 9.3), GxEPD2, streamed frame, watchdog, restart-on-N-failures, **OTA — which
+CLAUDE.md calls for "from day one" and which the firmware does not have at all today.**
+**Observable:** the frame on the client panel is **byte-identical** to the frame the wired
+harness pushed for the same view and instant. Diff them. *This is the entire reason the wired
+harness stays in the tree*: it is how a render bug is told from a wire bug, and it is where
+**V9** (GxEPD2's polarity and alignment) is answered against the Python findings.
+
+**E7 — It survives the house (PLAN S6).**
+**Observable:** pull the Pi's power. The panel keeps its last frame, and after N failed polls
+draws a Spanish "sin servidor" *from the draw list* — the one job data push has on this glass.
+Restore power; the panel recovers with no touch and no reflash. Then leave it a week and read
+the ghost counter.
+
+### 9.5 What the server is not ready for — specifically
+
+Each of these is a defect or a hole with a file and a reason, not a wish.
+
+1. **`/frame` drops `depth` and `shape` when it builds a single-placement scene.**
+   `serve.py:device_frame` calls `_scene_for(hw, rec, caps={"w": w, "h": h})`. A component on
+   that path is told, through `surface.describe`, that it is on a 16-bit screen —
+   `monochrome` is False and every 1-bit decision it might make is made wrongly.
+   `_composed_html` does **not** have this bug (it merges `registry.clean_caps(rec["caps"])`),
+   so the one-placement and many-placement paths disagree about what glass they are drawing
+   on. Fix: build the caps once — stored caps, overridden by the requested geometry — and
+   hand the same dict to both.
+
+2. **There is no tone→ink resolution for `depth: 1`, anywhere.** `draw.to_svg` paints a
+   **black ground with white text and an eight-colour palette**. The caller correctly drops
+   the circle mask off-square (`round_panel=(w == h)`) and stops there, so the e-paper
+   preview is a photographic negative of the panel rendered in colours it cannot produce.
+   Needs a `depth` argument: white ground, black ink, and 9.3's tone table. It must be the
+   same function the compositor's treatments come from, or the two drift — which is the exact
+   failure the two-executor design exists to prevent.
+
+3. **No `X-Partial-Window`, no `?window=`, and no ghosting counter.** PLAN S1 and S3 are still
+   "design needed". `/frame` carries an ETag, which says *whether* something changed and never
+   *what*, and nothing counts full refreshes since the last clear.
+
+4. **A view cannot declare which placement owns the partial window.** `layout.TEMPLATES` has
+   no field for it and `clean_view` would drop one. Required by §4.2 and PLAN S2.
+
+5. **There is no `masthead` component.** The `dashboard` template has a `masthead` region and
+   nothing in `scenes._registry()` fits it. `status` is closest and it is a fault screen with
+   `min_w: 320`. A composed dashboard today has a hole across its top 11%.
+
+6. **The design audits exist as prose, not as tests over composed output.** Item 14 asks for
+   them: only `#000`/`#fff` in the compiled CSS, no `font-size` below 10px, ≤2 `.pill`, one
+   Chromium invocation per composed frame rather than one per placement. `compose.compose` is
+   where all four belong. See §12.
+
+7. **Every component's pixel body is a placeholder, and composing placeholders yields a page
+   of placeholders.** `sport.py` emits `<div class="big">Home — Away</div>` at 36px — no time,
+   no score, no competition, none of which is in the HTML although all three are in the draw
+   list. `weather` emits four stacked lines. `claude` emits two. None of them is SPEC §9's
+   design, and none was ever looked at, because nothing has ever rendered. **This, not the
+   driver, is the bulk of the e-paper work.**
+
+8. **Chromium is absent from the Pi**, so `render.find_chromium()` returns None there and
+   `/frame` answers 503 from the target today. Provisioning, not code — but it is the literal
+   reason this pipeline has never produced a pixel.
+
+9. **The fleet page has no notion of a pixel-push screen.** Nothing tells an operator that
+   this screen takes frames and therefore that its view must have a pixel path, and nothing
+   warns when a placement's component emits a draw list but no usable HTML.
+
+10. **`poll_floor` = 30 s for `depth: 1` was chosen against numbers that are about to be
+    measured.** It assumes a ~3 s full refresh and two Chromium slots. If E4 says partial
+    refresh is 1.6 s and E5 makes a clock tick cost 2 KB and no browser fork, the floor is
+    protecting a cost that no longer exists on that path. Re-derive it at E5 — as a floor on
+    *full* frames, with partials on their own budget. Do not touch it before then.
+
+11. **There is no composed-view preview at all, and §4.6 is unbuilt.**
+    `/api/devices/{hw}/preview.svg?view=` resolves its argument against `scenes.names()` — it
+    previews **one component**, executes **the instruction list**, and emits SVG. On a
+    pixel-push panel that is a different program's output than the glass will show. §4.6 asks
+    for the whole view with region outlines, each region individually, and an `at` instant so
+    a schedule can be previewed; none of the three exists. Without it there is no way to see
+    a composed dashboard except by fetching `/frame` and decoding it, which is what
+    `mockdevice` does and what E0 is built around.
+
+12. **`region_caps` carries `w`/`h` but not the region's origin.** Correct for composition,
+    but it means a component cannot know it is in the bottom band rather than the top one.
+    Nothing needs this yet. Recorded so the next person does not discover it as a surprise.
+
+---
+
+## 10. Sport beyond football
+
+### 10.1 Where this stands
+
+`sport` ships and works: it picks a live match over a fixture over a last result, decides
+that from the data rather than from a setting, renders both paths, and fits the pairing to
+the glass. It is fed by exactly one provider, `football`, against football-data.org's free
+tier, with a live key on the Pi. The owner wants basketball as well — NBA, and European
+basketball (EuroLeague, and Liga ACB is the obvious Spanish one for a house in Madrid).
+
+### 10.2 The recommendation: ONE component, SEVERAL providers
+
+**One `sport` component. Not `basketball` beside `football`.**
+
+The argument is this document's own §2.3 and §3.1, applied without an exception.
+
+- **What differs between football and basketball is where the data came from, and that is
+  precisely a provider difference.** §3.1: a provider "knows how to fetch one kind of data and
+  nothing about screens". `football.py`'s own docstring already says it is *"named for what it
+  fetches rather than for the vendor, because the component asks for 'this team's next match'
+  and should not have to change if the source does."* That sentence is the whole design and
+  it was written before there was a second sport to test it.
+- **What does not differ is everything the component does.** A second component would
+  duplicate `_pick`'s live-over-next-over-last ladder, `_when`'s Spanish relative dates, the
+  `lines_fit` decision between one pairing row and two stacked names, the draw list, the HTML
+  body, and every empty state. All of it is sport-agnostic. The only genuine differences are
+  that a basketball score has three digits instead of one and that there is no draw.
+- **The picker stays honest.** Two components named `football` and `basketball` invite a
+  third, a fourth, and a component list that is a sports directory. One `sport` component with
+  a sport option is one row in the picker whatever the owner follows next.
+
+**The option shape:**
+
+```python
+OPTIONS = (
+    {"key": "sport", "label": "Deporte", "type": "choice",
+     "choices": ("futbol", "baloncesto"), "default": "futbol"},
+    {"key": "team", "label": "Equipo", "type": "text", "default": "",
+     "help": "..."},          # interpreted by the provider the sport selects
+    {"key": "days", "label": "Días por delante", "type": "int", "default": 30},
+)
+```
+
+`team` becomes `text`, not `int`. Today it is an `int` because football-data.org identifies
+teams by a numeric id (86 = Real Madrid). No other vendor uses that scheme, and a per-sport
+option pair would spend two of the twelve allowed options on every sport that is ever added.
+One free-text field, interpreted by whichever provider the `sport` choice selects, with the
+`help` string naming what to type for the current sport. `needs()` maps
+`sport -> provider` and passes `team` through; **the component never learns which vendor
+answered.**
+
+### 10.3 The blocking change: normalise the match envelope FIRST
+
+This must land before a second provider exists, and it is the load-bearing part of this
+section.
+
+`football.py` emits the vendor's own vocabulary and `sport.py` reads it verbatim:
+
+```python
+FINISHED = {"FINISHED", "AWARDED"}      # football-data.org's status enum
+LIVE     = {"IN_PLAY", "PAUSED"}        # ...in the COMPONENT
+```
+
+`home_goals` / `away_goals` are likewise football's word. So does `tests/test_sport.py`,
+whose fixtures are football-data.org response fragments. A second provider added on top of
+this has to **pretend to be football-data.org** — invent an `IN_PLAY` string it never
+received — and the first time a third vendor spells it `inprogress` the component grows a
+translation table for vendors it is not supposed to know exist.
+
+**The port a sport provider satisfies:**
+
+```python
+{"team": "<as the caller gave it>",
+ "sport": "futbol" | "baloncesto",
+ "matches": [
+   {"when":        "<ISO 8601, UTC, Z>",
+    "home":        "<short name, ≤24 chars>",
+    "away":        "<short name, ≤24 chars>",
+    "status":      "scheduled" | "live" | "finished" | "postponed",
+    "home_score":  int | None,
+    "away_score":  int | None,
+    "competition": "<short name>"}]}
+```
+
+Four status values, not the union of every vendor's enum. `home_score`/`away_score`, because
+a basket is not a goal. Sorted by `when`, capped at `MAX_MATCHES`. `sport` carried on the
+envelope so the component can format a three-digit score differently from a one-digit one
+without asking which provider it came from.
+
+Renaming the two score fields is a one-line change in `football.py` and `sport.py` each, plus
+the fixtures. Doing it now costs an hour. Doing it after a second provider ships costs a
+migration of cached envelopes.
+
+### 10.4 Which basketball API
+
+The requirement is narrow, which makes the choice narrower than it looks: **the next fixture
+and the last result for one followed team, in NBA and in European basketball.** No standings,
+no box scores, no live play-by-play. A provider that cannot do those three things well is not
+better for being able to do twenty others.
+
+Four things decide it, in this order:
+
+1. **Does one adapter cover both NBA *and* EuroLeague/ACB?** Two adapters is two keys, two
+   cadences, two failure modes and two things to maintain, for one component. `football`
+   covers every competition the owner cares about through one key; basketball should too.
+2. **Is there a documented free tier with a stated number?** §3.3 requires that a
+   configuration exceeding a free tier be refused *at startup with the arithmetic in the
+   message*. A vendor that publishes no number cannot have that check written against it.
+3. **Is it documented at all, or is it somebody's site's private JSON?** An undocumented
+   endpoint changes shape without warning. SPEC §14 puts deliveries last for exactly this
+   reason and the same discount applies here.
+4. **Fixtures with tip-off times and final scores in one call per team.** Anything needing a
+   call per fixture multiplies against a daily quota.
+
+**Recommendation: API-SPORTS' basketball API (`api-basketball.com`), one adapter, one key.**
+
+It is the only candidate that is documented, has a published free tier, and covers **NBA,
+EuroLeague and Liga ACB from one key** — so it answers the whole of what was asked with the
+same shape `football` already has. Its `/games` endpoint takes a team and a season and
+returns fixtures with tip-off timestamps, status and final scores, which is one call per
+followed team per cycle.
+
+**The one thing to check before writing a line of it, because it may change the design:**
+the free tier is understood to be on the order of **100 requests/day**, and
+`football.DEFAULT_INTERVAL_S = 1800` would spend 48 of them per job. That means roughly
+**two basketball jobs fit in the free tier and three do not** — and under §3.2 a job is
+per *(provider, params)*, so two screens following two different teams is already two jobs.
+So:
+
+> Verify the published free-tier number, then set `DEFAULT_INTERVAL_S` from it — not from
+> football's — and write the startup arithmetic check against it. If the number turns out
+> tighter than two teams, the interval goes up (fixtures move on the scale of days; only a
+> live score needs minutes) and the component polls harder only while a match is in play.
+
+**Fallback, if the free tier is unusably tight or an account is unwanted:** two keyless
+adapters — the NBA's own schedule/scoreboard JSON on `cdn.nba.com` for NBA, and
+EuroLeague's own live feed for EuroLeague. Both need no signup and no key. Both are
+**undocumented private feeds** that can change shape without notice, and taking them means
+accepting the maintenance profile SPEC §14 assigned to deliveries. Take this path only if
+option one is actually blocked, and if taken, take it for both — a mixed keyed/keyless pair
+is the worst of both.
+
+**Rejected, with reasons, so they are not re-proposed:**
+
+| Candidate | Why not |
+|---|---|
+| `balldontlie.io` | NBA only. It solves half the request and leaves EuroLeague and ACB needing a second adapter anyway — which is the cost the recommendation exists to avoid. Also moved from keyless to a keyed free tier |
+| TheSportsDB | Broad but thin: European basketball fixture coverage is unreliable and the endpoints that answer "next event for this team" moved behind a paid key. It is already named in item 12 as a football fallback; that is where it should stay |
+| ESPN's `site.api.espn.com` | Keyless and reliable in practice, but undocumented and with no stated terms — same objection as the fallback above, without the fallback's advantage of being the league's own feed |
+| football-data.org | Football only. Confirmed: it does not serve basketball, so the existing key buys nothing here |
+
+**Verify these three before implementation, in this order** — this is the same discipline §7
+applied to Q5 and it is not optional:
+(a) the published free-tier request limit and window; (b) that NBA, EuroLeague **and** Liga
+ACB are all on the free plan rather than a paid one; (c) that one call returns a team's
+fixtures *and* results together. If (a) or (b) fails, the fallback becomes the recommendation
+and 10.5's criteria apply to two adapters instead of one.
+
+### 10.5 Acceptance criteria
+
+**The normalisation (ships first, on its own):**
+- The envelope shape of 10.3 is what `football.fetch` returns; `home_goals`/`away_goals` are
+  gone from the tree, and no football-data.org status string appears anywhere in
+  `homescreen/scenes/`.
+- `sport.py` reads only `scheduled` / `live` / `finished` / `postponed`. A status it does not
+  recognise is treated as `scheduled` and renders the fixture, never a traceback and never a
+  blank.
+- `tests/test_sport.py`'s fixtures are written in the normalised vocabulary, so they no longer
+  document one vendor's API.
+- The rendered round-panel output for a football team is **byte-identical** before and after —
+  pinned, because this refactor must be provably invisible.
+
+**The second provider:**
+- A new module under `homescreen/fetch/providers/` satisfying `ProviderPort`, registered in
+  `providers._modules()`, with `NAME`, `PARAMS`, `SECRETS`, `DEFAULT_INTERVAL_S`,
+  `MIN_SPACING_S`, `clean_params` and `fetch`. The contract test that walks the registry
+  passes with no special case.
+- **Metadata importable without `requests`** — `import requests` inside `fetch`, per §3.1, and
+  the C7 import-graph guard on `serve.py` still passes.
+- `fetch` unit-tested against a **recorded fixture** in `tests/fixtures/`, with no network.
+- `DEFAULT_INTERVAL_S` and `MIN_SPACING_S` are set from the vendor's **documented** limits, and
+  a configuration that would exceed the free tier is refused **at startup with the arithmetic
+  in the message** (§3.3, the `check_cadence` style).
+- If it needs a key: `SECRETS = ("api_key",)`, set write-only from the dashboard, and the
+  §3.6 sentinel test — which walks the app's URL map — covers it with no new assertion.
+  A missing key is a job with `ok: false` and a Spanish reason; the component renders
+  "sin clave"; no traceback and no blank panel.
+
+**The component with two sports:**
+- `needs()` returns the football provider for `sport=futbol` and the basketball provider for
+  `sport=baloncesto`. **One test per branch**, asserting the provider name, so the mapping
+  cannot silently collapse to one.
+- Two placements on two screens, same sport and team, produce **one** job; different sports
+  produce two (§3.2's dedup, re-asserted here because a new provider is where it breaks).
+- A **three-digit score renders inside the glass on both surfaces**: `112 - 108` at size `lg`
+  on 240×240 satisfies `draw.lines_fit`, and the composed 800×480 fragment does not overflow
+  its region. This is the one genuinely new rendering risk basketball introduces and it is
+  cheap to pin.
+- A basketball fixture with no draw possible still renders correctly at half time (`live`,
+  both scores present) and at tip-off (`live`, `0 - 0`).
+- Changing `sport` on a placement while `team` still holds the old sport's identifier yields
+  "sin partidos" with a Spanish hint, **not** an exception and not a fetch loop against an id
+  the vendor will never recognise.
+- A **NBA tip-off time renders in the placement's timezone**: a 19:30 ET game shows as the
+  following morning in Madrid, correctly, and `_when`'s "mañana" is right about which day it
+  is. Assert at a real DST-mismatched date — the US and EU do not change clocks on the same
+  weekend, and that fortnight is exactly when this breaks.
+- One provider failing leaves the other's placements rendering, with `ok: false` noted
+  (item 12's existing criterion, now with a second provider to mean it).
+
+**What this deliberately does not add.** No standings tables, no league ladders, no
+box scores, no player statistics, no crests or logos or remote images of any kind (item 12,
+unchanged), and no live score push — a screen is not a scoreboard, and `POLL_S` stays at 300.
+The unit is still *the next match, or the last result*, for one team.
+
+### 10.6 Sequencing
+
+This slots into §6's backlog as **item 12's second half**, and it is small:
+
+1. **12a — normalise the envelope.** One session. No new dependency, no key, no new API.
+   Ships alone and invisibly. **Do this even if basketball never happens** — it removes a
+   vendor's enum from a component, which is a defect on its own terms.
+2. **12b — the basketball provider.** One session against a recorded fixture, plus whatever
+   the account signup costs.
+3. **12c — the `sport` option and the second branch of `needs()`.** One session.
+
+None of it blocks or is blocked by §9. They are the two independent tracks in front of the
+project, and they should be worked in that order of importance: **the panel first, because it
+is the thing that just arrived and the thing with a measurement gate in it.**
+
+---
+
+## 11. Coverage audit — what is genuinely not covered
+
+Measured against everything the owner has asked for across this project: *clock, status,
+stock/currency, weather, calendar, sport events, Claude usage*; composed dashboards;
+schedules; several screens of different sizes; configuration per screen.
+
+**What is genuinely done.** Eight components and seven providers exist and are tested — **1,231
+Python tests pass on this tree today**, plus 266 firmware tests. Job dedup by `(provider, params)` works. The write-only
+secret store works, with a sentinel test that walks the URL map. Schedules resolve, store,
+and have a week-grid editor. Views compose with per-placement CSS scoping. Per-screen
+*and* per-placement credentials exist. Capabilities are described rather than enumerated, so
+a screen nobody has bought is already offered every template that fits it. This is a real
+platform and the audit below should be read against that, not instead of it.
+
+### The gaps, in priority order
+
+**G1 — Not one pixel has ever been rendered on the target.** The entire pixel-push half —
+`render.py`, `compose.py`, `/frame`, and the `html` body of all eight components — has never
+produced an image on the Pi, because Chromium is not installed there. Composed dashboards,
+the 800×480 design, "screens of different sizes" and most of what "attractive" could mean all
+live in that half. It is not an unbuilt feature; it is an **unexercised** one, which is worse,
+because it looks finished. §9.4 E0 and E1 are the whole of the fix and neither takes a day.
+
+**G2 — Currency is fetched by nobody.** `homescreen/fetch/providers/fx.py` is a complete,
+keyless, ECB-backed provider (Frankfurter) with `PARAMS`, cadence and tests — and **no
+component declares `{"provider": "fx"}`**. Grep the tree: the string `"fx"` appears only
+inside `fx.py`. `fetch.derive` therefore never creates an fx job and the module has never run
+outside its own unit tests. The owner asked for "stock/currency"; `quotes` covers shares and
+crypto, and the currency half is written, working, needs no API key, and is not wired to
+anything. SPEC §9 puts FX in the first cell of the markets band. This is the cheapest
+outstanding item in the project.
+
+**G3 — The composed dashboard has no content designed for it.** Two distinct holes. The
+`dashboard` template declares a `masthead` region and **no component fits it** (§9.5 item 5),
+so the top 11% of the panel is empty. And the four components that would fill the columns
+emit placeholder HTML — `sport` renders two team names at 36px and drops the kickoff time,
+the score and the competition, all of which it already computes for the draw list. Composing
+placeholders produces a page of placeholders. **This is the bulk of the e-paper work and it
+is not driver work**, which is the thing most likely to be underestimated now that the
+hardware has arrived.
+
+**G4 — Buttons never shipped, and they were settled, not proposed.** §4.7 and item 13
+specified a device declaring `buttons=boot.short`, `GET/PUT /api/devices/{hw}/inputs`,
+per-device bindings, and `refrescar` / `identificar`. The tree has **no `buttons` in
+`_CAP_LISTS`, no `/inputs` route, and no binding storage** — the string `buttons` does not
+appear in `homescreen/` at all. The BOOT short press is inert as item 1 required, so the
+device is sitting in the state that was supposed to be temporary. With a second physical
+screen about to exist, `identificar` stops being a nicety: two anonymous boards on a shelf is
+now a real problem rather than a predicted one.
+
+**G5 — Claude usage ships a number the owner cannot obtain.** Q5 is still open in this
+document's own §7: the recommendation was the Anthropic Admin API's usage/cost report *"with
+the endpoint and key type verified before this is scheduled"*, and it never was. There is no
+admin key on the Pi. The provider and the component both exist. So the component renders "sin
+clave" forever. §7 already wrote the decision: **verify the endpoint and get a key, or drop
+the component — do not fake it.** Choose one this month rather than leaving a permanently
+broken tile in the picker.
+
+**G6 — The API's retirement list is untouched.** §5.2 named four surfaces to retire and all
+four are still routed: `/api/config`, `PATCH|DELETE /api/config/devices/<id>`,
+`GET /api/display/<id>/data`, `GET /api/display/<id>/health`. `/api/components` was designed
+and never built (`/api/providers` and `/api/jobs` were). §5.4's removal bookkeeping — the
+once-per-device-per-day legacy log, the `api: "legacy"|"current"` field, `?state=` on the
+collection — is also outstanding. None of this is urgent; all of it is the kind of debt that
+becomes load-bearing exactly when a second device class arrives, which is now.
+
+**G7 — No OTA, on a device about to be mounted behind glass.** CLAUDE.md says *"devices need
+a watchdog + restart-on-N-failures and OTA from day one"*. The firmware has neither OTA nor a
+restart-on-N-failures policy. It was tolerable while the only board was a C3 on a desk with a
+USB cable in it. An e-paper panel screwed to a wall is a different proposition, and E6 is the
+last cheap moment to add it.
+
+**G8 — Quiet hours do not exist.** SPEC §6's `refresh.quiet_hours`, referenced by §2.6 as a
+platform stretch over each component's answer, is not in the tree. A 1-bit panel does not
+emit light, so this is not about a bedroom being lit — it is about **not spending refresh
+cycles, ghosting budget and API quota between 01:00 and 07:00 on a picture nobody is looking
+at**. It becomes real the day the panel is on a wall.
+
+**G9 — "Several screens of different sizes" is asserted, not demonstrated.** `surface.py`,
+`layout.templates_for` and `mockdevice` are good work and the abstraction looks right — but
+the fleet has been exactly one round panel for the whole project. The second screen arriving
+is the first genuine test of it, and the specific things it will test are: whether the
+`dashboard` template's fractional rects land where SPEC §9's measured pixels say they should
+on 800×480, and whether a component handed a 764×62 band composes for it or merely fits in it
+(§2.3's obligation, which nothing currently checks).
+
+**G10 — Deliveries (SPEC §7.6) remain unscheduled**, per SPEC §14 and PLAN Phase D. Correctly
+deprioritised — most fragile upstream, least essential — but it is on the owner's original
+list and has not been mentioned in a long time. Naming it here so that "we covered everything
+you asked for" is not said while it is quietly absent.
+
+**Not gaps, deliberately.** Rotation (replaced by schedules, §4). Authentication (owner's
+decision, §8). A layout DSL or drag-and-drop (§8). Historical charts (§8). Per-region
+schedules (Q9, settled). None of these should reappear as findings.
+
+---
+
+## 12. "Crisp and attractive", made checkable
+
+The owner asked for a crisp, attractive design and asked that it be iterated until it is one.
+That is not currently reviewable: there is no statement anyone could disagree with, so there
+is no version of the work that could fail. What follows is the smallest set of criteria that
+turns it into a gate. **Eight checks, seven of them automatable, one deliberately not.**
+
+A view passes review only if all eight hold. They apply to both surfaces and to the web
+dashboard where noted.
+
+**C1 — Density has a ceiling, per surface.** A round 240×240 placement emits **at most 5
+text drawables** — there are exactly five slots in `draw.SLOTS`, and a sixth is a collision,
+not a design. Any placement emits at most `kMaxPlacements` = 40 drawables total after icon
+expansion. On the pixel path, per region: masthead ≤3 block elements, a column region ≤12
+rows, a markets cell ≤3 lines. *Check:* count elements in the built fragment; one test per
+component per offered surface.
+
+**C2 — Nothing overflows, measured with the worst string you actually get.** For every
+component × every offered geometry, against a fixture holding the longest realistic value
+(`"BINANCE:BTCUSDT 63,120 ▲ 2.90%"`, a 24-char team short name, a Spanish weekday plus a
+full date), `draw.lines_fit` is true; and on the pixel path the composed 800×480 PNG has **no
+ink in the outer 4 px of any region rectangle**. *Check:* one bleed assertion over the
+rendered frame catches every truncation, every wrapped row and every collision in one number,
+and it needs no golden image to maintain.
+
+**C3 — Every state is designed, not just the happy one.** Each component renders four
+fixtures — unconfigured, no envelope at all, `ok: false` with stale data, and full — and each
+produces a **non-empty** frame carrying a Spanish string. None produces an empty rectangle,
+and none produces a zero that reads as a real value. This is §2.5's existing invariant turned
+into a 4×N matrix instead of a paragraph. *Check:* parametrised test; it is the single
+criterion most likely to fail today.
+
+**C4 — Two inks, and the floor holds, over the composed output.** The compiled CSS of a
+composed page contains only `#000` and `#fff`; no `font-size` below 10px; and the rendered
+PNG's `render.grey_fraction` is **< 1%**. All three already have machinery — the third is one
+existing function. *Check:* run all three over `compose.compose`'s output, not over each
+fragment, because scoping and the page box are where a stray colour would enter.
+
+**C5 — At most two inverted pills on a page.** SPEC §3's budget, now enforceable: count
+`.pill` in the composed HTML; a third `bad`/`warn` degrades to `normal` (§9.3). A page of
+inverted blocks has no emphasis at all, which is the failure this prevents.
+
+**C6 — Contrast, stated honestly per surface.** On 1-bit glass contrast is 21:1 or it is
+nothing, so the real criteria are structural: nothing below 10px, no stroke thinner than 1px,
+and — SPEC §3 — **no text placed over a graphic**, asserted by checking no region's
+instruction list contains a shape whose bounding box overlaps a text placement. On the round
+panel colour exists and the criterion is the usual one: **every tone in `draw.to_svg`'s
+palette holds ≥ 4.5:1 against the panel ground.** Today's eight all do — the weakest
+is `bad` #e05a5a at 5.78:1 and `dim` #8a8a8a at 6.08:1, both comfortably clear — so **pin
+them now**, before anyone adds a ninth tone that vanishes. The web
+dashboard is held to the same 4.5:1, in both its themes.
+
+**C7 — One alignment per region, and it is visible.** A column region's placements share one
+left edge and one vertical rhythm: the composed HTML for a stacking region contains no
+`text-align:center` and no per-element horizontal margin. This is the single cheapest thing
+that separates a dashboard that looks *designed* from one that looks *assembled*, and it is a
+string assertion.
+
+**C8 — A person looks at it, and the artefact is attached.** *(not automatable, and that is
+the point)* Every e-paper item is reviewed against **two images filed with it**: a
+`mockdevice --out` screenshot, and — after §9.4 E3 — a photograph of the real panel at 60 cm.
+An acceptance criterion nobody looks at is not a criterion. E3 is the only place "is this
+legible" can be answered at all, and E0 is the only place "is this attractive" can be
+iterated cheaply.
+
+**What these deliberately do not do.** They do not define a house style, prescribe a grid, or
+score beauty. They make *specific bad outcomes impossible* — truncation, speckle, empty
+rectangles, undesigned failure states, invisible tones, ragged columns, a page of inverted
+blocks — and leave the rest to E0's screenshot loop and to the person looking at it. That is
+as far as "attractive" can honestly be pushed into a test suite.
