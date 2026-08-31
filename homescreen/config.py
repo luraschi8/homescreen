@@ -152,8 +152,13 @@ def home_location(cfg: dict) -> dict:
     for dev in (cfg.get("devices") or []):
         home = mapping(mapping(dev).get("home"))
         if home.get("lat") is not None and home.get("lon") is not None:
-            return {**home, "name": home.get("name") or where.get("name")
-                    or mapping(dev).get("id")}
+            # Coordinates, and a name only if somebody actually wrote one. The
+            # device's id is an identifier, not a place: falling back to it put
+            # "radar" on a weather panel where a city belongs. No name is
+            # better than a wrong one -- a caller with nothing to show can ask
+            # the source what the place is called.
+            name = home.get("name") or where.get("name")
+            return {**home, "name": name} if name else dict(home)
     return where
 
 
