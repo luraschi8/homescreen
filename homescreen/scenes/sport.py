@@ -118,18 +118,21 @@ def build(ctx: SceneContext) -> Scene:
         else:
             instructions = [draw.text("above", _when(when, ctx.now), "sm", "dim"),
                             draw.text("center", "vs", "sm", "dim")]
-        pairing = f"{home} — {away}"
-        if draw.lines_fit([pairing], w, h,
-                          shape=str(ctx.caps.get("shape") or "rect")):
-            instructions.insert(0, draw.text("rim_top", pairing, "xs",
-                                             "accent"))
-        else:
-            instructions.append(draw.text("below", home, "xs", "dim"))
-            instructions.append(draw.text("rim_bottom", away, "xs", "dim"))
-        if match.get("competition"):
-            instructions.append(
-                draw.text("rim_bottom" if not (finished or live) else "below",
-                          str(match["competition"]), "xs", "dim"))
+        # One instruction per slot, always. Both branches used to append a
+        # second string to a slot another line already held, and neither the
+        # resolver nor the firmware deduplicates -- so the panel printed
+        # "AtleticoladeligaMadrid", two words overprinted into one.
+        shape = str(ctx.caps.get("shape") or "rect")
+        pairing = f"{home}  {away}" if not (finished or live) else \
+            f"{home}  ·  {away}"
+        if not draw.lines_fit([pairing], w, h, shape=shape):
+            pairing = f"{home[:11]}  {away[:11]}"
+        instructions.insert(0, draw.text("rim_top",
+                                         str(match.get("competition") or "")
+                                         or pairing, "xs", "dim"))
+        instructions.append(draw.text(
+            "below" if (finished or live) else "rim_bottom", pairing, "xs",
+            "accent"))
 
     body = (f'<div class="wrap"><div class="big">'
             f'{(match or {}).get("home", "")} — {(match or {}).get("away", "")}'

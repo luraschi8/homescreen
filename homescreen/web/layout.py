@@ -57,6 +57,11 @@ h2{font-size:.74rem;text-transform:uppercase;letter-spacing:.08em;
 
 .panel{background:var(--panel);border:1px solid var(--line);
   border-radius:var(--radius);overflow:hidden}
+/* Wide content scrolls INSIDE its panel. Without this the fleet table was
+   clipped by the panel and the document did not scroll, so on a phone the
+   state, last-contact and cadence columns were unreachable -- not cramped,
+   unreachable. */
+.scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .panel+.panel{margin-top:.8rem}
 .pad{padding:1rem 1.1rem}
 
@@ -117,6 +122,8 @@ figure.pv figcaption{font-size:.74rem;color:var(--dim);margin-top:.3rem}
 .notice{margin:0 0 1.1rem;padding:.65rem .85rem;border-radius:8px;
   background:var(--warn-bg);color:var(--warn);font-size:.86rem;
   border:1px solid transparent}
+.notice.ok{background:var(--ok-bg);color:var(--ok)}
+.notice.bad{background:var(--bad-bg);color:var(--bad)}
 .empty{color:var(--dim);font-size:.88rem}
 .danger-zone{border-color:var(--bad)}
 .danger-zone h2{color:var(--bad)}
@@ -213,7 +220,19 @@ def page(title: str, body: str, *, active: str = "", meta: str = "",
         f'<a href="{href}"{" class=\"on\"" if key == active else ""}>{e(label)}</a>'
         for key, href, label in (("fleet", "/", "Flota"),
                                  ("settings", "/settings", "Ajustes")))
-    notice_html = f'<div class="notice">{e(notice)}</div>' if notice else ""
+    # Success and failure came through one `?m=` into one yellow bar, so every
+    # save looked like a warning and every failure looked like a save. The
+    # message says which it is; the bar should agree.
+    kind = ""
+    lowered = str(notice).lower()
+    if any(w in lowered for w in ("no se pudo", "no existe", "error",
+                                  "unavailable", "necesita", "no válid",
+                                  "debe ", "vacío", "supera")):
+        kind = " bad"
+    elif notice:
+        kind = " ok"
+    notice_html = (f'<div class="notice{kind}">{e(notice)}</div>'
+                   if notice else "")
     script_html = f"<script>{script}</script>" if script else ""
     return f"""<!doctype html><html lang="es"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

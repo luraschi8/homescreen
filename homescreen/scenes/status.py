@@ -12,13 +12,15 @@ from __future__ import annotations
 import html
 from datetime import datetime
 
+from homescreen import draw
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._style import page
 
-#: Host stats are a page of labelled rows. On a narrow badge the labels and
-#: their values cannot share a line, and stacking them makes a list nobody can
-#: read at a glance -- which is the only reason to show host stats at all.
-SURFACES = ({"shape": "rect", "min_w": 320},)
+#: Anywhere. This scene is what an UNASSIGNED or FAILED screen shows, and
+#: serve.py routes every such device here whatever its glass -- so declaring
+#: itself rect-only was a lie that the router ignored, on the one scene that
+#: has to work on hardware nobody has configured yet.
+SURFACES = ({"min_short": 90},)
 
 CSS = """
 .wrap{padding:18px;display:flex;flex-direction:column;height:100%;
@@ -42,6 +44,8 @@ def build(ctx: SceneContext, *, message: str | None = None) -> Scene:
     name = e(str(name)) if name else None
     stamp = datetime.fromtimestamp(ctx.now).strftime("%H:%M")
     text = e(str(message)) if message else "sin escena asignada"
+    raw_hw = str(ctx.device.get("hw") or ctx.device.get("id") or "unknown")
+    raw_name = ctx.device.get("name")
     body = (f'<div class="wrap">'
             f'<div class="lab">{"sin asignar" if not name else name}</div>'
             f'<div class="hw">{hw}</div>'
@@ -49,4 +53,21 @@ def build(ctx: SceneContext, *, message: str | None = None) -> Scene:
             f'<div class="ter" style="margin-top:14px">{stamp}</div>'
             f'</div>')
     # Host stats: nothing here is worth waking a panel for more often.
-    return Scene(layout="fill", poll_s=30, html=page(w, h, body, CSS))
+    # A DRAW LIST too, and this is the important half. A data-push panel
+    # plugged in for the first time renders this scene -- and with no
+    # instructions it drew nothing at all, so the one screen whose entire job
+    # is to tell you its hardware id could not tell you anything. It was the
+    # first thing anybody saw and it was blank.
+    headline = str(message or "")
+    instructions = [
+        draw.text("rim_top", "SIN ASIGNAR" if not headline else "AVISO", "xs",
+                  "warn"),
+        draw.text("center", raw_hw, "md"),
+        draw.text("below", str(raw_name) if raw_name else "sin nombre", "sm",
+                  "dim"),
+        draw.text("rim_bottom", headline[:28] if headline else stamp, "xs",
+                  "dim"),
+    ]
+    return Scene(layout="fill", poll_s=30,
+                 components=({"c": "status", "draw": instructions},),
+                 html=page(w, h, body, CSS))

@@ -413,7 +413,15 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             web.render_device(_fleet_entry(hw, rec, now), options=opts,
                               schemas=schemas, name_max=registry.NAME_MAX,
                               notice=request.args.get("m", ""),
-                              plan=plan, views=layout.view_names(rec), now=now,
+                              # Only once the screen HAS views. Before that
+                              # the picker above is the whole story, and a
+                              # schedule editor offering one pseudo-view named
+                              # "unassigned" is noise on the first page anyone
+                              # opens.
+                              plan=plan,
+                              views=(layout.view_names(rec)
+                                     if rec.get("views") else ()),
+                              now=now,
                               credentials=_screen_credentials(hw, rec),
                               view_bodies={n: layout.view_for(rec, n)
                                            for n in layout.view_names(rec)},
@@ -1451,7 +1459,14 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 "components": kept}
         if dropped:
             body["unsupported"] = sorted(set(dropped))
-        _note(hw, **({"unsupported": sorted(set(dropped))} if dropped else {}),
+        # `unsupported` means "the scene YOU chose emits something this screen
+        # cannot draw". On a fallback scene -- pending, unassigned, error --
+        # the operator chose nothing, so reporting a substitution there is
+        # noise that never clears.
+        chosen = name not in ("pending", "unassigned", "error")
+        _note(hw,
+              **({"unsupported": sorted(set(dropped))}
+                 if dropped and chosen else {}),
               **({"scene_error": scene_error} if scene_error else {}))
         if name == "pending":
             body["message"] = "esperando aprobación · apruébalo en el panel"

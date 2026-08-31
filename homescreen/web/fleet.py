@@ -54,10 +54,10 @@ def render_fleet(st: dict, notice: str = "") -> str:
   <td class="meta">{e(d.get("poll_seconds"))}s</td>
 </tr>""" for d in members)
 
-    table = (f"""<div class="panel"><table class="fleet">
+    table = (f"""<div class="panel"><div class="scroll-x"><table class="fleet">
   <tr><th>Pantalla</th><th>Muestra</th><th>Estado</th>
       <th>Último contacto</th><th>Cadencia</th></tr>
-  {rows}</table></div>"""
+  {rows}</table></div></div>"""
              if members else
              '<div class="panel"><div class="pad empty">'
              'Ninguna pantalla en la flota todavía. Enciende una y aparecerá '

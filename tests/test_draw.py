@@ -211,5 +211,7 @@ def test_the_preview_shows_exactly_what_the_panel_will_show():
     # instruction list. If it happened later, the preview would promise an
     # accent the glass cannot keep -- the drift this design exists to prevent.
     instruction = draw.text("center", "mañana · 21°")
-    assert instruction["v"] == "manana - 21°"
-    assert "manana - 21°" in draw.to_svg([instruction], 240, 240)
+    # The middle dot is a separator, not a dash: mapping it to "-" put a minus
+    # sign immediately before a number.
+    assert instruction["v"] == "manana   21°"
+    assert "manana   21°" in draw.to_svg([instruction], 240, 240)
