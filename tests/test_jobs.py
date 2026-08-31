@@ -309,6 +309,7 @@ _SAMPLE_PARAMS = {
     "ics": {"url": "https://example.invalid/c.ics", "days": 14},
     "football": {"team": 86, "days": 30},
     "claude_usage": {"days": 30},
+    "fx": {"base": "EUR", "symbols": "USD,GBP"},
 }
 
 

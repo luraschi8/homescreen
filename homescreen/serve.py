@@ -464,13 +464,19 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 for need in scenes.needs(component, placement.get("options"),
                                          _live()) or ():
                     provider = need.get("provider")
-                    scope = f"{hw}/{view_name}/{provider}"
+                    scope = (f"{hw}/{view_name}/"
+                             f"{placement.get('id') or 'p'}/{provider}")
                     for name in fetch.providers.secrets_for(provider):
                         if (provider, name, scope) in seen:
                             continue
                         seen.add((provider, name, scope))
                         state = secrets.status(cache_dir, provider, name, scope)
                         state["scope"] = scope
+                        # Which placement this belongs to, so a screen showing
+                        # two calendars offers two clearly-labelled fields
+                        # rather than one that silently governs both.
+                        state["placement"] = placement.get("id") or ""
+                        state["view"] = view_name
                         out.append(state)
         return out
 
@@ -492,7 +498,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         new = (request.form.get("new_view") or "").strip()[:40]
         if new and new not in names:
             names.append(new)
-        posted = web.views_ui.parse(request.form, regions, names)
+        schemas = {name: list(scenes.option_schema(name))
+                   for name in scenes.names()}
+        posted = web.views_ui.parse(request.form, regions, names, schemas)
 
         known = set(scenes.names())
         views, kept = {}, {}
@@ -501,14 +509,24 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             cleaned = layout.clean_view(body, caps, known)
             if not cleaned["placements"]:
                 continue                 # an empty view is not a view
-            # Options survive the arrangement: a component that was already
-            # here keeps what it was configured with.
-            previous = {p.get("component"): p.get("options")
-                        for p in (layout.view_for(rec, name).get("placements")
-                                  or ())}
-            for placement in cleaned["placements"]:
-                placement["options"] = dict(
-                    previous.get(placement["component"]) or {})
+            # Each placement keeps what its own fields posted. A slot that
+            # posted none -- a component with no options -- falls back to what
+            # that same slot held before, so rearranging does not wipe
+            # settings.
+            previous = {(p.get("region"), i): p.get("options")
+                        for i, p in enumerate(
+                            layout.view_for(rec, name).get("placements") or ())}
+            for index, placement in enumerate(cleaned["placements"]):
+                posted_options = None
+                for candidate in (body.get("placements") or ()):
+                    if candidate.get("id") == placement.get("id"):
+                        posted_options = candidate.get("options")
+                        break
+                placement["options"] = scenes.clean_options(
+                    placement["component"],
+                    posted_options
+                    if posted_options is not None
+                    else previous.get((placement.get("region"), index)) or {})
             views[name] = cleaned
             kept[name] = True
         if not views:

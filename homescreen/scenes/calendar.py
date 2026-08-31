@@ -94,10 +94,13 @@ def build(ctx: SceneContext) -> Scene:
                         draw.text("below", f"próximos {options.get('days', 14)} días",
                                   "xs", "dim")]
     elif rows == 1:
-        # The next one, which is what you ask a small screen.
+        # The next one, which is what you ask a small screen. Today is warned
+        # rather than dimmed: the difference between "later" and "soon" is the
+        # only thing you need from across a room.
         first = events[0]
-        instructions = [draw.text("above", _when(first.get("when"), ctx.now),
-                                  "sm", "dim"),
+        when = _when(first.get("when"), ctx.now)
+        instructions = [draw.text("above", when, "sm",
+                                  "warn" if when.startswith("hoy") else "accent"),
                         draw.text("center", str(first.get("summary") or ""), "md")]
         if len(events) > 1:
             instructions.append(
@@ -106,7 +109,9 @@ def build(ctx: SceneContext) -> Scene:
         slots = ("rim_top", "above", "center", "below", "rim_bottom")
         instructions = [
             draw.text(slot, f"{_when(e.get('when'), ctx.now)}  "
-                            f"{str(e.get('summary') or '')}", "sm")
+                            f"{str(e.get('summary') or '')}", "sm",
+                      "warn" if _when(e.get("when"), ctx.now).startswith("hoy")
+                      else "normal")
             for e, slot in zip(events[:rows], slots)]
 
     body = "".join(

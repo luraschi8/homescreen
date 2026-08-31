@@ -136,8 +136,9 @@ def build(ctx: SceneContext) -> Scene:
         symbol = symbols[index]
         reading = readings[symbol]
         change, tone = _fmt_change(reading.get("change_pct"))
-        instructions = [draw.text("above", symbol, "sm", "dim"),
-                        draw.text("center", _fmt_price(reading.get("price")), "lg")]
+        instructions = [draw.text("above", symbol, "sm", "accent"),
+                        draw.text("center", _fmt_price(reading.get("price")),
+                                  "lg")]
         if change:
             instructions.append(draw.text("below", change, "sm", tone))
         if len(symbols) > 1:

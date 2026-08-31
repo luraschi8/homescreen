@@ -14,7 +14,20 @@ struct Placement {
   char text[40];
 };
 
-enum Tone : uint8_t { kNormal = 0, kDim, kGood, kBad };
+//! What a value MEANS. The panel decides how to show it.
+//!
+//! Order is the wire's: `resolve()` maps the server's tone names onto these by
+//! index, so appending is safe and reordering is not.
+enum Tone : uint8_t {
+  kNormal = 0,  //!< the thing you came to read
+  kDim,         //!< its label, its units, its footnote
+  kGood,        //!< up, healthy, live
+  kBad,         //!< down, failing, expired
+  kAccent,      //!< the identity of the thing -- a city, a symbol, a team
+  kWarn,        //!< needs attention but is not wrong
+  kCool,        //!< cold end of a scale
+  kHot,         //!< hot end of a scale
+};
 
 /** Room for one screenful. A component sending more is truncated, not honoured. */
 constexpr size_t kMaxPlacements = 12;

@@ -35,9 +35,33 @@ def drawn(caps, **kw):
 # --- the surface decides the arrangement ------------------------------------
 
 def test_a_round_panel_gets_one_big_number():
+    # The number alone. The unit moved to the line below -- not only for looks:
+    # at `xl` the panel picks a bitmap face covering ASCII alone, so a degree
+    # sign in the headline drew a blank box on real glass.
     values = drawn({"w": 240, "h": 240, "depth": 16, "shape": "round"})
-    assert values[0] == "21°C"
-    assert "Madrid" in values
+    assert values[0] == "21"
+    assert any("Madrid" in v and "°C" in v for v in values)
+
+
+def test_the_big_number_is_drawable_by_the_bitmap_faces():
+    # The bug, as a test: anything at `xl` must be plain ASCII, because the
+    # faces the ladder reaches for at that size cover 0x20-0x7E only.
+    scene = scenes.build("weather", ctx({"w": 240, "h": 240, "depth": 16}))
+    for item in scene.components[0]["draw"]:
+        if item["size"] == "xl":
+            assert all(ord(c) <= 0x7E for c in item["v"]), item["v"]
+
+
+def test_the_temperature_is_coloured_by_what_it_feels_like():
+    # A temperature is the one number here with an intuitive scale, so colour
+    # says something a label would need words for.
+    from homescreen.scenes.weather import _temp_tone
+    assert _temp_tone(2, "metric") == "cool"
+    assert _temp_tone(15, "metric") == "normal"
+    assert _temp_tone(24, "metric") == "warn"
+    assert _temp_tone(32, "metric") == "hot"
+    assert _temp_tone(90, "imperial") == "hot", "converted, not compared raw"
+    assert _temp_tone(None, "metric") == "dim"
 
 
 def test_a_wide_band_gets_the_same_reading_along_the_line():
@@ -77,14 +101,14 @@ def test_a_scene_builds_with_no_data_port_at_all():
 
 def test_units_change_the_symbol_and_the_request():
     values = drawn({"w": 240, "h": 240}, options={"units": "imperial"})
-    assert values[0].endswith("°F")
+    assert any(v.endswith("°F") for v in values)
     need = scenes.needs("weather", {"units": "imperial"}, CFG)[0]
     assert need["params"]["units"] == "imperial"
 
 
 def test_a_place_can_be_overridden_per_assignment():
     values = drawn({"w": 240, "h": 240}, options={"place": "La oficina"})
-    assert "La oficina" in values
+    assert any("La oficina" in v for v in values)
 
 
 def test_a_screen_elsewhere_asks_for_a_different_fetch():

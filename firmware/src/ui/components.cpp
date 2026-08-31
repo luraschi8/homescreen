@@ -32,12 +32,19 @@ ComponentKind componentKindFromName(const char* c) {
 namespace {
 
 /** Tone -> pen. 1-bit panels collapse these; this one has colour to spend. */
+//! RGB565 for each tone. Picked to stay distinguishable at a glance on a
+//! small panel across a room, which rules out anything subtle: these are
+//! saturated because a 240px circle seen from a sofa has no room for nuance.
 uint16_t penFor(uint8_t tone) {
   switch (tone) {
-    case ui::drawlist::kDim:  return 0x8410;   // mid grey
-    case ui::drawlist::kGood: return 0x2E68;   // green
-    case ui::drawlist::kBad:  return 0xF9A6;   // red
-    default:                  return config::kTextOnBlack;
+    case ui::drawlist::kDim:    return 0x8410;   // mid grey
+    case ui::drawlist::kGood:   return 0x2E68;   // green
+    case ui::drawlist::kBad:    return 0xF9A6;   // red
+    case ui::drawlist::kAccent: return 0x5E5C;   // cyan
+    case ui::drawlist::kWarn:   return 0xE5A7;   // amber
+    case ui::drawlist::kCool:   return 0x6D5E;   // cold blue
+    case ui::drawlist::kHot:    return 0xF449;   // warm orange
+    default:                    return config::kTextOnBlack;
   }
 }
 
@@ -60,7 +67,7 @@ bool drawInstructions(const char* draw_json) {
     // Pixels, not a scale factor. displayFontSetSmoothSize takes a SCALE and
     // reads as if it took a size; passing 62 there rendered the 15px face at
     // 62x and the panel showed one letter.
-    displayFontSetPixelHeight(tft, placed[i].px);
+    displayFontSetPixelHeight(tft, placed[i].px, placed[i].text);
     tft.setTextColor(penFor(placed[i].tone), config::kColorBlack);
     tft.drawString(placed[i].text, placed[i].x, placed[i].y);
   }

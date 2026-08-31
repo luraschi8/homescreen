@@ -121,8 +121,8 @@ def build(ctx: SceneContext) -> Scene:
         pairing = f"{home} — {away}"
         if draw.lines_fit([pairing], w, h,
                           shape=str(ctx.caps.get("shape") or "rect")):
-            instructions.insert(0 if (finished or live) else 0,
-                                draw.text("rim_top", pairing, "xs", "dim"))
+            instructions.insert(0, draw.text("rim_top", pairing, "xs",
+                                             "accent"))
         else:
             instructions.append(draw.text("below", home, "xs", "dim"))
             instructions.append(draw.text("rim_bottom", away, "xs", "dim"))

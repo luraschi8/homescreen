@@ -125,10 +125,26 @@ void displayFontSetSmoothSize(lgfx::LGFXBase& gfx, float size) {
   gfx.setTextSize(size);
 }
 
-void displayFontSetPixelHeight(lgfx::LGFXBase& gfx, int px) {
+bool asciiOnly(const char* text) {
+  if (text == nullptr) return true;
+  for (const unsigned char* p = reinterpret_cast<const unsigned char*>(text);
+       *p != 0; ++p) {
+    if (*p > 0x7E) return false;
+  }
+  return true;
+}
+
+void displayFontSetPixelHeight(lgfx::LGFXBase& gfx, int px, const char* text) {
   if (px <= 0) {
     return;
   }
+  // The FreeSans faces cover 0x20-0x7E and nothing else; the embedded VLW is
+  // the only one carrying a degree sign. Picking the closest-sized face
+  // without asking whether it can DRAW the string put a blank box where "32°C"
+  // should be -- while "31° / 33°" a few pixels away was fine, because at that
+  // size the ladder had already chosen the VLW. Text that needs a glyph only
+  // the smooth face has, gets the smooth face, blockiness and all.
+  const bool ascii = asciiOnly(text);
   measureFaces(gfx);
   if (s_face_count == 0) {
     return;
@@ -139,8 +155,12 @@ void displayFontSetPixelHeight(lgfx::LGFXBase& gfx, int px) {
   const FaceMetric* chosen = nullptr;
   for (int i = 0; i < s_face_count; ++i) {
     const FaceMetric& face = s_faces[i];
+    if (!ascii && face.gfx != nullptr) {
+      continue;                          // this face cannot draw the string
+    }
     if (face.gfx == nullptr &&
-        static_cast<float>(px) <= static_cast<float>(face.natural) * kSmoothMaxScale) {
+        (!ascii ||
+         static_cast<float>(px) <= static_cast<float>(face.natural) * kSmoothMaxScale)) {
       chosen = &face;
       break;
     }

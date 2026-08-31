@@ -101,7 +101,12 @@ def collect(records: dict, cfg: dict, *, requirements=None,
                     # account. The scope is an identifier, not a secret, so it
                     # is safe in the key and visible in /api/jobs.
                     if has_own_key and isinstance(need, dict):
-                        scope = f"{where}/{(need.get('provider') or '')}"
+                        # Scoped to the PLACEMENT. Two Claude accounts, or two
+                        # calendars, on one screen are two placements -- and
+                        # scoping to the view made them share one credential,
+                        # so the second silently showed the first's data.
+                        scope = (f"{where}/{placement.get('id') or 'p'}"
+                                 f"/{need.get('provider') or ''}")
                         if has_own_key(need.get("provider"), scope):
                             need = {**need,
                                     "params": {**(need.get("params") or {}),

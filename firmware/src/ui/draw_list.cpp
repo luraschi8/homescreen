@@ -29,6 +29,10 @@ uint8_t toneFromName(const char* t) {
   if (strcmp(t, "dim") == 0) return kDim;
   if (strcmp(t, "good") == 0) return kGood;
   if (strcmp(t, "bad") == 0) return kBad;
+  if (strcmp(t, "accent") == 0) return kAccent;
+  if (strcmp(t, "warn") == 0) return kWarn;
+  if (strcmp(t, "cool") == 0) return kCool;
+  if (strcmp(t, "hot") == 0) return kHot;
   return kNormal;                       // unknown tones are not invented
 }
 

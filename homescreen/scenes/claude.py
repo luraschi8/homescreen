@@ -56,7 +56,8 @@ def build(ctx: SceneContext) -> Scene:
                         draw.text("below", "sin datos de uso", "xs", "dim")]
     else:
         instructions = [
-            draw.text("center", _short(reading.get("total_tokens")), "xl"),
+            draw.text("center", _short(reading.get("total_tokens")), "xl",
+                      "accent"),
             draw.text("below", f"tokens · {days} días", "sm", "dim"),
             draw.text("rim_bottom",
                       f"in {_short(reading.get('input_tokens'))} · "

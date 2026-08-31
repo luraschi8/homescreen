@@ -19,7 +19,11 @@ void displayFontSetSmoothSize(lgfx::LGFXBase& gfx, float size);
  * showed one letter. Callers that think in pixels -- which is everything
  * driven by an instruction list -- must use this instead.
  */
-void displayFontSetPixelHeight(lgfx::LGFXBase& gfx, int px);
+void displayFontSetPixelHeight(lgfx::LGFXBase& gfx, int px,
+                               const char* text = nullptr);
+
+/** True if every byte is drawable by the bitmap faces (0x20-0x7E). */
+bool asciiOnly(const char* text);
 
 /** Bitmap GFXfont fallback; clears any runtime VLW font on this instance. */
 void displayFontSetBitmap(lgfx::LGFXBase& gfx, const lgfx::GFXfont* font);

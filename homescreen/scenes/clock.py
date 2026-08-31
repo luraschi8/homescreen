@@ -99,7 +99,7 @@ def build(ctx: SceneContext) -> Scene:
     # time and its label plus a second city small at the rim -- deciding that
     # here, once, is what lets the preview be exact.
     instructions = [draw.text("center", primary[1], "xl"),
-                    draw.text("below", primary[0], "sm", "dim")]
+                    draw.text("below", primary[0], "sm", "accent")]
     if rest:
         instructions.append(
             draw.text("rim_bottom", f"{rest[0][0]} {rest[0][1]}", "xs", "dim"))

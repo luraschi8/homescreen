@@ -41,9 +41,22 @@ SLOTS = {
 #: proportions on a square panel and does not overflow a narrow one.
 SIZES = {"xl": 0.26, "lg": 0.17, "md": 0.11, "sm": 0.075, "xs": 0.055}
 
-#: Tones are names, not colours. The device resolves them: `bad` cannot be red
-#: on a 1-bit e-paper, so there it becomes an inverted block instead.
-TONES = ("normal", "dim", "good", "bad")
+#: Tones are names, not colours. A component says what a value MEANS and the
+#: device decides how to show it -- `bad` cannot be red on 1-bit glass, so
+#: there it becomes an inverted block instead.
+#:
+#: The first four were the whole vocabulary, which made every panel white text
+#: and grey labels on black. These are the meanings worth distinguishing on a
+#: colour display, and no more: a palette is only useful while a glance can
+#: tell two entries apart.
+TONES = ("normal",   # the thing you came to read
+         "dim",      # its label, its units, its footnote
+         "good",     # up, healthy, live
+         "bad",      # down, failing, expired
+         "accent",   # the identity of the thing -- a city, a symbol, a team
+         "warn",     # needs attention but is not wrong
+         "cool",     # cold end of a scale
+         "hot")      # hot end of a scale
 
 #: Smallest legible type on these panels. CLAUDE.md puts the floor at 10px for
 #: the e-paper; the round display is denser but the same floor holds.
@@ -213,8 +226,11 @@ def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True) -> str:
     else:
         parts.append(f'<rect width="{w}" height="{h}" fill="#000"/>')
 
-    fill = {"normal": "#fff", "dim": "#8a8a8a", "good": "#5ad16b",
-            "bad": "#e05a5a"}
+    # The preview's colours are the panel's, so a preview is not a nicer
+    # picture of a duller screen.
+    fill = {"normal": "#ffffff", "dim": "#8a8a8a", "good": "#5ad16b",
+            "bad": "#e05a5a", "accent": "#5ac8e0", "warn": "#e8b23a",
+            "cool": "#6aa9f0", "hot": "#f08a4b"}
     for item in resolve(draw, w, h):
         colour = fill.get(item["tone"], "#fff")
         # dominant-baseline centres the glyph box on the slot's y, which is

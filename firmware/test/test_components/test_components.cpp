@@ -457,8 +457,42 @@ void test_a_device_nobody_let_in_says_so_on_its_own_glass(void) {
                            "and its id, so a human knows WHICH panel to admit");
 }
 
+
+void test_text_needing_a_glyph_only_the_smooth_face_has_gets_it(void) {
+  // Reported from the sofa: "32°C" drew a blank box while "31° / 33°" a few
+  // pixels away was fine. The ladder picks the face closest in SIZE, and the
+  // FreeSans faces cover 0x20-0x7E only -- the embedded VLW is the one with a
+  // degree sign. At xl the ladder chose a bitmap face that could not draw the
+  // string; at xs it had already chosen the VLW, which is why one worked.
+  g_font_is_smooth = true;
+  displayFontSetPixelHeight(tft, 62, "32\u00b0C");
+  TEST_ASSERT_NULL_MESSAGE(tft.currentFont(),
+                           "non-ASCII must fall back to the smooth face");
+  displayFontSetPixelHeight(tft, 62, "32C");
+  TEST_ASSERT_NOT_NULL_MESSAGE(tft.currentFont(),
+                               "plain ASCII still gets the closest-sized face");
+}
+
+void test_the_tone_vocabulary_survives_the_wire(void) {
+  // Through resolve(), which is the path a tone actually travels. An unknown
+  // tone falls back rather than being invented, so a tone a newer server sends
+  // to an older binary is plain text and never a wrong colour.
+  ui::drawlist::Placement out[ui::drawlist::kMaxPlacements];
+  const size_t n = ui::drawlist::resolve(
+      "[{\"t\":\"text\",\"slot\":\"above\",\"v\":\"a\",\"tone\":\"accent\"},"
+      "{\"t\":\"text\",\"slot\":\"center\",\"v\":\"h\",\"tone\":\"hot\"},"
+      "{\"t\":\"text\",\"slot\":\"below\",\"v\":\"x\",\"tone\":\"chartreuse\"}]",
+      240, 240, out, ui::drawlist::kMaxPlacements);
+  TEST_ASSERT_EQUAL_UINT(3, n);
+  TEST_ASSERT_EQUAL(ui::drawlist::kAccent, out[0].tone);
+  TEST_ASSERT_EQUAL(ui::drawlist::kHot, out[1].tone);
+  TEST_ASSERT_EQUAL(ui::drawlist::kNormal, out[2].tone);
+}
+
 int main(void) {
   UNITY_BEGIN();
+  RUN_TEST(test_text_needing_a_glyph_only_the_smooth_face_has_gets_it);
+  RUN_TEST(test_the_tone_vocabulary_survives_the_wire);
   RUN_TEST(test_a_device_nobody_let_in_says_so_on_its_own_glass);
   RUN_TEST(test_a_component_with_an_instruction_list_is_drawn_without_knowing_it);
   RUN_TEST(test_the_firmware_declares_it_can_draw_instruction_lists);

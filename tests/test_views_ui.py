@@ -5,6 +5,8 @@ lets somebody say what is IN one without curl. Without it the e-paper's whole
 point -- several components on one panel -- is configurable only by API, which
 is not what "configure it from the dashboard" means.
 """
+import re
+
 import pytest
 
 from homescreen import layout, registry
@@ -148,3 +150,83 @@ def test_a_component_this_screen_cannot_draw_is_offered_disabled(ctx):
     _dashboard(client, cache)
     html = client.get(f"/device/{EPD}").get_data(as_text=True)
     assert "disabled" in html, "with the reason, rather than silently missing"
+
+
+# --- each placement is configured on its own ---------------------------------
+
+def test_two_calendars_on_one_screen_are_two_different_calendars(ctx):
+    """The gap the owner named.
+
+    Options were always per placement in the record, but nothing in the
+    dashboard could set them, so in practice every placement of a component
+    shared one configuration -- "configs that are global", exactly.
+    """
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.main_left.0": "calendar",
+        "o.panel.main_left.0.url": "https://example.invalid/trabajo.ics",
+        "v.panel.main_right.0": "calendar",
+        "o.panel.main_right.0.url": "https://example.invalid/casa.ics"})
+    view = layout.view_for(registry.load(cache)[EPD], "panel")
+    urls = {p["region"]: p["options"].get("url") for p in view["placements"]}
+    assert urls == {"main_left": "https://example.invalid/trabajo.ics",
+                    "main_right": "https://example.invalid/casa.ics"}
+
+
+def test_two_calendars_become_two_fetches(ctx):
+    from homescreen import fetch
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.main_left.0": "calendar",
+        "o.panel.main_left.0.url": "https://example.invalid/trabajo.ics",
+        "v.panel.main_right.0": "calendar",
+        "o.panel.main_right.0.url": "https://example.invalid/casa.ics"})
+    plan = fetch.derive(registry.load(cache), CFG)
+    urls = {j.params.get("url") for j in plan.values() if j.provider == "ics"}
+    assert len(urls) == 2
+
+
+def test_the_form_offers_each_placement_its_own_fields(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.main_left.0": "calendar",
+        "o.panel.main_left.0.url": "https://example.invalid/trabajo.ics"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert 'name="o.panel.main_left.0.url"' in html
+    assert "trabajo.ics" in html, "and shows what that placement holds"
+
+
+def test_one_placements_settings_do_not_follow_the_other(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.markets.0": "quotes", "o.panel.markets.0.symbols": "AAPL",
+        "v.panel.markets.1": "quotes", "o.panel.markets.1.symbols": "MSFT"})
+    view = layout.view_for(registry.load(cache)[EPD], "panel")
+    symbols = sorted(p["options"].get("symbols") for p in view["placements"])
+    assert symbols == ["AAPL", "MSFT"]
+
+
+def test_a_component_with_no_options_keeps_working(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    r = client.post(f"/device/{EPD}/views", data={"v.panel.masthead.0": "status"})
+    assert r.status_code in (302, 303)
+    view = layout.view_for(registry.load(cache)[EPD], "panel")
+    assert view["placements"][0]["component"] == "status"
+
+
+def test_each_placement_can_hold_its_own_credential(ctx):
+    # "Different claude accounts in different UIs" -- scoped to the PLACEMENT,
+    # so two of the same component on one screen do not share one key.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.main_left.0": "claude", "o.panel.main_left.0.days": "30",
+        "v.panel.main_right.0": "claude", "o.panel.main_right.0.days": "7"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    scopes = set(re.findall(r'name="scope" value="([^"]+)"', html))
+    assert len(scopes) == 2, f"one credential field per placement, got {scopes}"

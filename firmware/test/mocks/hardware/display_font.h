@@ -25,8 +25,18 @@ inline void displayFontSetBitmap(lgfx::LGFXBase& g, const lgfx::GFXfont* f) {
  *  displayFontSetSmoothSize wanted a SCALE, so passing 62 rendered the 15px
  *  face at 62x -- one letter filling the panel -- and the host saw nothing
  *  wrong. */
-inline void displayFontSetPixelHeight(lgfx::LGFXBase& g, int px) {
+inline bool asciiOnly(const char* text) {
+  if (text == nullptr) return true;
+  for (const unsigned char* p = (const unsigned char*)text; *p; ++p) {
+    if (*p > 0x7E) return false;
+  }
+  return true;
+}
+
+inline void displayFontSetPixelHeight(lgfx::LGFXBase& g, int px,
+                                      const char* text = nullptr) {
   if (px <= 0) return;
+  const bool ascii = asciiOnly(text);
   // Mirrors src/hardware/display_font.cpp. The natural heights differ from the
   // panel's real ones -- these are the mock's -- but the RULE is the same one,
   // so a change to face selection is visible here.
@@ -51,7 +61,9 @@ inline void displayFontSetPixelHeight(lgfx::LGFXBase& g, int px) {
 
   const Face* chosen = nullptr;
   for (int i = 0; i < n; ++i) {
-    if (faces[i].gfx == nullptr && (float)px <= (float)faces[i].natural * 1.6f) {
+    if (!ascii && faces[i].gfx != nullptr) continue;
+    if (faces[i].gfx == nullptr &&
+        (!ascii || (float)px <= (float)faces[i].natural * 1.6f)) {
       chosen = &faces[i];
       break;
     }

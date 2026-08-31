@@ -64,9 +64,36 @@ def needs(options: dict, cfg: dict) -> tuple:
 
 
 def _degrees(value, units: str) -> str:
+    """Just the number.
+
+    The unit moved to the line below, and not only for looks: at `xl` the panel
+    picks a bitmap face that covers ASCII alone, so a degree sign in the big
+    number drew a blank box. Keeping the headline numeric keeps it crisp AND
+    drawable, and "31° / 33°" still carries the symbol at a size the smooth
+    face handles.
+    """
     if value is None:
         return "--"
-    return f"{round(float(value))}°{'C' if units == 'metric' else 'F'}"
+    return f"{round(float(value))}"
+
+
+def _temp_tone(value, units: str) -> str:
+    """Cold blue through to hot orange.
+
+    A temperature is the one number here with an intuitive scale, so the colour
+    says something a label would need words for: you know it is hot before you
+    have read the digits.
+    """
+    if value is None:
+        return "dim"
+    celsius = float(value) if units == "metric" else (float(value) - 32) / 1.8
+    if celsius <= 5:
+        return "cool"
+    if celsius >= 28:
+        return "hot"
+    if celsius >= 20:
+        return "warn"
+    return "normal"
 
 
 def build(ctx: SceneContext) -> Scene:
@@ -92,17 +119,21 @@ def build(ctx: SceneContext) -> Scene:
     h = int(ctx.caps.get("h") or 240)
     wide_band = h and w / max(h, 1) >= 4.0
 
+    tone = _temp_tone(reading.get("temp"), units)
+    unit = "°C" if units == "metric" else "°F"
     if wide_band:
-        line = " · ".join(p for p in (place, temp, description, span) if p)
-        instructions = [draw.text("center", line, "md")]
+        line = " · ".join(p for p in (place, f"{temp}{unit}", description,
+                                      span) if p)
+        instructions = [draw.text("center", line, "md", tone)]
     else:
-        instructions = [draw.text("center", temp, "xl")]
+        instructions = [draw.text("center", temp, "xl", tone)]
         if place:
-            instructions.append(draw.text("below", place, "sm", "dim"))
+            instructions.append(
+                draw.text("below", f"{place} {unit}", "sm", "accent"))
         if description:
             instructions.append(draw.text("rim_top", description, "xs", "dim"))
         if span:
-            instructions.append(draw.text("rim_bottom", span, "xs", "dim"))
+            instructions.append(draw.text("rim_bottom", span, "xs", "cool"))
 
     if reading.missing:
         # Say why, on the glass. A blank panel and a broken key look identical
