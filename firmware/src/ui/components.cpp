@@ -73,6 +73,11 @@ bool drawInstructions(const char* draw_json) {
     const ui::drawlist::Placement& p = placed[i];
     const uint16_t pen = penFor(p.tone);
     switch (p.shape) {
+      case ui::drawlist::kFill:
+        // Whatever came before it is gone, which is what makes this usable as
+        // a background as well as a blank screen.
+        tft.fillScreen(pen);
+        break;
       case ui::drawlist::kCircle:
         // Drawn in the order the server emitted them, which is the only
         // stacking either side has to agree on.

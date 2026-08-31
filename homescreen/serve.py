@@ -924,6 +924,8 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                  "approved": registry.is_approved(rec),
                  "poll_seconds": registry.advertised_poll_seconds(rec),
                  "online": registry.is_online(rec, now),
+                 # Never contacted, as opposed to not contacted lately.
+                 "placeholder": registry.is_placeholder(hw, rec),
                  "last_seen": rec.get("last_seen"),
                  "first_seen": rec.get("first_seen"),
                  # Sanitised, like every other read of this field on the serve
@@ -1249,6 +1251,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         if not views:
             return jsonify({"error": "no view had a placement this screen "
                                      "can draw"}), 400
+        # Strict at the boundary, lenient in storage. A PUT is somebody asking
+        # for something, and a schedule that silently keeps two thirds of what
+        # was posted is how a night slot comes to cover six days out of seven.
+        refused = scheduling.problems(body.get("schedule"), views)
+        if refused:
+            return jsonify({"error": "; ".join(refused[:4])}), 400
         plan = scheduling.clean_schedule(body.get("schedule"), views)
         try:
             registry.set_layout(cache_dir, hw, views, plan)

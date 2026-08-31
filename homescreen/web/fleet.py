@@ -8,6 +8,10 @@ from .layout import dash, duration, e, page, pill, scene_label, when
 def _state(dev: dict) -> str:
     if not dev.get("approved", True):
         return pill("esperando aprobación", "warn")
+    if dev.get("placeholder"):
+        # Declared in config.yaml and never seen. "sin conexión" would send
+        # somebody to check a cable on a board that does not exist.
+        return pill("sin adoptar", "warn")
     return pill("en línea", "ok") if dev.get("online") else pill("sin conexión", "bad")
 
 

@@ -192,3 +192,64 @@ def test_the_slot_list_is_bounded():
     cleaned = schedule.clean_schedule({"default": "dia", "slots": many},
                                       known_views={"dia"})
     assert len(cleaned["slots"]) <= schedule.MAX_SLOTS
+
+
+# --- the API says what it refused --------------------------------------------
+#
+# `clean_schedule` is lenient by necessity: it also reads stored data, and a
+# record that has been hand-edited must never take the daemon down. But a PUT
+# is somebody asking for something, and silently keeping two thirds of it is
+# how a night slot comes to cover six days out of seven.
+
+def test_a_weekday_outside_one_to_seven_is_reported_not_dropped():
+    problems = schedule.problems(
+        {"default": "d", "slots": [
+            {"view": "n", "days": [0, 1, 2], "from": "23:00", "to": "07:00"}]},
+        {"d", "n"})
+    assert problems, "day 0 is not a weekday here"
+    assert any("1" in p and "7" in p for p in problems), problems
+
+
+def test_the_zero_based_mistake_is_named_because_it_is_the_likely_one():
+    # JavaScript's getDay() is 0=Sunday, so this is the trap somebody actually
+    # falls into -- including whoever wrote this test the first time.
+    problems = schedule.problems(
+        {"default": "d", "slots": [
+            {"view": "n", "days": [0], "from": "23:00", "to": "07:00"}]},
+        {"d", "n"})
+    assert any("lunes" in p for p in problems), problems
+
+
+def test_a_slot_naming_an_unknown_view_is_dropped_quietly_not_reported():
+    # Deliberately NOT an error. The views editor posts the whole arrangement
+    # at once, so emptying a view and leaving a slot pointing at it is one
+    # edit, not a mistake -- refusing it would block the edit.
+    assert schedule.problems(
+        {"default": "d", "slots": [
+            {"view": "gone", "days": [1], "from": "08:00", "to": "09:00"}]},
+        {"d"}) == []
+
+
+def test_an_unreadable_time_is_reported():
+    problems = schedule.problems(
+        {"default": "d", "slots": [
+            {"view": "d", "days": [1], "from": "25:99", "to": "09:00"}]},
+        {"d"})
+    assert problems
+
+
+def test_a_schedule_that_survives_whole_reports_nothing():
+    assert schedule.problems(
+        {"default": "d", "slots": [
+            {"view": "d", "days": [1, 7], "from": "23:00", "to": "07:00"}]},
+        {"d"}) == []
+
+
+def test_stored_data_is_still_read_leniently():
+    # The other half: `clean_schedule` must go on dropping quietly, because it
+    # also reads a file that may have been edited by hand.
+    got = schedule.clean_schedule(
+        {"default": "d", "slots": [
+            {"view": "d", "days": [0, 1], "from": "23:00", "to": "07:00"}]},
+        {"d"})
+    assert got["slots"][0]["days"] == [1]

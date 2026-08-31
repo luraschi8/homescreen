@@ -48,6 +48,7 @@ uint8_t toneFromName(const char* t) {
   if (strcmp(t, "warn") == 0) return kWarn;
   if (strcmp(t, "cool") == 0) return kCool;
   if (strcmp(t, "hot") == 0) return kHot;
+  if (strcmp(t, "off") == 0) return kOff;
   return kNormal;                       // unknown tones are not invented
 }
 
@@ -116,6 +117,18 @@ size_t resolve(const char* draw_json, int w, int h, Placement* out,
                            span);
     };
 
+    if (strcmp(kind, "fill") == 0) {
+      // The whole panel, one colour. What a deliberately blank screen is made
+      // of -- distinct from an EMPTY list, which still means "nothing came
+      // through" and must keep saying so.
+      Placement& p = out[n];
+      p = Placement{};
+      p.shape = kFill;
+      p.tone = item["tone"].is<const char*>()
+                   ? toneFromName(item["tone"].as<const char*>()) : kOff;
+      ++n;
+      continue;
+    }
     if (strcmp(kind, "circle") == 0) {
       Placement& p = out[n];
       p = Placement{};

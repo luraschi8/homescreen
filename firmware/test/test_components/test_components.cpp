@@ -613,6 +613,45 @@ void test_a_scene_without_a_draw_list_does_not_inherit_the_last_one(void) {
   }
 }
 
+void test_a_blank_scene_paints_the_panel_and_draws_nothing_else(void) {
+  // "Off at night": a scheduled view that deliberately shows nothing. It must
+  // NOT come out as the unassigned card, which is what an empty list means.
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"blank\","
+       "\"components\":[{\"c\":\"blank\",\"draw\":["
+       "{\"t\":\"fill\",\"tone\":\"off\"}]}]}");
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  TEST_ASSERT_FALSE_MESSAGE(g_gfx.textContains("SIN ASIGNAR"),
+                            "a blank screen is not an unassigned one");
+  int text_ops = 0;
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind == DrawOp::Text) ++text_ops;
+  }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, text_ops, "nothing is written on it");
+}
+
+
+void test_a_fill_covers_what_was_drawn_before_it(void) {
+  // It doubles as a background, so the order the server emitted is the order
+  // it is drawn -- the only stacking rule either side has to agree on.
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"blank\","
+       "\"components\":[{\"c\":\"weather\",\"draw\":["
+       "{\"t\":\"fill\",\"tone\":\"off\"},"
+       "{\"t\":\"text\",\"slot\":\"center\",\"v\":\"22\","
+       "\"size\":\"xl\"}]}]}");
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  int fill_index = -1, text_index = -1, i = 0;
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind == DrawOp::FillScreen) fill_index = i;
+    if (op.kind == DrawOp::Text) text_index = i;
+    ++i;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(fill_index >= 0, "the panel was painted");
+  TEST_ASSERT_TRUE_MESSAGE(text_index > fill_index,
+                           "and the content went on top of it");
+}
+
 void test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels(void) {
   // One icon is nine primitives. The cap was twelve, sized for when every
   // instruction was a line of text, so a sun plus four labels silently lost
@@ -645,6 +684,8 @@ int main(void) {
   RUN_TEST(test_a_fraction_becomes_a_pixel_rather_than_truncating_to_zero);
   RUN_TEST(test_a_real_weather_scene_fits_the_draw_buffer);
   RUN_TEST(test_a_scene_without_a_draw_list_does_not_inherit_the_last_one);
+  RUN_TEST(test_a_blank_scene_paints_the_panel_and_draws_nothing_else);
+  RUN_TEST(test_a_fill_covers_what_was_drawn_before_it);
   RUN_TEST(test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels);
   RUN_TEST(test_an_absurd_radius_cannot_fill_the_screen);
   RUN_TEST(test_a_triangle_without_three_points_is_not_drawn);

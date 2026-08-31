@@ -211,6 +211,25 @@ def approval(rec) -> str:
     return APPROVED if value is True else PENDING
 
 
+def is_placeholder(hw_id, rec) -> bool:
+    """A record `config.yaml` declared, that no board has ever answered to.
+
+    Seeding writes a synthetic `cfg:<id>` because config names a device but
+    cannot know which physical board it meant. Until that board turns up the
+    record has never spoken: no capabilities, and a firmware string of
+    "config" because nothing reported one.
+
+    Worth distinguishing because the fleet showed it exactly like a panel that
+    had gone offline, and those mean opposite things -- one says go and check
+    the cable, the other says this was never a panel. Capabilities settle it:
+    a board that has reported its glass has been here, whatever its id.
+    """
+    if not str(hw_id or "").startswith("cfg:"):
+        return False
+    rec = rec if isinstance(rec, dict) else {}
+    return not (rec.get("caps") or {})
+
+
 def is_approved(rec) -> bool:
     return approval(rec) == APPROVED
 

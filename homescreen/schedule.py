@@ -163,6 +163,47 @@ def seconds_to_next_change(schedule: dict, now: float, *, tz=None,
     return None
 
 
+def problems(raw, known_views) -> list:
+    """What a POSTED schedule is malformed about, in Spanish, for the API.
+
+    `clean_schedule` is lenient by necessity -- it also reads a stored file
+    that may have been edited by hand, and a bad record must never take the
+    daemon down. But a PUT is somebody asking for something, and quietly
+    keeping two thirds of it is how a night slot comes to cover six days out
+    of seven and nobody finds out until Sunday.
+
+    Reports rather than raises: the caller decides whether a partial schedule
+    is a 400 or a warning.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    views = set(known_views or ())
+    out = []
+    for index, slot in enumerate((raw.get("slots") or ()), start=1):
+        if not isinstance(slot, dict):
+            out.append(f"franja {index}: no es un objeto")
+            continue
+        # NOT referential integrity. The views editor posts the whole
+        # arrangement, so a slot pointing at a view this same request removed
+        # must vanish quietly -- refusing it would block a legitimate edit.
+        # What is reported here is data this endpoint cannot read at all.
+        for field in ("from", "to"):
+            if parse_hhmm(slot.get(field)) is None:
+                out.append(f"franja {index}: «{field}» no es una hora HH:MM")
+        given = list(slot.get("days") or ())
+        kept = _days(given)
+        if not kept:
+            out.append(f"franja {index}: sin días válidos "
+                       f"(1 = lunes … 7 = domingo)")
+        elif len(kept) != len({str(d) for d in given}):
+            # The likely mistake by far: JavaScript's getDay() is 0 = Sunday,
+            # so a client that speaks it loses a day and is told nothing.
+            dropped = sorted({str(d) for d in given}
+                             - {str(d) for d in sorted(kept)})
+            out.append(f"franja {index}: días fuera de rango "
+                       f"({', '.join(dropped)}); 1 = lunes … 7 = domingo")
+    return out
+
+
 def clean_schedule(raw, known_views) -> dict:
     """Coerce a stored or posted schedule. Never raises.
 

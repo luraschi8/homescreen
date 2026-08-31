@@ -151,6 +151,19 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     <button type="submit">Añadir a la flota</button></form>
 </div></div>""")
 
+    # A record from a file, that no board has ever answered to. The fleet row
+    # can only carry a two-word pill, so the explanation lives here: what it
+    # is, why it will never come online by itself, and that removing it is the
+    # normal ending rather than a destructive act.
+    placeholder = ("" if not dev.get("placeholder") else f"""<div class="panel">
+<div class="pad">
+  <p class="empty" style="margin-top:0"><strong>Marcador de config.yaml.</strong>
+  Esta entrada la creó el fichero de configuración: ninguna placa ha llamado
+  <strong>nunca</strong> con este identificador, y no lo hará, porque el
+  identificador es sintético. Cuando la placa real aparezca se registrará sola
+  con su propio identificador. Puedes borrar esta entrada.</p>
+</div></div>""")
+
     revoke = ("" if not approved else f"""
   <form method="post" action="/device/{hw}/approval">
     <input type="hidden" name="approved" value="0">
@@ -163,7 +176,7 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
   {pill(shape) if shape else ""}
   {pill("cada " + str(dev.get("poll_seconds")) + "s")}
   {pill("fw " + str(dev.get("fw") or "?"))}</div>
-{admission}{unknown_scene}
+{admission}{placeholder}{unknown_scene}
 
 <h2>{heading}</h2>
 <div class="panel"><div class="pad">

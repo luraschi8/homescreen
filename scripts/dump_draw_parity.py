@@ -84,6 +84,13 @@ CASES = [
     ("a triangle without three points is dropped", 240, 240, [
         {"t": "tri", "p": [0.1, 0.1, 0.2, 0.2], "tone": "good"},
         draw.text("center", "kept", "sm")]),
+    ("a blank screen is a positive instruction", 240, 240, [
+        draw.fill("off")]),
+    ("a fill can be a background with content over it", 240, 240, [
+        draw.fill("off"),
+        draw.text("center", "22:53", "xl")]),
+    ("a coloured fill is not the off one", 240, 240, [
+        draw.fill("bad")]),
     ("every tone reaches a shape, not just text", 240, 240, [
         draw.circle(0.2, 0.2, 0.05, "normal"),
         draw.circle(0.4, 0.2, 0.05, "dim"),

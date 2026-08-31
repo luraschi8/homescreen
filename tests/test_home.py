@@ -289,3 +289,82 @@ def test_a_device_named_with_html_is_escaped(tmp_path):
     body = client.get("/home").get_data(as_text=True)
     assert "<b>bold" not in body
     assert "&lt;b&gt;bold" in body
+
+
+# --- a placeholder is not an offline panel -----------------------------------
+#
+# `config.yaml` can declare a device, and seeding gives it a synthetic
+# `cfg:<id>` record. Until the real board turns up that record has never
+# spoken: no capabilities, no firmware, `first_seen == last_seen`. The fleet
+# showed it exactly like a panel that had gone offline, which is the opposite
+# meaning -- one says "go and check the cable", the other says "this was never
+# a panel".
+
+def _home(client):
+    return client.get("/home").get_data(as_text=True)
+
+
+def _row(html, hw):
+    """The fleet row for one screen. Scoped, because the fixture's own config
+    seeds a placeholder too and a whole-page substring check would match it."""
+    import re
+    for row in re.findall(r"<tr>.*?</tr>", html, re.S):
+        if hw in row:
+            return row
+    return ""
+
+
+def _write(cache, hw, **fields):
+    from homescreen import registry
+    records = registry.load(cache)
+    records[hw] = fields
+    registry.save(cache, records)
+
+
+def test_a_seeded_placeholder_does_not_read_as_a_panel_that_went_offline(
+        ctx, tmp_path):
+    client, _, _ = ctx
+    _write(tmp_path, "cfg:radar", name="radar", fw="config",
+           scene="unassigned", caps={}, telemetry={}, poll_seconds=5,
+           first_seen="2026-08-26T16:43:41+02:00",
+           last_seen="2026-08-26T16:43:41+02:00")
+    assert "sin adoptar" in _row(_home(client), "cfg:radar")
+
+
+def test_a_real_panel_that_is_offline_still_says_so(ctx, tmp_path):
+    # The distinction has to cut both ways, or it is only a relabelling.
+    client, _, _ = ctx
+    _write(tmp_path, "aabbccddeeff", name="salon", fw="hs-0.1", scene="clock",
+           caps={"w": 240, "h": 240, "depth": 16}, telemetry={},
+           approved_at="2026-08-01T00:00:00+02:00",
+           first_seen="2026-08-01T00:00:00+02:00",
+           last_seen="2026-08-02T00:00:00+02:00")
+    row = _row(_home(client), "aabbccddeeff")
+    assert "sin conexión" in row
+    assert "sin adoptar" not in row
+
+
+def test_a_placeholder_that_has_since_connected_is_an_ordinary_panel(
+        ctx, tmp_path):
+    # Adoption is what settles it: once a board reports capabilities the
+    # record is a panel, whatever its id looks like.
+    client, _, _ = ctx
+    _write(tmp_path, "cfg:radar", name="radar", fw="hs-0.1", scene="clock",
+           caps={"w": 240, "h": 240, "depth": 16}, telemetry={},
+           first_seen="2026-08-26T16:43:41+02:00",
+           last_seen="2026-08-27T10:00:00+02:00")
+    assert "sin adoptar" not in _row(_home(client), "cfg:radar")
+
+
+def test_a_placeholder_says_what_it_is_on_its_own_page(ctx, tmp_path):
+    # The fleet row can only carry a two-word pill. Somebody who clicks
+    # through deserves to be told this record came from a file, that no board
+    # has ever answered to it, and that removing it is the normal ending.
+    client, _, _ = ctx
+    _write(tmp_path, "cfg:radar", name="radar", fw="config",
+           scene="unassigned", caps={}, telemetry={}, poll_seconds=5,
+           first_seen="2026-08-26T16:43:41+02:00",
+           last_seen="2026-08-26T16:43:41+02:00")
+    html = client.get("/device/cfg:radar").get_data(as_text=True)
+    assert "config.yaml" in html
+    assert "nunca" in html.lower()

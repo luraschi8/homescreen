@@ -11,7 +11,7 @@ namespace ui::drawlist {
 //! sun arrives as circles and lines. This binary therefore draws every icon
 //! that will ever be invented, including ones that did not exist when it was
 //! flashed -- the same bargain `draw_list` struck for components.
-enum Shape : uint8_t { kText = 0, kCircle, kLine, kTri };
+enum Shape : uint8_t { kText = 0, kCircle, kLine, kTri, kFill };
 
 /** One resolved drawable: where it goes, how big, and in what tone. */
 struct Placement {
@@ -41,6 +41,7 @@ enum Tone : uint8_t {
   kWarn,        //!< needs attention but is not wrong
   kCool,        //!< cold end of a scale
   kHot,         //!< hot end of a scale
+  kOff,         //!< the panel's own background: a blank screen
 };
 
 /** Room for one screenful. A component sending more is truncated, not honoured. */

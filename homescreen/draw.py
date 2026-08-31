@@ -56,7 +56,8 @@ TONES = ("normal",   # the thing you came to read
          "accent",   # the identity of the thing -- a city, a symbol, a team
          "warn",     # needs attention but is not wrong
          "cool",     # cold end of a scale
-         "hot")      # hot end of a scale
+         "hot",      # hot end of a scale
+         "off")      # the panel's own background: a blank screen
 
 #: How many drawables one component may emit.
 #:
@@ -107,6 +108,12 @@ def resolve(draw: list, w: int, h: int) -> list:
     out = []
     for item in (draw or ())[:MAX_INSTRUCTIONS]:
         if not isinstance(item, dict):
+            continue
+        if item.get("t") == "fill":
+            out.append({"t": "fill", "text": "", "x": 0, "y": 0, "px": 0,
+                        "x2": 0, "y2": 0, "x3": 0, "y3": 0, "fill": True,
+                        "tone": (item.get("tone")
+                                 if item.get("tone") in TONES else "off")})
             continue
         if item.get("t") in ("circle", "line", "tri"):
             # Three points or it is not a triangle. Padding the missing corner
@@ -268,6 +275,16 @@ def _defaults_off(item: dict, tone: str) -> dict:
     if tone != "normal":
         item["tone"] = tone
     return item
+
+
+def fill(tone: str = "off") -> dict:
+    """Paint the whole panel one colour.
+
+    The instruction a blank screen is made of. `off` is the panel's own
+    background, which on the round display is black -- as close to "not on" as
+    a backlit LCD gets without a backlight pin we do not have.
+    """
+    return {"t": "fill", "tone": tone}
 
 
 def circle(cx: float, cy: float, r: float, tone: str = "normal",
@@ -584,9 +601,13 @@ def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True) -> str:
     # is loud for a tone whose whole job is to recede. Now 1.36x, and pinned.
     fill = {"normal": "#ffffff", "dim": "#6f6d6f", "good": "#29ce41",
             "bad": "#ff7a68", "accent": "#5acae6", "warn": "#ffd23f",
-            "cool": "#4d8fff", "hot": "#f6894a"}
+            "cool": "#4d8fff", "hot": "#f6894a", "off": "#000000"}
     for item in resolve(draw, w, h):
         colour = fill.get(item["tone"], "#fff")
+        if item["t"] == "fill":
+            parts.append(f'<rect x="0" y="0" width="{w}" height="{h}" '
+                         f'fill="{colour}"/>')
+            continue
         if item["t"] == "circle":
             parts.append(f'<circle cx="{item["x"]}" cy="{item["y"]}" '
                          f'r="{item["px"]}" fill="{colour}"/>' if item["fill"]

@@ -73,6 +73,7 @@ void test_every_golden_case_resolves_exactly_as_python_does(void) {
       const uint8_t want_shape = strcmp(want_t, "circle") == 0 ? kCircle
                                  : strcmp(want_t, "line") == 0 ? kLine
                                  : strcmp(want_t, "tri") == 0  ? kTri
+                                 : strcmp(want_t, "fill") == 0 ? kFill
                                                                : kText;
       TEST_ASSERT_EQUAL_UINT8_MESSAGE(want_shape, got[i].shape, msg);
       if (want_shape == kCircle) {
@@ -91,6 +92,7 @@ void test_every_golden_case_resolves_exactly_as_python_does(void) {
                            : strcmp(want_tone, "warn") == 0   ? kWarn
                            : strcmp(want_tone, "cool") == 0   ? kCool
                            : strcmp(want_tone, "hot") == 0    ? kHot
+                           : strcmp(want_tone, "off") == 0    ? kOff
                                                               : kNormal;
       snprintf(msg, sizeof(msg), "%s: item %u tone", name, (unsigned)i);
       TEST_ASSERT_EQUAL_UINT8_MESSAGE(want, got[i].tone, msg);
@@ -98,7 +100,7 @@ void test_every_golden_case_resolves_exactly_as_python_does(void) {
     }
   }
   TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(
-      20, cases, "the fixture shrank -- regenerate it, do not weaken this");
+      23, cases, "the fixture shrank -- regenerate it, do not weaken this");
 }
 
 // --- the tables themselves --------------------------------------------------
