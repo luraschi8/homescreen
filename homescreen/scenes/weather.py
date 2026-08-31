@@ -20,9 +20,23 @@ from homescreen.scenes._style import page
 def _nothing() -> Reading:
     return Reading.nothing()
 
-#: Anywhere a number and a word are legible. It needs less room than the radar
-#: because it draws no geometry.
+#: Anywhere a number and a word are legible.
 SURFACES = ({"min_short": 90},)
+
+#: OpenWeather's icon codes, reduced to the shapes we can draw.
+#:
+#: Their vocabulary is finer than a 240px circle can express -- "few clouds"
+#: and "scattered clouds" are the same picture at this size -- so this maps
+#: many to few deliberately rather than pretending to a precision the glass
+#: does not have.
+_SKY = {"01": "sun", "02": "cloud", "03": "cloud", "04": "cloud",
+        "09": "rain", "10": "rain", "11": "storm", "13": "snow",
+        "50": "cloud"}
+
+
+def _sky_icon(code: str) -> str:
+    """The icon for an OpenWeather code, or none if we cannot tell."""
+    return _SKY.get(str(code or "")[:2], "")
 
 OPTIONS = (
     {"key": "place", "label": "Sitio", "type": "text", "default": "",
@@ -130,14 +144,22 @@ def build(ctx: SceneContext) -> Scene:
                                       span) if p)
         instructions = [draw.text("center", line, "md", tone)]
     else:
-        instructions = [draw.text("center", temp, "xl", tone)]
+        # The sky as a picture, above the number. A word for the sky is a word
+        # you have to read; a sun is a thing you have already seen by the time
+        # you have registered the temperature.
+        sky = _sky_icon(reading.get("icon"))
+        instructions = list(draw.icon(sky, 0.5, 0.20, 0.30,
+                                      "warn" if sky == "sun" else "dim")) \
+            if sky else []
+        instructions.append(draw.text("center", temp, "xl", tone))
         if place:
             instructions.append(
                 draw.text("below", f"{place} {unit}", "sm", "accent"))
-        if description:
-            instructions.append(draw.text("rim_top", description, "xs", "dim"))
         if span:
             instructions.append(draw.text("rim_bottom", span, "xs", "cool"))
+        elif description:
+            instructions.append(draw.text("rim_bottom", description, "xs",
+                                          "dim"))
 
     if reading.missing:
         # Say why, on the glass. A blank panel and a broken key look identical

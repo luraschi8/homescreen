@@ -489,8 +489,66 @@ void test_the_tone_vocabulary_survives_the_wire(void) {
   TEST_ASSERT_EQUAL(ui::drawlist::kNormal, out[2].tone);
 }
 
+
+void test_an_icon_arrives_as_primitives_and_is_drawn(void) {
+  // The server expands "sun" into circles and lines before it reaches the
+  // wire, so this binary draws icons it has never heard of. If it did not,
+  // every new icon would be a reflash -- the thing draw_list exists to avoid.
+  poll("{\"assigned\":true,\"layout\":\"fill\",\"scene\":\"weather\","
+       "\"components\":[{\"c\":\"weather\",\"draw\":["
+       "{\"t\":\"circle\",\"cx\":120,\"cy\":84,\"r\":18,\"tone\":\"warn\"},"
+       "{\"t\":\"line\",\"x1\":120,\"y1\":40,\"x2\":120,\"y2\":52,"
+       "\"w\":4,\"tone\":\"warn\"},"
+       "{\"t\":\"tri\",\"p\":[60,200,80,200,70,220],\"tone\":\"good\"},"
+       "{\"t\":\"text\",\"slot\":\"below\",\"v\":\"32\","
+       "\"size\":\"xl\"}]}]}");
+  g_gfx.reset();
+  TEST_ASSERT_TRUE(ui::renderScene());
+  int circles = 0, lines = 0, tris = 0;
+  for (const auto& op : g_gfx.ops) {
+    if (op.kind == DrawOp::Circle || op.kind == DrawOp::SmoothCircle) ++circles;
+    if (op.kind == DrawOp::WideLine) ++lines;
+    if (op.kind == DrawOp::Triangle) ++tris;
+  }
+  TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, circles, "the circle was drawn");
+  TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, lines, "the ray was drawn");
+  TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, tris, "the triangle was drawn");
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.textContains("32"),
+                           "and the text still arrived alongside them");
+}
+
+void test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels(void) {
+  // One icon is nine primitives. The cap was twelve, sized for when every
+  // instruction was a line of text, so a sun plus four labels silently lost
+  // the last label.
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT_MESSAGE(
+      20, ui::drawlist::kMaxPlacements,
+      "an icon plus a full slot vocabulary must fit");
+}
+
+void test_an_absurd_radius_cannot_fill_the_screen(void) {
+  // The server is not the only thing that can put a number on this wire.
+  ui::drawlist::Placement out[ui::drawlist::kMaxPlacements];
+  const size_t n = ui::drawlist::resolve(
+      "[{\"t\":\"circle\",\"cx\":120,\"cy\":120,\"r\":999999}]",
+      240, 240, out, ui::drawlist::kMaxPlacements);
+  TEST_ASSERT_EQUAL_UINT(1, n);
+  TEST_ASSERT_LESS_OR_EQUAL_INT(240, out[0].px);
+}
+
+void test_a_triangle_without_three_points_is_not_drawn(void) {
+  ui::drawlist::Placement out[ui::drawlist::kMaxPlacements];
+  TEST_ASSERT_EQUAL_UINT(0, ui::drawlist::resolve(
+      "[{\"t\":\"tri\",\"p\":[1,2,3,4]}]", 240, 240, out,
+      ui::drawlist::kMaxPlacements));
+}
+
 int main(void) {
   UNITY_BEGIN();
+  RUN_TEST(test_an_icon_arrives_as_primitives_and_is_drawn);
+  RUN_TEST(test_a_frame_carries_enough_drawables_for_an_icon_and_its_labels);
+  RUN_TEST(test_an_absurd_radius_cannot_fill_the_screen);
+  RUN_TEST(test_a_triangle_without_three_points_is_not_drawn);
   RUN_TEST(test_text_needing_a_glyph_only_the_smooth_face_has_gets_it);
   RUN_TEST(test_the_tone_vocabulary_survives_the_wire);
   RUN_TEST(test_a_device_nobody_let_in_says_so_on_its_own_glass);

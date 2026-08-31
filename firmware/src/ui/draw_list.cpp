@@ -24,6 +24,10 @@ constexpr SizeFrac kSizes[] = {
     {"sm", 0.075f}, {"xs", 0.055f},
 };
 
+int clampInt(int v, int lo, int hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
 uint8_t toneFromName(const char* t) {
   if (t == nullptr) return kNormal;
   if (strcmp(t, "dim") == 0) return kDim;
@@ -86,8 +90,62 @@ size_t resolve(const char* draw_json, int w, int h, Placement* out,
     // Anything we do not recognise is dropped rather than guessed at: a device
     // that invents an instruction and a preview that does not are the same bug
     // seen from two sides.
-    if (!item["t"].is<const char*>() ||
-        strcmp(item["t"].as<const char*>(), "text") != 0) {
+    if (!item["t"].is<const char*>()) {
+      continue;
+    }
+    const char* kind = item["t"].as<const char*>();
+    const int shorter = w < h ? w : h;
+
+    if (strcmp(kind, "circle") == 0) {
+      Placement& p = out[n];
+      p = Placement{};
+      p.shape = kCircle;
+      p.x = clampInt(item["cx"] | 0, -w, 2 * w);
+      p.y = clampInt(item["cy"] | 0, -h, 2 * h);
+      // A radius is bounded by the glass. An absurd one is not a big circle,
+      // it is a filled screen -- and the server is not the only thing that can
+      // put a number on this wire.
+      p.px = clampInt(item["r"] | 1, 1, shorter);
+      p.fill = item["fill"].is<bool>() ? item["fill"].as<bool>() : true;
+      p.tone = toneFromName(item["tone"].is<const char*>()
+                                ? item["tone"].as<const char*>() : nullptr);
+      ++n;
+      continue;
+    }
+    if (strcmp(kind, "line") == 0) {
+      Placement& p = out[n];
+      p = Placement{};
+      p.shape = kLine;
+      p.x = clampInt(item["x1"] | 0, -w, 2 * w);
+      p.y = clampInt(item["y1"] | 0, -h, 2 * h);
+      p.x2 = clampInt(item["x2"] | 0, -w, 2 * w);
+      p.y2 = clampInt(item["y2"] | 0, -h, 2 * h);
+      p.px = clampInt(item["w"] | 1, 1, shorter / 4);
+      p.tone = toneFromName(item["tone"].is<const char*>()
+                                ? item["tone"].as<const char*>() : nullptr);
+      ++n;
+      continue;
+    }
+    if (strcmp(kind, "tri") == 0) {
+      JsonArrayConst pts = item["p"].as<JsonArrayConst>();
+      if (pts.isNull() || pts.size() < 6) {
+        continue;                        // three points or it is not a triangle
+      }
+      Placement& p = out[n];
+      p = Placement{};
+      p.shape = kTri;
+      p.x = clampInt(pts[0] | 0, -w, 2 * w);
+      p.y = clampInt(pts[1] | 0, -h, 2 * h);
+      p.x2 = clampInt(pts[2] | 0, -w, 2 * w);
+      p.y2 = clampInt(pts[3] | 0, -h, 2 * h);
+      p.x3 = clampInt(pts[4] | 0, -w, 2 * w);
+      p.y3 = clampInt(pts[5] | 0, -h, 2 * h);
+      p.tone = toneFromName(item["tone"].is<const char*>()
+                                ? item["tone"].as<const char*>() : nullptr);
+      ++n;
+      continue;
+    }
+    if (strcmp(kind, "text") != 0) {
       continue;
     }
     if (!item["v"].is<const char*>()) {
@@ -99,6 +157,7 @@ size_t resolve(const char* draw_json, int w, int h, Placement* out,
     }
     Placement& p = out[n];
     p = Placement{};
+    p.shape = kText;
     p.x = w / 2;
     p.y = slotY(item["slot"].is<const char*>() ? item["slot"].as<const char*>()
                                                : "center", h);

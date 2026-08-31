@@ -50,7 +50,10 @@ uint16_t penFor(uint8_t tone) {
 
 /** Execute an instruction list onto the panel. */
 bool drawInstructions(const char* draw_json) {
-  ui::drawlist::Placement placed[ui::drawlist::kMaxPlacements];
+  // Static, not a local: 40 placements is ~3 KB and the loop task's stack is
+  // 8 KB. Drawing is single-threaded -- renderScene() is only ever called from
+  // loop() -- so one buffer is enough and it costs the stack nothing.
+  static ui::drawlist::Placement placed[ui::drawlist::kMaxPlacements];
   const size_t n = ui::drawlist::resolve(draw_json, config::kDisplayWidth,
                                          config::kDisplayHeight, placed,
                                          ui::drawlist::kMaxPlacements);
@@ -64,12 +67,35 @@ bool drawInstructions(const char* draw_json) {
     // The resolver decided WHERE and HOW BIG; this only chooses the pen and
     // the face. Any layout thinking here would be a second opinion, and the
     // preview would stop matching the glass.
-    // Pixels, not a scale factor. displayFontSetSmoothSize takes a SCALE and
-    // reads as if it took a size; passing 62 there rendered the 15px face at
-    // 62x and the panel showed one letter.
-    displayFontSetPixelHeight(tft, placed[i].px, placed[i].text);
-    tft.setTextColor(penFor(placed[i].tone), config::kColorBlack);
-    tft.drawString(placed[i].text, placed[i].x, placed[i].y);
+    const ui::drawlist::Placement& p = placed[i];
+    const uint16_t pen = penFor(p.tone);
+    switch (p.shape) {
+      case ui::drawlist::kCircle:
+        // Drawn in the order the server emitted them, which is the only
+        // stacking either side has to agree on.
+        if (p.fill) {
+          tft.fillCircle(p.x, p.y, p.px, pen);
+        } else {
+          tft.drawCircle(p.x, p.y, p.px, pen);
+        }
+        break;
+      case ui::drawlist::kLine:
+        // Width matters: a one-pixel ray on a 240px panel vanishes at the
+        // distance this screen is actually read from.
+        tft.drawWideLine(p.x, p.y, p.x2, p.y2, p.px / 2.0f, pen);
+        break;
+      case ui::drawlist::kTri:
+        tft.fillTriangle(p.x, p.y, p.x2, p.y2, p.x3, p.y3, pen);
+        break;
+      default:
+        // Pixels, not a scale factor. displayFontSetSmoothSize takes a SCALE
+        // and reads as if it took a size; passing 62 there rendered the 15px
+        // face at 62x and the panel showed one letter.
+        displayFontSetPixelHeight(tft, p.px, p.text);
+        tft.setTextColor(pen, config::kColorBlack);
+        tft.drawString(p.text, p.x, p.y);
+        break;
+    }
   }
   return true;
 }

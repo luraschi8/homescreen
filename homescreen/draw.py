@@ -58,6 +58,13 @@ TONES = ("normal",   # the thing you came to read
          "cool",     # cold end of a scale
          "hot")      # hot end of a scale
 
+#: How many drawables one component may emit.
+#:
+#: Mirrors the firmware's kMaxPlacements. Truncating in the same place on both
+#: sides is what keeps the preview honest: a preview showing a sun the panel
+#: dropped is exactly the drift this design exists to prevent.
+MAX_INSTRUCTIONS = 40
+
 #: Smallest legible type on these panels. CLAUDE.md puts the floor at 10px for
 #: the e-paper; the round display is denser but the same floor holds.
 MIN_TEXT_PX = 10
@@ -98,14 +105,20 @@ def resolve(draw: list, w: int, h: int) -> list:
     sides.
     """
     out = []
-    for item in draw or ():
-        if not isinstance(item, dict) or item.get("t") != "text":
+    for item in (draw or ())[:MAX_INSTRUCTIONS]:
+        if not isinstance(item, dict):
+            continue
+        if item.get("t") in ("circle", "line", "tri"):
+            out.append(_shape_px(item, w, h))
+            continue
+        if item.get("t") != "text":
             continue
         text = item.get("v")
         if not isinstance(text, str) or not text:
             continue
         tone = item.get("tone", "normal")
         out.append({
+            "t": "text",
             "x": int(w) // 2,
             "y": slot_y(item.get("slot", "center"), h),
             "px": size_px(item.get("size", "md"), w, h),
@@ -193,6 +206,152 @@ def for_device(value) -> str:
     return "".join(out)
 
 
+# --- shapes -----------------------------------------------------------------
+#
+# The wire carries PRIMITIVES, not icon names. A sun is three circles and eight
+# lines by the time it leaves here, so adding a weather icon is a change to
+# this file and to nothing else -- the same bargain `draw_list` struck for
+# components. A firmware that can draw a circle, a line and a triangle can draw
+# every icon we invent afterwards, including ones that did not exist when it
+# was flashed.
+#
+# Coordinates are FRACTIONS of the panel, like slots and sizes, so a shape
+# lands in the same place on any glass.
+
+
+def circle(cx: float, cy: float, r: float, tone: str = "normal",
+           fill: bool = True) -> dict:
+    return {"t": "circle", "cx": round(cx, 4), "cy": round(cy, 4),
+            "r": round(r, 4), "tone": tone, "fill": bool(fill)}
+
+
+def line(x1: float, y1: float, x2: float, y2: float, tone: str = "normal",
+         w: float = 0.012) -> dict:
+    return {"t": "line", "x1": round(x1, 4), "y1": round(y1, 4),
+            "x2": round(x2, 4), "y2": round(y2, 4), "w": round(w, 4),
+            "tone": tone}
+
+
+def tri(points, tone: str = "normal") -> dict:
+    """A filled triangle from three (x, y) fractions."""
+    flat = [round(v, 4) for point in points for v in point]
+    return {"t": "tri", "p": flat, "tone": tone}
+
+
+#: Icons, as functions of (cx, cy, size) in panel fractions.
+#:
+#: Deliberately drawn rather than fonted: a glyph needs a face that has it, and
+#: the panel's face has 95 characters. A circle is a circle on any hardware.
+def _sun(cx, cy, s, tone):
+    out = [circle(cx, cy, s * 0.30, tone)]
+    for i in range(8):
+        import math
+        a = math.pi * i / 4.0
+        out.append(line(cx + math.cos(a) * s * 0.42,
+                        cy + math.sin(a) * s * 0.42,
+                        cx + math.cos(a) * s * 0.52,
+                        cy + math.sin(a) * s * 0.52, tone, s * 0.07))
+    return out
+
+
+def _cloud(cx, cy, s, tone):
+    return [circle(cx - s * 0.22, cy + s * 0.06, s * 0.20, tone),
+            circle(cx + s * 0.20, cy + s * 0.08, s * 0.17, tone),
+            circle(cx - s * 0.01, cy - s * 0.10, s * 0.26, tone)]
+
+
+def _rain(cx, cy, s, tone):
+    out = _cloud(cx, cy - s * 0.12, s, tone)
+    for dx in (-0.20, 0.02, 0.24):
+        out.append(line(cx + s * dx, cy + s * 0.26,
+                        cx + s * (dx - 0.06), cy + s * 0.50, "cool", s * 0.06))
+    return out
+
+
+def _snow(cx, cy, s, tone):
+    out = _cloud(cx, cy - s * 0.12, s, tone)
+    for dx in (-0.20, 0.02, 0.24):
+        out.append(circle(cx + s * dx, cy + s * 0.38, s * 0.05, "cool"))
+    return out
+
+
+def _storm(cx, cy, s, tone):
+    out = _cloud(cx, cy - s * 0.12, s, tone)
+    out.append(tri([(cx - s * 0.10, cy + s * 0.22),
+                    (cx + s * 0.14, cy + s * 0.22),
+                    (cx - s * 0.02, cy + s * 0.54)], "warn"))
+    return out
+
+
+def _flame(cx, cy, s, tone):
+    return [tri([(cx, cy - s * 0.46), (cx + s * 0.30, cy + s * 0.18),
+                 (cx - s * 0.30, cy + s * 0.18)], "hot"),
+            circle(cx, cy + s * 0.18, s * 0.30, "hot"),
+            circle(cx, cy + s * 0.24, s * 0.15, "warn")]
+
+
+def _ice(cx, cy, s, tone):
+    out = []
+    import math
+    for i in range(3):
+        a = math.pi * i / 3.0
+        out.append(line(cx - math.cos(a) * s * 0.45, cy - math.sin(a) * s * 0.45,
+                        cx + math.cos(a) * s * 0.45, cy + math.sin(a) * s * 0.45,
+                        "cool", s * 0.07))
+    return out
+
+
+def _up(cx, cy, s, tone):
+    return [tri([(cx, cy - s * 0.34), (cx + s * 0.32, cy + s * 0.24),
+                 (cx - s * 0.32, cy + s * 0.24)], tone or "good")]
+
+
+def _down(cx, cy, s, tone):
+    return [tri([(cx, cy + s * 0.34), (cx + s * 0.32, cy - s * 0.24),
+                 (cx - s * 0.32, cy - s * 0.24)], tone or "bad")]
+
+
+ICONS = {"sun": _sun, "cloud": _cloud, "rain": _rain, "snow": _snow,
+         "storm": _storm, "flame": _flame, "ice": _ice, "up": _up,
+         "down": _down}
+
+
+def icon(name: str, cx: float, cy: float, size: float = 0.22,
+         tone: str = "normal") -> list:
+    """A named icon, expanded to primitives HERE.
+
+    Returns a list, so a component splices it into its instruction list. The
+    device never learns the name -- which is what lets a new icon ship without
+    touching firmware.
+    """
+    maker = ICONS.get(str(name))
+    return list(maker(cx, cy, size, tone)) if maker else []
+
+
+def _shape_px(item: dict, w: int, h: int) -> dict:
+    """A shape in pixels. Fractions scale off the SHORT side for radii and
+    widths, so a circle stays a circle on a panel that is not square."""
+    short = min(int(w), int(h))
+    out = {"t": item["t"],
+           "tone": item.get("tone") if item.get("tone") in TONES else "normal"}
+    if item["t"] == "circle":
+        out.update(cx=_round_half_up(item.get("cx", 0.5) * w),
+                   cy=_round_half_up(item.get("cy", 0.5) * h),
+                   r=max(1, _round_half_up(item.get("r", 0.1) * short)),
+                   fill=bool(item.get("fill", True)))
+    elif item["t"] == "line":
+        out.update(x1=_round_half_up(item.get("x1", 0) * w),
+                   y1=_round_half_up(item.get("y1", 0) * h),
+                   x2=_round_half_up(item.get("x2", 0) * w),
+                   y2=_round_half_up(item.get("y2", 0) * h),
+                   w=max(1, _round_half_up(item.get("w", 0.01) * short)))
+    else:
+        pts = list(item.get("p") or [])[:6]
+        out["p"] = [_round_half_up(v * (w if i % 2 == 0 else h))
+                    for i, v in enumerate(pts)]
+    return out
+
+
 def text(slot: str, value: str, size: str = "md",
          tone: str = "normal") -> dict:
     """Build one text instruction. Components use this rather than dict literals
@@ -233,6 +392,23 @@ def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True) -> str:
             "cool": "#6aa9f0", "hot": "#f08a4b"}
     for item in resolve(draw, w, h):
         colour = fill.get(item["tone"], "#fff")
+        if item["t"] == "circle":
+            parts.append(f'<circle cx="{item["cx"]}" cy="{item["cy"]}" '
+                         f'r="{item["r"]}" fill="{colour}"/>' if item["fill"]
+                         else f'<circle cx="{item["cx"]}" cy="{item["cy"]}" '
+                              f'r="{item["r"]}" fill="none" stroke="{colour}"/>')
+            continue
+        if item["t"] == "line":
+            parts.append(f'<line x1="{item["x1"]}" y1="{item["y1"]}" '
+                         f'x2="{item["x2"]}" y2="{item["y2"]}" '
+                         f'stroke="{colour}" stroke-width="{item["w"]}" '
+                         f'stroke-linecap="round"/>')
+            continue
+        if item["t"] == "tri":
+            pts = " ".join(f"{item['p'][i]},{item['p'][i+1]}"
+                           for i in range(0, len(item["p"]), 2))
+            parts.append(f'<polygon points="{pts}" fill="{colour}"/>')
+            continue
         # dominant-baseline centres the glyph box on the slot's y, which is
         # what the firmware's middle_center datum does.
         parts.append(

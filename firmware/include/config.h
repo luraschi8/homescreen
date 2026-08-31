@@ -68,7 +68,13 @@ constexpr int kDisplayHeight = 240;
 constexpr int kDisplayDepth = 16;
 constexpr uint32_t kDisplaySpiWriteHz = 80000000;
 constexpr bool kDisplayInvert = true;
-constexpr bool kDisplayRgbOrder = true;
+//: This panel is BGR, not RGB.
+//:
+//: Set true since the port and never questioned, because until the palette
+//: grew there was nothing on this screen but white, grey and black -- and
+//: those are identical whichever way round the channels go. The first orange
+//: we drew came out blue: RGB(246,137,74) read as BGR is (74,137,246).
+constexpr bool kDisplayRgbOrder = false;
 
 // --- Radar centre defaults (overridden via the setup portal) ---
 constexpr double kDefaultRadarLat = 52.3676;

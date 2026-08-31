@@ -5,12 +5,26 @@
 
 namespace ui::drawlist {
 
+//! What kind of thing a placement is.
+//!
+//! The server expands an icon into PRIMITIVES before it reaches the wire, so a
+//! sun arrives as circles and lines. This binary therefore draws every icon
+//! that will ever be invented, including ones that did not exist when it was
+//! flashed -- the same bargain `draw_list` struck for components.
+enum Shape : uint8_t { kText = 0, kCircle, kLine, kTri };
+
 /** One resolved drawable: where it goes, how big, and in what tone. */
 struct Placement {
-  int x;
+  uint8_t shape;         //!< index into Shape
+  int x;                 //!< text anchor, or circle centre, or line start
   int y;
-  int px;
-  uint8_t tone;          // index into Tone
+  int px;                //!< text height, circle radius, or line width
+  uint8_t tone;          //!< index into Tone
+  bool fill;             //!< circles only
+  int x2;                //!< lines and triangles
+  int y2;
+  int x3;                //!< triangles only
+  int y3;
   char text[40];
 };
 
@@ -30,7 +44,14 @@ enum Tone : uint8_t {
 };
 
 /** Room for one screenful. A component sending more is truncated, not honoured. */
-constexpr size_t kMaxPlacements = 12;
+//! How many drawables one frame may carry.
+//!
+//! Was 12, from when every instruction was a line of text. One icon expands to
+//! nine primitives server-side, so a weather panel with a sun and four labels
+//! is thirteen -- the cap silently ate the last label. Sized for a couple of
+//! icons plus a full slot vocabulary, and the buffer is static rather than a
+//! local: 40 of these is ~3 KB, which is a third of the loop task's stack.
+constexpr size_t kMaxPlacements = 40;
 
 /**
  * Resolve a component's instruction list for this panel.
