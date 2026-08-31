@@ -407,3 +407,33 @@ def test_an_empty_slot_reads_as_empty_rather_than_blank(ctx):
     html = client.get(f"/device/{EPD}").get_data(as_text=True)
     labels = {name: body for name, _, body in _map_slots(html)}
     assert labels["v.panel.markets.5"].strip(), "an empty cell still says so"
+
+
+def test_a_multi_region_screen_configures_its_components_in_one_place(ctx):
+    # Two forms writing one value is how they come to disagree. On a screen
+    # with regions, the arrangement owns every component and its settings, so
+    # the single-component picker above it is a second control for the same
+    # thing -- and the one that silently loses.
+    client, cache = ctx
+    _dashboard(client, cache)
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert 'name="scene"' not in html, "no second component picker"
+    assert 'name="v.panel.masthead.0"' in html, "the arrangement is the picker"
+    assert 'name="name"' in html, "renaming the screen still lives up there"
+
+
+def test_a_single_region_screen_keeps_its_picker(ctx):
+    # The round panel has one full-bleed region, so the arrangement editor does
+    # not render at all. Hiding the picker there would leave no way to assign.
+    client, cache = ctx
+    html = client.get(f"/device/{ROUND}").get_data(as_text=True)
+    assert 'name="scene"' in html
+
+
+def test_the_first_panels_heading_describes_what_is_actually_in_it(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    arranged = client.get(f"/device/{EPD}").get_data(as_text=True)
+    simple = client.get(f"/device/{ROUND}").get_data(as_text=True)
+    assert "Esta pantalla" in arranged and "Qué muestra" not in arranged
+    assert "Qué muestra" in simple

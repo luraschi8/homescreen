@@ -89,6 +89,13 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     current = dev.get("scene") or "unassigned"
     caps = dev.get("caps") or {}
 
+    # A screen with regions is arranged below, region by region, and each
+    # placement carries its own settings. Offering a second component picker
+    # here would be two forms writing one value -- and this is the one that
+    # silently loses, because the arrangement is what the renderer reads.
+    # A single full-bleed screen has no arrangement editor, so it keeps it.
+    arranged = len(regions or {}) > 1
+
     state = (pill("esperando aprobación", "warn") if not approved
              else pill("en línea", "ok") if dev.get("online")
              else pill("sin conexión", "bad"))
@@ -115,6 +122,14 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
                      active=(name == current))
         for name, ok, _ in options if ok)
     lists = datalist_markup([f for s in schemas.values() for f in (s or [])])
+
+    picker = "" if arranged else f"""<label class="field">Componente
+      <select name="scene" data-scene-picker>{picks}</select></label>
+    {groups}"""
+
+    # The heading has to describe what is under it. Once the arrangement owns
+    # what the screen shows, this panel is just the screen's name.
+    heading = "Esta pantalla" if arranged else "Qué muestra"
 
     thumbs = "".join(
         f'<figure class="pv">'
@@ -150,15 +165,13 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
   {pill("fw " + str(dev.get("fw") or "?"))}</div>
 {admission}{unknown_scene}
 
-<h2>Qué muestra</h2>
+<h2>{heading}</h2>
 <div class="panel"><div class="pad">
   <form class="stack" method="post" action="/device/{hw}">
     <label class="field">Nombre
       <input type="text" name="name" value="{e(dev.get("name") or "")}"
         maxlength="{name_max}" placeholder="sin nombre"></label>
-    <label class="field">Componente
-      <select name="scene" data-scene-picker>{picks}</select></label>
-    {groups}
+    {picker}
     <div class="actions"><button type="submit">Guardar</button></div>
   </form>
 </div></div>

@@ -44,8 +44,9 @@ CSS = """
   transition:background .12s,border-color .12s}
 .mslot:hover{border-color:var(--accent)}
 .mslot.filled{border-style:solid;border-color:var(--accent)}
-.mslot .mn{font-size:.68rem;font-weight:650;line-height:1.1;
-  color:var(--faint);overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.mslot .mn{font-size:.7rem;font-weight:650;line-height:1.15;
+  color:var(--faint);overflow:hidden;text-overflow:ellipsis;max-width:100%;
+  white-space:nowrap}
 .mslot.filled .mn{color:var(--fg)}
 /* The region name is context, not content: it shows when there is room. */
 .mslot .mr{font-size:.58rem;color:var(--faint);font-family:var(--mono);
@@ -203,12 +204,17 @@ def _map(view_name: str, regions: dict, by_region: dict,
             x, y, w, h = layout.slots(spec, spec["holds"])[index]
             current = held[index] if index < len(held) else ""
             field = f"v.{e(view_name)}.{e(region)}.{index}"
+            # The region names itself ONCE. Repeating it in all six cells of
+            # the markets band labels the container six times and the contents
+            # never, which is the opposite of what the picture is for.
+            caption = (f'<span class="mr">{e(region)}</span>' if index == 0
+                       else "")
             boxes.append(
                 f'<div class="mslot" data-for="{field}" '
                 f'style="left:{x / panel_w:.4%};top:{y / panel_h:.4%};'
                 f'width:{w / panel_w:.4%};height:{h / panel_h:.4%}">'
                 f'<span class="mn">{e(current) if current else VACANT}</span>'
-                f'<span class="mr">{e(region)}</span></div>')
+                f'{caption}</div>')
     return (f'<div class="map" style="aspect-ratio:{panel_w}/{panel_h}">'
             f'{"".join(boxes)}</div>')
 
