@@ -261,3 +261,52 @@ def test_a_region_with_no_stack_axis_still_divides_rather_than_piling():
     got = layout.slots(region, 2)
     assert got[0] != got[1]
     assert sum(r[3] for r in got) == 240
+
+
+# --- weighted slots ----------------------------------------------------------
+#
+# SPEC §9's markets band is not six equal cells: an FX box at flex 1.55 and
+# five tickers at 1 each. Equal division cannot express the original design.
+
+def test_weights_divide_a_region_in_the_declared_proportions():
+    region = {"rect": (0, 0, 655, 62), "stack": "h", "holds": 6,
+              "weights": (1.55, 1, 1, 1, 1, 1)}
+    got = layout.slots(region, 6)
+    widths = [r[2] for r in got]
+    assert sum(widths) == 655, widths
+    assert widths[0] > widths[1], "the FX box is the wide one"
+    assert abs(widths[0] / widths[1] - 1.55) < 0.05, widths
+
+
+def test_weights_still_tile_exactly_with_an_awkward_remainder():
+    region = {"rect": (0, 0, 100, 40), "stack": "h", "holds": 3,
+              "weights": (1, 1, 1)}
+    got = layout.slots(region, 3)
+    assert sum(r[2] for r in got) == 100
+    for before, after in zip(got, got[1:]):
+        assert before[0] + before[2] == after[0]
+
+
+def test_fewer_placements_than_weights_uses_the_leading_weights():
+    # Two tickers in a six-cell band still put the FX box first and give it
+    # its share, rather than falling back to halves.
+    region = {"rect": (0, 0, 655, 62), "stack": "h", "holds": 6,
+              "weights": (1.55, 1, 1, 1, 1, 1)}
+    got = layout.slots(region, 2)
+    assert sum(r[2] for r in got) == 655
+    assert abs(got[0][2] / got[1][2] - 1.55) < 0.05
+
+
+def test_a_region_with_no_weights_still_divides_evenly():
+    region = {"rect": (0, 0, 300, 40), "stack": "h", "holds": 3}
+    assert [r[2] for r in layout.slots(region, 3)] == [100, 100, 100]
+
+
+def test_the_dashboard_markets_band_matches_the_original_sketch():
+    # SPEC §9: FX box 181px, each ticker ~117px, across an inner width of 764.
+    spec = layout.regions(EPD, "dashboard")["markets"]
+    widths = [r[2] for r in layout.slots(spec, 6)]
+    assert sum(widths) == spec["rect"][2]
+    assert abs(widths[0] - 181) <= 3, widths
+    for ticker in widths[1:]:
+        assert abs(ticker - 117) <= 3, widths

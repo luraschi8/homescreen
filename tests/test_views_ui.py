@@ -324,3 +324,86 @@ def test_the_markets_band_can_hold_the_ticker_it_was_designed_for(ctx):
     cell = {**caps, "w": w, "h": h}
     assert scenes.supports("quotes", cell)[0], "the ticker fits its own band"
     assert not scenes.supports("planes", cell)[0], "the radar still does not"
+
+
+# --- the visual builder ------------------------------------------------------
+#
+# The arrangement was a list of dropdowns, which is a description of a layout
+# rather than a picture of one. SPEC §9's dashboard is a shape, and choosing
+# what goes in it should look like the thing being chosen.
+
+def _map_slots(html):
+    return re.findall(r'<div class="mslot"[^>]*data-for="([^"]+)"[^>]*'
+                      r'style="([^"]+)"[^>]*>(.*?)</div>', html, re.S)
+
+
+def test_the_builder_draws_one_box_per_slot(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    got = _map_slots(html)
+    # dashboard: masthead 1 + main_left 4 + main_right 3 + markets 6
+    assert len(got) == 14, [g[0] for g in got]
+
+
+def test_every_box_points_at_the_control_that_fills_it(ctx):
+    # The picture and the form are the same state. A box that named a select
+    # which does not exist would be a picture of a different layout.
+    client, cache = ctx
+    _dashboard(client, cache)
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    for name, _, _ in _map_slots(html):
+        assert f'<select name="{name}"' in html, name
+
+
+def test_the_boxes_are_positioned_in_the_panels_own_proportions(ctx):
+    # The masthead is the full width and the top ninth of SPEC §9's design.
+    client, cache = ctx
+    _dashboard(client, cache)
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    style = dict(_map_slots(html))[
+        "v.panel.masthead.0"] if False else None
+    for name, css, _ in _map_slots(html):
+        if name == "v.panel.masthead.0":
+            style = css
+    assert style, "the masthead is drawn"
+    assert "left:0" in style.replace(" ", "")
+    assert "width:100" in style.replace(" ", "")
+
+
+def test_the_markets_band_is_drawn_in_the_sketchs_proportions(ctx):
+    # The FX box is flex 1.55 against five tickers at 1, so the first cell
+    # must be visibly wider than the rest rather than a sixth like them.
+    client, cache = ctx
+    _dashboard(client, cache)
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    widths = {}
+    for name, css, _ in _map_slots(html):
+        if ".markets." in name:
+            found = re.search(r"width:([\d.]+)%", css.replace(" ", ""))
+            widths[name] = float(found.group(1))
+    assert len(widths) == 6, widths
+    first = widths["v.panel.markets.0"]
+    rest = [v for k, v in widths.items() if k != "v.panel.markets.0"]
+    assert all(first > r * 1.4 for r in rest), widths
+
+
+def test_an_assigned_slot_is_labelled_with_what_is_in_it(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.masthead.0": "clock",
+        "v.panel.main_left.0": "calendar"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    labels = {name: body for name, _, body in _map_slots(html)}
+    assert "clock" in labels["v.panel.masthead.0"]
+    assert "calendar" in labels["v.panel.main_left.0"]
+
+
+def test_an_empty_slot_reads_as_empty_rather_than_blank(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={"v.panel.masthead.0": "clock"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    labels = {name: body for name, _, body in _map_slots(html)}
+    assert labels["v.panel.markets.5"].strip(), "an empty cell still says so"

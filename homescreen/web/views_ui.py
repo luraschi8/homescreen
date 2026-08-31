@@ -31,8 +31,29 @@ CSS = """
   align-items:center;margin-bottom:.5rem}
 .slot-row .rg{font-size:.8rem;color:var(--dim);font-family:var(--mono)}
 .slot-row .cap{font-size:.7rem;color:var(--faint)}
+
+/* The panel, to scale. Boxes are positioned as percentages of the real
+   rectangles, so the picture cannot drift from the geometry it describes. */
+.map{position:relative;width:100%;max-width:34rem;margin:0 0 1rem;
+  background:var(--bg);border:1px solid var(--line);border-radius:6px;
+  overflow:hidden}
+.mslot{position:absolute;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:.1rem;overflow:hidden;
+  box-sizing:border-box;border:1px dashed var(--line);border-radius:3px;
+  background:var(--panel);cursor:pointer;padding:2px;text-align:center;
+  transition:background .12s,border-color .12s}
+.mslot:hover{border-color:var(--accent)}
+.mslot.filled{border-style:solid;border-color:var(--accent)}
+.mslot .mn{font-size:.68rem;font-weight:650;line-height:1.1;
+  color:var(--faint);overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.mslot.filled .mn{color:var(--fg)}
+/* The region name is context, not content: it shows when there is room. */
+.mslot .mr{font-size:.58rem;color:var(--faint);font-family:var(--mono);
+  line-height:1;overflow:hidden;max-width:100%}
+@media (max-width:640px){.mslot .mr{display:none}}
 """
 
+VACANT = "vacío"
 EMPTY = "—"
 
 
@@ -130,8 +151,70 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
             f'<div>{"".join(rows)}</div></div>')
 
 
+#: Progressive enhancement only. With this off the boxes are labels and the
+#: selects still work -- which is the test for whether it belongs here at all.
+#: Kept out of the f-string below because JavaScript is mostly braces.
+_BUILDER_SCRIPT = """<script>
+// The picture follows the form. Clicking a box focuses the select that fills
+// it, and changing a select relabels the box -- so the arrangement can be read
+// as a shape and edited as a list without either going stale.
+document.querySelectorAll('.view').forEach(function (view) {
+  var boxes = view.querySelectorAll('.mslot');
+  boxes.forEach(function (box) {
+    var sel = view.querySelector('select[name="' + box.dataset.for + '"]');
+    if (!sel) { return; }
+    var label = box.querySelector('.mn');
+    function sync() {
+      var value = sel.value || '';
+      label.textContent = value || label.dataset.empty || label.textContent;
+      box.classList.toggle('filled', !!value);
+    }
+    label.dataset.empty = label.textContent;
+    box.addEventListener('click', function () {
+      sel.focus();
+      sel.scrollIntoView({block: 'center', behavior: 'smooth'});
+    });
+    sel.addEventListener('change', sync);
+    sync();
+  });
+});
+</script>"""
+
+
+def _map(view_name: str, regions: dict, by_region: dict,
+         panel_w: int, panel_h: int) -> str:
+    """The panel, to scale, with a box for every slot.
+
+    A list of dropdowns describes a layout; SPEC SS9's dashboard IS a shape,
+    and choosing what goes where should look like the thing being chosen. The
+    boxes are positioned as percentages of the real rectangles, so this is the
+    same geometry the renderer uses rather than a drawing of it.
+
+    It is a view of the form, not a second source of truth: every box names the
+    select that fills it, and the script below keeps the two in step. With the
+    script off, the boxes are labels and the selects still work.
+    """
+    if panel_w <= 0 or panel_h <= 0:
+        return ""
+    boxes = []
+    for region, spec in regions.items():
+        held = by_region.get(region) or []
+        for index in range(spec["holds"]):
+            x, y, w, h = layout.slots(spec, spec["holds"])[index]
+            current = held[index] if index < len(held) else ""
+            field = f"v.{e(view_name)}.{e(region)}.{index}"
+            boxes.append(
+                f'<div class="mslot" data-for="{field}" '
+                f'style="left:{x / panel_w:.4%};top:{y / panel_h:.4%};'
+                f'width:{w / panel_w:.4%};height:{h / panel_h:.4%}">'
+                f'<span class="mn">{e(current) if current else VACANT}</span>'
+                f'<span class="mr">{e(region)}</span></div>')
+    return (f'<div class="map" style="aspect-ratio:{panel_w}/{panel_h}">'
+            f'{"".join(boxes)}</div>')
+
+
 def editor(hw: str, views: dict, regions: dict, offered, template: str,
-           schemas=None, fits=None) -> str:
+           schemas=None, fits=None, caps=None) -> str:
     """Every view on this screen, and what each holds.
 
     Options are NOT edited here. A placement's settings belong to the component
@@ -154,7 +237,11 @@ def editor(hw: str, views: dict, regions: dict, offered, template: str,
             _region_row(view_name, region, spec, by_region.get(region, []),
                         offered, schemas, values, fits)
             for region, spec in regions.items())
-        blocks.append(f'<div class="view"><h3>{e(view_name)}</h3>{rows}</div>')
+        panel = _map(view_name, regions, by_region,
+                     int((caps or {}).get("w") or 0),
+                     int((caps or {}).get("h") or 0))
+        blocks.append(f'<div class="view"><h3>{e(view_name)}</h3>'
+                      f'{panel}{rows}</div>')
 
     return f"""<h2>Qué contiene cada vista</h2>
 <div class="panel"><div class="pad">
@@ -170,7 +257,8 @@ def editor(hw: str, views: dict, regions: dict, offered, template: str,
       <span class="hint">Se crea vacía y se rellena aquí mismo.</span></label>
     <div class="actions"><button type="submit">Guardar vistas</button></div>
   </form>
-</div></div>"""
+</div></div>
+{_BUILDER_SCRIPT}"""
 
 
 def parse(form, regions: dict, view_names, schemas=None) -> dict:

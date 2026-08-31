@@ -63,8 +63,12 @@ TEMPLATES = {
                            "holds": 4, "stack": "v"},
             "main_right": {"rect": (0.576,  0.131, 0.401, 0.698),
                            "holds": 3, "stack": "v"},
+            # SPEC SS9: an FX box at flex 1.55 and five tickers at 1 each,
+            # across an inner width of 764. Five tickers is the hard ceiling
+            # there -- a sixth starts truncating symbols.
             "markets":    {"rect": (0.0225, 0.846, 0.955, 0.129),
-                           "holds": 6, "stack": "h"},
+                           "holds": 6, "stack": "h",
+                           "weights": (1.55, 1, 1, 1, 1, 1)},
         },
     },
 }
@@ -130,14 +134,43 @@ def slots(region: dict, count: int) -> list:
         return [(x, y, w, h)]
     horizontal = region.get("stack") == "h"
     span = w if horizontal else h
-    size, extra = divmod(span, count)
+    sizes = _shares(span, count, region.get("weights"))
     out, offset = [], 0
-    for i in range(count):
-        this = size + (1 if i < extra else 0)
-        out.append((x + offset, y, this, h) if horizontal
-                   else (x, y + offset, w, this))
-        offset += this
+    for size in sizes:
+        out.append((x + offset, y, size, h) if horizontal
+                   else (x, y + offset, w, size))
+        offset += size
     return out
+
+
+def _shares(span: int, count: int, weights=None) -> list:
+    """`count` whole-pixel shares of `span`, tiling it exactly.
+
+    Weights are optional and proportional: SPEC SS9's markets band is an FX box
+    at flex 1.55 and five tickers at 1 each, which equal division cannot
+    express. The LEADING weights are used when a region carries fewer
+    placements than it can hold, so two tickers in a six-cell band still put
+    the wide box first rather than falling back to halves.
+
+    The remainder is distributed by largest fractional part -- the same rule a
+    seat apportionment uses -- so the widest cell does not systematically lose
+    the rounding to the narrowest.
+    """
+    if weights:
+        share = [float(x) for x in list(weights)[:count]]
+        share += [1.0] * (count - len(share))
+    else:
+        share = [1.0] * count
+    total = sum(share) or float(count)
+    exact = [span * part / total for part in share]
+    sizes = [int(value) for value in exact]
+    short = span - sum(sizes)
+    # Whoever was cut by the most gets the spare pixels first.
+    order = sorted(range(count), key=lambda i: exact[i] - sizes[i],
+                   reverse=True)
+    for i in order[:short]:
+        sizes[i] += 1
+    return sizes
 
 
 def clean_placement(raw, caps, known_components, template=DEFAULT_TEMPLATE):
