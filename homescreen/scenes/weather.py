@@ -104,8 +104,12 @@ def build(ctx: SceneContext) -> Scene:
     reading = reading if reading is not None else _nothing()
 
     temp = _degrees(reading.get("temp"), units)
-    place = (options.get("place") or reading.get("place")
-             or home_location(ctx.cfg or {}).get("name") or "")
+    # What YOU called the place beats what the vendor calls the nearest
+    # station: OpenWeather answered "Sol" for a Madrid centre, which is the
+    # neighbourhood the observation came from and not the city anyone lives in.
+    place = (options.get("place")
+             or home_location(ctx.cfg or {}).get("name")
+             or reading.get("place") or "")
     description = (reading.get("description") or "").capitalize()
     span = ""
     if options.get("show_range", True):
