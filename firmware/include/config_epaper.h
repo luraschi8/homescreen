@@ -1,5 +1,16 @@
 // Pins and geometry for the e-paper client: an ESP32-C3 wired to a Waveshare
-// e-Paper Driver HAT carrying a 7.5" V2 panel (800x480, 1-bit).
+// e-Paper Driver HAT Rev2.3 carrying a 7.5" V2 panel (800x480, 1-bit).
+//
+// Wired to the HAT's own 9-pin edge header -- VCC GND DIN CLK CS DC RST BUSY
+// PWR -- not to the 40-pin Pi socket on the back. That header exists for
+// exactly this: driving the board from something that is not a Raspberry Pi,
+// and it names every line, so there is nothing to derive from a pinout table.
+//
+// Two switches on the board, and both matter:
+//   Interface Config -> 0   4-line SPI. We use DC as a real pin; 3-line SPI
+//                           folds it into the data stream and this driver
+//                           does not speak that.
+//   Display Config   -> A   3R, which is what the 7.5" V2 wants.
 //
 // GPIO 2, 8 and 9 are deliberately unused: they are strapping pins on the C3,
 // and a signal held low at reset changes the boot mode. 18 and 19 are USB.
@@ -10,8 +21,10 @@
 namespace config {
 namespace epaper {
 
-// Matches the HAT's own labels. DIN is the panel's data in, so it is the C3's
-// MOSI; there is no MISO -- the panel never talks back except through BUSY.
+// Named after the HAT's own silkscreen, so the wiring can be checked against
+// the board rather than against a document. DIN is the panel's data IN, so it
+// is the C3's MOSI; there is no MISO -- the panel never talks back except by
+// holding BUSY.
 constexpr gpio_num_t kPinDin = GPIO_NUM_6;
 constexpr gpio_num_t kPinClk = GPIO_NUM_4;
 constexpr gpio_num_t kPinCs = GPIO_NUM_7;
