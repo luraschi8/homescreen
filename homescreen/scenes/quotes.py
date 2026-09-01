@@ -136,7 +136,7 @@ def build(ctx: SceneContext) -> Scene:
                       [draw.text("center", "sin símbolos", "sm", "dim")],
                       poll_s=300,
                       body=f'<div class="wrap">'
-                           f'{empty("sin símbolos", "añade alguno en los ajustes")}'
+                           f'{empty("sin símbolos", "añade alguno en los ajustes", ctx.variant)}'
                            f'</div>')
 
     if stacked:
@@ -195,7 +195,7 @@ def _body(variant: str, symbols, readings) -> str:
     `AAPL228.40` together.
     """
     if not symbols:
-        return f'<div class="wrap">{empty("sin símbolos", "añade alguno en los ajustes")}</div>'
+        return f'<div class="wrap">{empty("sin símbolos", "añade alguno en los ajustes", variant)}</div>'
 
     if variant == "badge":
         # ONE symbol. A cell that rotates is a cell you cannot read at a
@@ -236,7 +236,9 @@ CSS = """
 .q .ch{display:flex;align-items:center;gap:2px;font-size:var(--xs)}
 .ar{flex:none;display:block}
 
-.wrap.badge{align-items:center}
+/* The three lines are one block, centred in the cell, not floating apart. */
+.wrap.badge{align-items:center;justify-content:flex-start}
+.wrap.badge .q{width:100%}
 /* Evenly spread along the band, not huddled at the left. */
 .wrap.strip{gap:var(--pad)}
 .wrap.strip .q{flex:1}

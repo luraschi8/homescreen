@@ -103,7 +103,7 @@ EMPTY_CSS = """
 """
 
 
-def empty(note: str, hint: str = "") -> str:
+def empty(note: str, hint: str = "", shape: str | None = None) -> str:
     """What a region says when it has nothing to show.
 
     Shared because three components each grew their own and two of them grew
@@ -112,7 +112,11 @@ def empty(note: str, hint: str = "") -> str:
     the round panel said "sin simbolos" and "elige uno en los ajustes". A
     component cannot be forthcoming on one screen and silent on another.
     """
-    tail = f'<div class="hint">{hint}</div>' if hint else ""
+    # The hint is a sentence, and a markets cell is 108 usable pixels -- about
+    # eighteen characters. It belongs in a block, where there is room to be
+    # helpful; in a cell it just overflows and gets clipped.
+    tail = (f'<div class="hint">{hint}</div>'
+            if hint and shape not in ("badge", "strip") else "")
     return f'<div class="nothing"><div>{note}</div>{tail}</div>'
 
 

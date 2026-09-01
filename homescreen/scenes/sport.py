@@ -174,9 +174,9 @@ def build(ctx: SceneContext) -> Scene:
     # says nothing at all -- while the same component on the round panel said
     # "elige uno en los ajustes".
     if not wanted:
-        inner = empty("sin equipo", "elige uno en los ajustes")
+        inner = empty("sin equipo", "elige uno en los ajustes", ctx.variant)
     elif match is None:
-        inner = empty("sin partidos", "en el periodo elegido")
+        inner = empty("sin partidos", "en el periodo elegido", ctx.variant)
     elif ctx.variant in ("card", "panel"):
         # A fixture with no date is not information. The draw list has
         # computed the kickoff all along and the HTML threw it away.

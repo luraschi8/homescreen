@@ -144,7 +144,7 @@ def build(ctx: SceneContext) -> Scene:
         note = ("sin calendario" if not wanted else "nada a la vista")
         hint = ("a\u00f1ade una URL .ics" if not wanted
                 else f"pr\u00f3ximos {options.get('days', 14)} d\u00edas")
-        body_html = empty(note, hint)
+        body_html = empty(note, hint, ctx.variant)
     else:
         body_html = f'<table>{body}</table>'
     return Scene(layout="fill",

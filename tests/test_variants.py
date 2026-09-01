@@ -223,3 +223,32 @@ def test_the_dashboards_own_slots_get_sensible_shapes():
         for name in ("weather", "quotes", "calendar", "sport"):
             got = scenes.variant_for(name, {**caps, "w": w, "h": h})
             assert got in (shape, None), (name, region, count, w, h, got)
+
+
+def test_nothing_overflows_a_markets_cell():
+    # 116x62 is the narrowest cell SPEC §9's band produces. A component that
+    # wraps there pushes itself out of the band, and `overflow:hidden` eats
+    # whatever crossed the line -- silently.
+    import pathlib
+    import re
+    import tempfile
+    cell = {"w": 116, "h": 62, "depth": 1}
+    for name in scenes.names():
+        if scenes.variant_for(name, cell) is None:
+            continue
+        ctx = scenes.SceneContext(
+            cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+            cache_dir=pathlib.Path(tempfile.mkdtemp()), caps=cell,
+            now=1_788_000_000.0, device={"hw": "p", "id": "p"},
+            options=scenes.defaults(name))
+        html = scenes.build(name, ctx).html or ""
+        ladder = {t: int(v) for t, v in
+                  re.findall(r"(--[\w-]+):(\d+)px", html)}
+        body = html.split("</style>")[-1]
+        text = " ".join(re.sub(r"<[^>]+>", " ", body).split())
+        # Per rendered block, not per whitespace run: at ~0.58em a character,
+        # a cell this wide holds roughly eighteen.
+        for line in re.findall(r">([^<>]+)<", body):
+            assert len(line.strip()) <= 20, (name, line.strip())
+        for token, px in ladder.items():
+            assert px >= 10 or token in ("--pad", "--pad-sm"), (name, token, px)
