@@ -54,7 +54,9 @@ def test_a_small_round_panel_shows_one_at_a_time():
 def test_the_small_panel_moves_on():
     assert drawn(ROUND, now=0)[0] == "AAPL"
     assert drawn(ROUND, now=9)[0] == "MSFT"
-    assert drawn(ROUND, now=17)[0] == "BINANCE:BTCUSDT"
+    # The venue that routes the fetch, not the name of the thing: the round
+    # panel draws the ticker, not the URL it came from.
+    assert drawn(ROUND, now=17)[0] == "BTCUSDT"
     assert drawn(ROUND, now=25)[0] == "AAPL", "and wraps"
 
 
@@ -266,3 +268,20 @@ def test_no_rule_survives_the_markup_it_was_written_for():
     import re
     bare = re.findall(r"^\.(sym|px|ch)\{", css, re.M)
     assert not bare, f"unscoped leftovers: {bare}"
+
+
+def test_the_exchange_prefix_does_not_reach_the_glass():
+    # Crypto needs one upstream -- a bare BTCUSDT comes back as a 200 with
+    # every field zero -- but it is how the quote is fetched, not what the
+    # thing is called, and it is fifteen characters in a cell sized for seven.
+    assert scenes.quotes.shown("BINANCE:BTCUSDT") == "BTCUSDT"
+    assert scenes.quotes.shown("OANDA:EUR_USD") == "EUR_USD"
+    assert scenes.quotes.shown("AAPL") == "AAPL"
+    assert scenes.quotes.shown("") == ""
+
+
+def test_the_prefixed_symbol_is_still_what_gets_fetched():
+    # Stripping it for display must not strip it from the request, or the
+    # quote that resolves stops resolving.
+    wanted = scenes.quotes.needs({"symbols": "BINANCE:BTCUSDT"}, {})
+    assert wanted[0]["params"]["symbol"] == "BINANCE:BTCUSDT"

@@ -92,9 +92,20 @@ def _rotate_seconds(options: dict) -> int:
     return max(2, min(300, n))
 
 
+def shown(symbol: str) -> str:
+    """The ticker without the venue that routes it.
+
+    Crypto needs an exchange prefix upstream -- a bare `BTCUSDT` comes back as
+    a 200 with every field zero, and `BINANCE:BTCUSDT` is the symbol that
+    resolves. That prefix is how the quote is FETCHED, not what the thing is
+    called, and printing it puts fifteen characters in a cell sized for seven.
+    """
+    return str(symbol or "").rsplit(":", 1)[-1] or str(symbol or "")
+
+
 def _line(symbol: str, reading) -> str:
     change = _fmt_change(reading.get("change_pct"))[0]
-    line = f"{symbol}  {_fmt_price(reading.get('price'))}"
+    line = f"{shown(symbol)}  {_fmt_price(reading.get('price'))}"
     return f"{line}   {change}" if change else line
 
 
@@ -162,7 +173,7 @@ def build(ctx: SceneContext) -> Scene:
         symbol = symbols[index]
         reading = readings[symbol]
         change, tone = _fmt_change(reading.get("change_pct"))
-        instructions = [draw.text("above", symbol, "sm", "accent"),
+        instructions = [draw.text("above", shown(symbol), "sm", "accent"),
                         draw.text("center", _fmt_price(reading.get("price")),
                                   "lg")]
         if change:
@@ -183,7 +194,7 @@ def _cell(symbol: str, reading) -> str:
     pct = reading.get("change_pct")
     direction = "" if pct is None else ("up" if pct >= 0 else "down")
     delta = "" if pct is None else f"{abs(float(pct)):.2f}%"
-    return (f'<div class="q"><div class="sym">{symbol}</div>'
+    return (f'<div class="q"><div class="sym">{shown(symbol)}</div>'
             f'<div class="px">{_fmt_price(reading.get("price"))}</div>'
             f'<div class="ch">{_icons.arrow(direction, 10)}'
             f'<span>{delta}</span></div></div>')
