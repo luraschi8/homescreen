@@ -124,29 +124,42 @@ def arrow(direction: str, px: int) -> str:
 
 #: Sunrise and sunset. Their own drawing, because they are a TIME, not a sky.
 #: The clock borrowed `clear` and `cloud` for them, so on a cloudy afternoon
-#: the panel drew the identical cloud twice, once meaning "nublado" and once
-#: meaning "20:47" -- the same mark for two unrelated things.
+#: the panel drew the identical cloud twice -- once meaning "nublado" and once
+#: meaning "20:47". The same mark for two unrelated things.
 #:
-#: A half disc on a horizon with a filled triangle for the direction. Filled
-#: rather than stroked because these live at 13px beside the clock, where a
-#: hairline arc lands half-covered along its length and thresholds to noise.
+#: A filled triangle over a horizon, and nothing else. Four drawings were
+#: rendered through the real 160 threshold at 13/16/20px and looked at:
+#:
+#:   disc + arrow + horizon  three features in 13px; both became one blob
+#:   half disc on horizon    muddy at 13px; the arc closed
+#:   disc above / disc sunk  pretty at 20px, but the two differ so little
+#:                           that reading either one needs the other beside it
+#:   arrow over a horizon    unmistakable at every size  <- this
+#:
+#: These two glyphs need to carry exactly one bit differently -- which way the
+#: sun is going -- and on 1-bit glass at 13px a legible bit beats a picture
+#: with a sun in it that nobody can resolve. Filled for the same reason the
+#: market arrows are: a solid shape either covers a pixel or does not, where a
+#: hairline arc lands half-covered along its whole length.
 _SUN_EVENT = {
-    "sunrise": ('M11 29A9 9 0 0 1 29 29Z M20 4l6 10h-12z', "M3 32h34"),
-    "sunset": ('M11 29A9 9 0 0 1 29 29Z M20 15L14 5h12z', "M3 32h34"),
+    "sunrise": "M20 6l9 16h-18z",
+    "sunset": "M20 24L11 8h18z",
 }
+
+#: Sits below the mark, the full width of the box.
+_HORIZON = "M3 31h34"
 
 
 def sun_event(kind: str, px: int) -> str:
     """Sunrise or sunset, as a picture that means only that."""
     px = max(MIN_PX, int(px))
-    shapes = _SUN_EVENT.get(str(kind or ""))
-    if not shapes:
+    mark = _SUN_EVENT.get(str(kind or ""))
+    if not mark:
         return ""
-    solid, horizon = shapes
     return (f'<svg class="ic" viewBox="0 0 {VIEWBOX} {VIEWBOX}" '
             f'width="{px}" height="{px}" aria-hidden="true">'
-            f'<path d="{solid}" fill="#000"/>'
-            f'<path d="{horizon}" stroke="#000" fill="none" '
+            f'<path d="{mark}" fill="#000"/>'
+            f'<path d="{_HORIZON}" stroke="#000" fill="none" '
             f'stroke-width="{_stroke(px, _GAP["simple"])}" '
             f'stroke-linecap="round"/></svg>')
 

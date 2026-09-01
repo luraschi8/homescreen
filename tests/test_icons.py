@@ -137,3 +137,15 @@ def test_sunrise_and_sunset_are_not_weather_glyphs():
 
 def test_the_sun_event_glyphs_hold_the_type_floor():
     assert 'width="10"' in _icons.sun_event("sunrise", 4)
+
+
+def test_the_two_sun_events_differ_where_it_matters():
+    # They carry exactly one bit differently -- which way the sun is going --
+    # and the panel never shows one beside the other for comparison.
+    rise = _icons.sun_event("sunrise", 13)
+    set_ = _icons.sun_event("sunset", 13)
+    # Same horizon, different mark: the difference is the direction, not the
+    # furniture around it.
+    assert _icons._HORIZON in rise and _icons._HORIZON in set_
+    assert _icons._SUN_EVENT["sunrise"] in rise
+    assert _icons._SUN_EVENT["sunset"] in set_
