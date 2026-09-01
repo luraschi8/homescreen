@@ -45,10 +45,13 @@ SURFACES = (
     # after their headings.
     {"variant": "card", "at": (417, 150),
      "min_short": 90, "min_h": 81, "max_h": 239},
-    # A column. `min_w` because the hourly strip is six cells: across 100px
-    # that is 16px each, holding a 13px icon and a temperature.
+    # A column. No `min_w`: requiring 200 to protect the six-cell hourly
+    # strip made weather the only component that refuses a tall narrow screen
+    # -- 26,510 geometries, including every portrait board anyone might hang
+    # this on. The SHAPE is a column; how many hours fit in it is the strip's
+    # business, and it now counts them.
     {"variant": "panel", "at": (321, 335),
-     "min_short": 90, "min_w": 200, "min_h": 240},
+     "min_short": 90, "min_h": 240},
 )
 
 #: OpenWeather's icon codes, reduced to the shapes we can draw.
@@ -168,10 +171,26 @@ def _temp_tone(value, units: str) -> str:
 _DAYS = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
 
 
-def _clock(stamp, offset, fmt: str) -> str:
-    """An epoch in the PLACE's own time, not the server's."""
+def _clock(stamp, offset, fmt: str, zone: str = "") -> str:
+    """An epoch in the PLACE's own time, not the server's.
+
+    Prefers the ZONE. A fixed offset is the one in force when the request was
+    made, applied to every day of the forecast -- so a spring transition
+    inside the window shifted the later days by an hour, and since
+    `daily.time` is MIDNIGHT local, an hour is a whole day. Four rows of five
+    carried the wrong name, once a year.
+    """
     if stamp is None:
         return ""
+    if zone:
+        try:
+            import zoneinfo
+            moment = datetime.datetime.fromtimestamp(
+                int(stamp), zoneinfo.ZoneInfo(zone))
+            return _DAYS[moment.weekday()] if fmt == "day" \
+                else moment.strftime(fmt)
+        except Exception:                               # noqa: BLE001
+            pass                                        # fall back to the offset
     moment = datetime.datetime.fromtimestamp(
         int(stamp) + int(offset or 0), datetime.timezone.utc)
     if fmt == "day":
@@ -180,7 +199,8 @@ def _clock(stamp, offset, fmt: str) -> str:
 
 
 def _body(variant: str, reading, place: str, temp: str, unit: str,
-          description: str, span: str, now: float) -> str:
+          description: str, span: str, now: float, rows: int,
+          width: int) -> str:
     """The arrangement for this SHAPE.
 
     The size rule used to exist and reach only the round panel: `wide_band`
@@ -190,6 +210,7 @@ def _body(variant: str, reading, place: str, temp: str, unit: str,
     place name, in a 764x62 band.
     """
     offset = reading.get("tz_offset_s") or 0
+    zone = str(reading.get("tz") or "")
     icon = _icons.sky(reading.get("sky"), _ICON_PX.get(variant, 20))
 
     if variant == "strip":
@@ -201,8 +222,12 @@ def _body(variant: str, reading, place: str, temp: str, unit: str,
 
     if variant == "badge":
         # A cell in a band: the number, and the least that identifies it.
+        # The unit ALWAYS. `place or unit` dropped it whenever the place was
+        # named, so C and F rendered identically -- the same bug as "the unit
+        # vanished with the place name", reintroduced in the HTML path.
+        label = f"{place} {unit}".strip() if place else unit
         return (f'<div class="wrap badge"><div class="big">{temp}</div>'
-                f'<div class="wx-place">{place or unit}</div></div>')
+                f'<div class="wx-place">{label}</div></div>')
 
     if variant == "card":
         return (f'<div class="wrap card">'
@@ -212,8 +237,8 @@ def _body(variant: str, reading, place: str, temp: str, unit: str,
 
     # `panel`: room to lay it out. Current conditions, the hours ahead, then
     # the days -- which is the right-hand column of the original design.
-    hours = _hourly(reading, offset, now)
-    days = _daily(reading, offset)
+    hours = _hourly(reading, offset, now, zone, width)
+    days = _daily(reading, offset, rows, zone)
     return (f'<div class="wrap panel">'
             f'<div class="now">{icon}<div class="big">{temp}{unit}</div>'
             f'<div class="cond"><div>{description}</div>'
@@ -221,7 +246,8 @@ def _body(variant: str, reading, place: str, temp: str, unit: str,
             f'{hours}{days}</div>')
 
 
-def _hourly(reading, offset, now: float) -> str:
+def _hourly(reading, offset, now: float, zone: str = "",
+            width: int = 0) -> str:
     """The next six hours, as the design has them: hour, sky, temperature.
 
     From NOW. This filtered on `reading["now"]`, a key no envelope carries, so
@@ -231,24 +257,33 @@ def _hourly(reading, offset, now: float) -> str:
     """
     every = reading.get("hourly") or []
     ahead = [h for h in every if (h.get("time") or 0) >= int(now or 0)]
-    # A cache stale enough that every hour is behind us still shows the last
-    # ones known: a gap where the panel had a row reads as broken.
-    cells = (ahead or every[-6:])[:6]
+    # Falls back on TOO FEW, not only on none. `ahead or ...` only fired when
+    # nothing was ahead, so three hours left gave three cells, two gave two,
+    # ONE gave zero -- the strip vanished at exactly the point the fallback
+    # exists for -- and none gave six.
+    # As many hours as the width can hold legibly. A cell carries "14h", a
+    # 13px picture and "30°", which needs about the space below; six of them
+    # across a 170px column would be 28px each and unreadable.
+    room = max(0, (int(width) or 321)) // _HOUR_CELL_PX
+    cells = (ahead if len(ahead) >= 2 else every[-6:])[:max(0, min(6, room))]
     if len(cells) < 2:
         return ""
     inner = "".join(
-        f'<div class="hr"><div class="t">{_clock(c.get("time"), offset, "%H")}h'
+        f'<div class="hr"><div class="t">{_clock(c.get("time"), offset, "%H", zone)}h'
         f'</div>{_icons.sky(c.get("sky"), 13)}'
         f'<div class="v">{_round(c.get("temp"))}°</div></div>' for c in cells)
     return f'<div class="hours">{inner}</div>'
 
 
-def _daily(reading, offset) -> str:
+def _daily(reading, offset, rows: int, zone: str = "") -> str:
     """The days ahead: name, sky, chance of rain, high and low."""
     # Five, from tomorrow. The provider is asked for `days: 5`, so slicing
     # `[1:6]` off a five-entry list left FOUR rows on a panel captioned as a
     # five-day forecast.
-    days = (reading.get("daily") or [])[1:]
+    # Bounded by the ROOM. `[1:]` made the count the length of the forecast:
+    # fifteen days gave fourteen rows, of which the region drew five and
+    # `overflow:hidden` ate the rest -- the last cut through its x-height.
+    days = (reading.get("daily") or [])[1:1 + max(1, min(rows, 6))]
     if not days:
         return ""
     rows = []
@@ -256,7 +291,7 @@ def _daily(reading, offset) -> str:
         chance = day.get("precip_pct")
         rows.append(
             f'<div class="dy"><div class="d">'
-            f'{_clock(day.get("date"), offset, "day")}</div>'
+            f'{_clock(day.get("date"), offset, "day", zone)}</div>'
             f'{_icons.sky(day.get("sky"), 15)}'
             f'<div class="p">{_precip(chance)}</div>'
             f'<div class="mx">{_round(day.get("max"))}°</div>'
@@ -287,6 +322,10 @@ def _round(value) -> str:
 #: How big the sky is drawn in each shape. Below 12px a line drawing stops
 #: reading as anything, so the strip gets a word instead of a smaller picture.
 _ICON_PX = {"strip": 14, "badge": 0, "card": 22, "panel": 28}
+
+#: What one cell of the hourly strip needs: a 13px picture between an hour
+#: label and a temperature, with air around them.
+_HOUR_CELL_PX = 36
 
 
 def build(ctx: SceneContext) -> Scene:
@@ -361,7 +400,7 @@ def build(ctx: SceneContext) -> Scene:
                         draw.text("below", "sin datos del tiempo", "xs", "dim")]
 
     body = _body(ctx.variant, reading, place, temp, unit, description, span,
-                 ctx.now)
+                 ctx.now, ctx.rows, w)
     return Scene(layout="fill", components=({"c": "weather",
                                              "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,

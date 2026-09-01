@@ -122,6 +122,10 @@ def fetch(params: dict, *, session=None, secrets=None) -> dict:
         "sunrise": _first_epoch(daily.get("sunrise")),
         "sunset": _first_epoch(daily.get("sunset")),
         "tz_offset_s": _weather.epoch(body.get("utc_offset_seconds")),
+        # The ZONE, not only the offset. An offset is frozen at request time
+        # and applied to every forecast day, so a spring transition inside the
+        # window mislabelled four days out of five -- once a year, silently.
+        "tz": str(body.get("timezone") or "").strip(),
         "units": params.get("units", "metric"),
         "daily": _days(daily),
         "hourly": _hours(hourly),

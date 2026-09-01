@@ -12,30 +12,74 @@ blob; strokes at the sizes here threshold cleanly.
 
 from __future__ import annotations
 
-#: What a stroke must measure ON THE GLASS. Below one device pixel a stroke is
-#: drawn as partial coverage, which is a grey, and the panel has no greys -- so
-#: the threshold either eats it or turns it into a dotted line depending on
-#: where it happened to fall. A little over one gives it somewhere to land.
+#: What a stroke would ideally measure ON THE GLASS. Below one device pixel a
+#: stroke is partial coverage, which is a grey, and the panel has no greys.
 _TARGET_DEVICE_PX = 1.25
 
 #: The box the paths are drawn in. A `stroke-width` is in THESE units, and its
 #: weight on the glass is `width * px / VIEWBOX`.
 VIEWBOX = 40
 
+#: The smallest gap between two strokes in each path set, in user units.
+#:
+#: This is the constraint that matters and the one the first two attempts both
+#: missed. A stroke eats half its width from each side of a gap, so a stroke
+#: wider than the gap CLOSES it -- and chasing a constant device weight put
+#: 3.85 units of pen into the sun's 4.5-unit gap, leaving 0.65. The sun became
+#: a blob and `fog` rendered two lines instead of three, which is worse than
+#: the thin strokes that started this.
+_GAP = {"detail": 4.5, "simple": 7.0}
 
-def _stroke(px: int) -> float:
-    """Stroke width in user units, for a constant weight on the glass.
 
-    The first version of this was a ladder of literals -- 1.6, 1.8, 2.2 --
-    written as though they were device pixels. They are not: at 13px that is
-    0.72 device px and at 28px it is 1.12, so the SMALLEST icon got the
-    THINNEST pen, which is the exact opposite of the intent stated beside it.
-    It was also discontinuous the wrong way, a 16px icon drawing thinner than
-    a 15px one.
+def _stroke(px: int, gap: float) -> float:
+    """Stroke width in user units: as heavy as the glass wants, as light as
+    the drawing survives.
 
-    Arithmetic rather than a table, so it cannot drift again.
+    Two bounds, and the geometry wins. Aiming only at a device weight closes
+    the glyph; aiming only at the glyph leaves a sub-pixel line that thresholds
+    to dots. Where they conflict -- and at 13px they do -- a readable shape at
+    0.9 device px beats an unreadable one at 1.25.
     """
-    return round(_TARGET_DEVICE_PX * VIEWBOX / max(1, int(px)), 2)
+    px = max(1, int(px))
+    wanted = _TARGET_DEVICE_PX * VIEWBOX / px
+    return round(min(wanted, gap * 0.5), 2)
+
+
+#: Below this, a 40-unit drawing cannot be rasterised: at 13px one unit is
+#: 0.325 device pixels, so a 4.5-unit gap is one and a half pixels holding two
+#: strokes. The simplified set has fewer, larger features instead of finer
+#: ones, which is the only thing that actually helps.
+SIMPLIFY_BELOW_PX = 17
+
+#: The same floor CLAUDE.md sets for type. Smaller than this is not a picture.
+MIN_PX = 10
+
+#: Fewer marks, wider apart. Rain and snow were the same picture at 13 and
+#: 15px -- a cloud with three small marks under it, and neither the 6-unit
+#: slants nor the 4-unit crosses resolved. Two long strokes and three FILLED
+#: dots do: a filled shape either covers a pixel or does not, where a thin
+#: cross lands half-covered along its whole length.
+_SMALL = {
+    "clear": ('<circle cx="20" cy="20" r="7"/>'
+              '<path d="M20 1v5M20 34v5M1 20h5M34 20h5"/>'),
+    "cloud": ('<path d="M11 30h18a7.5 7.5 0 0 0 0-15 10 10 0 0 0-19-2.5'
+              'A7 7 0 0 0 11 30z"/>'),
+    "rain": ('<path d="M11 24h18a7.5 7.5 0 0 0 0-15 10 10 0 0 0-19-2.5'
+             'A7 7 0 0 0 11 24z"/>'
+             '<path d="M15 30v8M27 30v8"/>'),
+    "snow": ('<path d="M11 24h18a7.5 7.5 0 0 0 0-15 10 10 0 0 0-19-2.5'
+             'A7 7 0 0 0 11 24z"/>'
+             '<circle cx="14" cy="34" r="2.6" fill="#000" stroke="none"/>'
+             '<circle cx="21" cy="34" r="2.6" fill="#000" stroke="none"/>'
+             '<circle cx="28" cy="34" r="2.6" fill="#000" stroke="none"/>'),
+    "storm": ('<path d="M11 23h18a7.5 7.5 0 0 0 0-15 10 10 0 0 0-19-2.5'
+              'A7 7 0 0 0 11 23z"/>'
+              '<path d="M23 27l-9 8h7l-3 5z" fill="#000" stroke="none"/>'),
+    # Two bands, not three: at 13px the three-band version rendered as two
+    # anyway, and a picture that silently loses a stroke is a different
+    # picture.
+    "fog": '<path d="M5 15h30M5 27h30"/>',
+}
 
 
 #: Drawn in a 40x40 box and scaled, so one set of coordinates serves every
@@ -72,7 +116,7 @@ def arrow(direction: str, px: int) -> str:
     path = _ARROWS.get(str(direction or ""))
     if not path:
         return ""
-    px = max(6, int(px))
+    px = max(MIN_PX, int(px))
     return (f'<svg class="ar" viewBox="0 0 {VIEWBOX} {VIEWBOX}" '
             f'width="{px}" height="{px}" aria-hidden="true" fill="#000">'
             f'<path d="{path}"/></svg>')
@@ -84,13 +128,20 @@ def sky(name: str, px: int) -> str:
     Empty rather than a placeholder: a component that gets nothing collapses
     the space, which is CLAUDE.md's rule, while a "no icon" glyph is a mark on
     the panel that means nothing.
+
+    Below `SIMPLIFY_BELOW_PX` a different, coarser drawing is used. Fattening
+    the detailed one instead is what closed the sun and lost a band of the fog.
     """
-    path = _PATHS.get(str(name or ""))
+    # CLAUDE.md's floor is 10px for type, and an icon smaller than the
+    # smallest legible glyph is decoration nobody can read.
+    px = max(MIN_PX, int(px))
+    small = px < SIMPLIFY_BELOW_PX
+    kind = "simple" if small else "detail"
+    path = (_SMALL if small else _PATHS).get(str(name or ""))
     if not path:
         return ""
-    px = max(8, int(px))
     return (f'<svg class="ic" viewBox="0 0 {VIEWBOX} {VIEWBOX}" '
-            f'width="{px}" height="{px}" '
-            f'aria-hidden="true" fill="none" stroke="#000" '
-            f'stroke-width="{_stroke(px)}" stroke-linecap="round" '
+            f'width="{px}" height="{px}" aria-hidden="true" fill="none" '
+            f'stroke="#000" '
+            f'stroke-width="{_stroke(px, _GAP[kind])}" stroke-linecap="round" '
             f'stroke-linejoin="round">{path}</svg>')

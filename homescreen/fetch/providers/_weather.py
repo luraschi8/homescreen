@@ -21,6 +21,10 @@ SKY = ("clear", "cloud", "rain", "snow", "storm", "fog")
 REQUIRED = ("temp", "description", "place", "sky", "units",
             "sunrise", "sunset", "tz_offset_s")
 
+#: Optional, and preferred where present: a zone knows about transitions and a
+#: fixed offset does not.
+TZ = "tz"
+
 
 def day(date, low, high, sky: str, precip_pct=None) -> dict:
     """One entry of a daily forecast. `date` is an epoch, kept as a NUMBER.

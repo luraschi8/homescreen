@@ -252,3 +252,59 @@ def test_nothing_overflows_a_markets_cell():
             assert len(line.strip()) <= 20, (name, line.strip())
         for token, px in ladder.items():
             assert px >= 10 or token in ("--pad", "--pad-sm"), (name, token, px)
+
+
+def test_no_component_refuses_a_screen_every_other_one_accepts():
+    # `weather` alone returned None for every tall narrow geometry -- 26,510
+    # of them -- because its panel required 200px of width to protect a
+    # six-cell hourly strip. That is the strip's problem, not the shape's, and
+    # it made the one component people most want on a portrait board the only
+    # one that refused to draw on it.
+    portrait = [{"w": w, "h": h, "depth": 1}
+                for w in (100, 122, 135, 170, 199)
+                for h in (240, 320, 400, 480)]
+    for caps in portrait:
+        refused = {name for name in scenes.names()
+                   if scenes.variant_for(name, caps) is None}
+        # `planes` is allowed to refuse: it draws GEOMETRY and needs room in
+        # both directions, which is a real requirement rather than an
+        # oversight. Nothing else may.
+        assert refused <= {"planes"}, (caps, sorted(refused))
+
+
+def test_the_fallback_can_be_drawn_on_anything():
+    # `status` is what `safe_build` shows when something else broke. A
+    # geometry it refuses is a screen that goes blank at exactly the moment it
+    # needed to explain itself.
+    for w in (24, 40, 60, 90, 127, 200, 417, 800):
+        for h in (16, 24, 40, 62, 104, 240, 480):
+            assert scenes.variant_for("status", {"w": w, "h": h}) is not None, \
+                (w, h)
+
+
+def test_the_hourly_strip_thins_out_rather_than_refusing_the_screen():
+    import pathlib
+    import re
+    import tempfile
+    from homescreen.reading import Reading
+    day = 1_788_213_600
+    reading = Reading(data={
+        "temp": 24.0, "description": "cielo despejado", "place": "Madrid",
+        "sky": "clear", "units": "metric", "tz_offset_s": 7200,
+        "daily": [{"date": day + i * 86400, "min": 18.0, "max": 33.0,
+                   "sky": "clear", "precip_pct": 0} for i in range(6)],
+        "hourly": [{"time": day + i * 3600, "temp": 24, "sky": "clear"}
+                   for i in range(24)]}, ok=True, age_s=60.0)
+    counts = {}
+    for width in (135, 170, 250, 321, 417):
+        ctx = scenes.SceneContext(
+            cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+            cache_dir=pathlib.Path(tempfile.mkdtemp()),
+            caps={"w": width, "h": 335, "depth": 1}, now=float(day),
+            device={}, options=scenes.defaults("weather"),
+            data=lambda req: reading)
+        html = scenes.build("weather", ctx).html
+        counts[width] = len(re.findall(r'<div class="hr">', html))
+    assert counts[417] == 6, counts
+    assert counts[135] < counts[321], counts
+    assert all(c == 0 or c >= 2 for c in counts.values()), counts

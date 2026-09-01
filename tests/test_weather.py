@@ -557,3 +557,102 @@ def test_the_job_key_does_not_move_when_the_provider_default_changes():
     finally:
         fetch.providers.openmeteo.PARAMS = original
     assert before == after
+
+
+def _panel(reading, now):
+    ctx = scenes.SceneContext(
+        cfg=CFG, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 321, "h": 335, "depth": 1}, now=float(now),
+        device={}, options=scenes.defaults("weather"), data=lambda req: reading)
+    return scenes.build("weather", ctx).html
+
+
+def test_the_hourly_strip_does_not_vanish_with_one_hour_left():
+    # `(ahead or every[-6:])` only fell back when NOTHING was ahead, and then
+    # `len(cells) < 2` dropped the strip -- so three hours ahead gave three
+    # cells, two gave two, ONE gave none, and zero gave six. The one case the
+    # fallback exists for is the one it missed.
+    from homescreen.reading import Reading
+    day = 1_788_213_600
+    hours = [{"time": day + i * 3600, "temp": 20 + i, "sky": "clear"}
+             for i in range(24)]
+    reading = Reading(data=dict(READING.data, tz_offset_s=7200, hourly=hours),
+                      ok=True, age_s=60.0)
+    counts = {}
+    for ahead in (0, 1, 2, 3, 6):
+        html = _panel(reading, day + (24 - ahead) * 3600)
+        counts[ahead] = len(re.findall(r'<div class="hr">', html))
+    assert all(v >= 2 for v in counts.values()), counts
+
+
+def test_a_badge_keeps_the_unit_even_when_the_place_is_named():
+    # `{place or unit}` -- with a name, C and F became byte-identical. This is
+    # the bug "the unit vanished with the place name" fixed, reintroduced in
+    # the new HTML path.
+    from homescreen.reading import Reading
+    reading = Reading(data=dict(READING.data, place="Madrid"), ok=True,
+                      age_s=60.0)
+    cell = {"w": 127, "h": 62, "depth": 1}
+    seen = {}
+    for units in ("metric", "imperial"):
+        ctx = scenes.SceneContext(
+            cfg=CFG, cache_dir=pathlib.Path(tempfile.mkdtemp()), caps=cell,
+            now=1_788_213_600.0, device={},
+            options=scenes.clean_options("weather", {"units": units}),
+            data=lambda req: reading)
+        seen[units] = scenes.build("weather", ctx).html
+    assert seen["metric"] != seen["imperial"], "C and F render identically"
+
+
+def test_the_day_list_is_bounded_by_the_room_it_has():
+    # `[1:]` made the row count the length of the forecast: fifteen days gave
+    # fourteen rows, of which the region drew five and clipped the rest --
+    # the last one through its x-height.
+    from homescreen.reading import Reading
+    day = 1_788_213_600
+    daily = [{"date": day + i * 86400, "min": 18.0, "max": 33.0,
+              "sky": "clear", "precip_pct": 0} for i in range(15)]
+    reading = Reading(data=dict(READING.data, tz_offset_s=7200, daily=daily),
+                      ok=True, age_s=60.0)
+    html = _panel(reading, day)
+    assert html.count('<div class="dy">') <= 6, html.count('<div class="dy">')
+
+
+def test_day_names_survive_a_spring_clock_change():
+    # `tz_offset_s` is the offset at REQUEST time, applied to every day. Ask
+    # on 2026-03-27 in Madrid (+3600) and the days after the 29th are labelled
+    # with yesterday's name -- four of five rows wrong, once a year.
+    import datetime
+    import zoneinfo
+    madrid = zoneinfo.ZoneInfo("Europe/Madrid")
+    from homescreen.reading import Reading
+    days = []
+    for offset in range(1, 7):
+        # MIDNIGHT local, which is what the provider sends. Noon would have an
+        # hour of slack and hide the bug entirely -- which is what my first
+        # version of this test did.
+        midnight = datetime.datetime(2026, 3, 27, tzinfo=madrid) + \
+            datetime.timedelta(days=offset)
+        days.append({"date": int(midnight.timestamp()), "min": 8.0,
+                     "max": 18.0, "sky": "clear", "precip_pct": 0})
+    reading = Reading(data=dict(READING.data, tz_offset_s=3600,
+                                tz="Europe/Madrid", daily=days),
+                      ok=True, age_s=60.0)
+    now = datetime.datetime(2026, 3, 27, 12, tzinfo=madrid).timestamp()
+    html = _panel(reading, now)
+    shown = re.findall(r'<div class="d">(\w+)</div>', html)
+    want = [_icons_day(d["date"], madrid) for d in days[1:1 + len(shown)]]
+    assert shown == want, (shown, want)
+
+    # And the same reading WITHOUT a zone gets it wrong, so this test is
+    # testing the fix rather than agreeing with itself.
+    blind = Reading(data={k: v for k, v in reading.data.items() if k != "tz"},
+                    ok=True, age_s=60.0)
+    wrong = re.findall(r'<div class="d">(\w+)</div>', _panel(blind, now))
+    assert wrong != want, "the offset-only path should mislabel these days"
+
+
+def _icons_day(stamp, tz):
+    import datetime
+    names = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
+    return names[datetime.datetime.fromtimestamp(stamp, tz).weekday()]

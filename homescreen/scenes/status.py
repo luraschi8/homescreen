@@ -22,20 +22,23 @@ from homescreen.scenes._style import page
 #: has to work on hardware nobody has configured yet.
 #: The fallback, so it must have a shape EVERYWHERE. `safe_build` routes any
 #: failure here, including one inside an 800x53 masthead.
+#: A PARTITION of every geometry, not a set of preferences: full coverage and
+#: no overlap. This is `safe_build`'s fallback -- what a screen shows when
+#: something else broke -- so a geometry it refuses is a screen that goes
+#: blank at exactly the moment it needed to explain itself, and there are no
+#: width minimums for the same reason.
+#:
+#: Height decides; aspect only separates a band from a cell.
 SURFACES = (
+    # No lower bound on height either: a 60x8 sliver is absurd, and the
+    # fallback still has to answer for it rather than leave a hole in the
+    # partition.
     {"variant": "strip", "at": (764, 62),
-     "min_w": 200, "min_h": 24, "max_h": 110, "min_aspect": 4.0},
+     "max_h": 80, "min_aspect": 6.0},
     {"variant": "badge", "at": (127, 62),
-     "min_w": 90, "min_h": 40, "max_h": 110, "max_aspect": 4.0},
-    {"variant": "card", "at": (417, 150),
-     "min_short": 90, "min_h": 111, "max_h": 239},
-    {"variant": "panel", "at": (417, 335),
-     "min_short": 90, "min_w": 200, "min_h": 240},
-    # Smaller than anything above: a broken panel still has to say so.
-    # `max_aspect` because without it this overlaps `strip` at 200x24 -- and
-    # an overlap is the ordering hazard back again.
-    {"variant": "badge", "at": (60, 30), "min_w": 40, "min_h": 24,
-     "max_h": 39, "max_aspect": 4.0},
+     "max_h": 80, "max_aspect": 6.0},
+    {"variant": "card", "at": (417, 150), "min_h": 81, "max_h": 239},
+    {"variant": "panel", "at": (321, 335), "min_h": 240},
 )
 
 CSS = """
