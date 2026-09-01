@@ -26,6 +26,10 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+#: What a component is drawn as when its declaration names no shape. Every
+#: surface written before variants existed means this.
+DEFAULT_VARIANT = "panel"
+
 
 @dataclasses.dataclass(frozen=True)
 class SceneContext:
@@ -41,6 +45,22 @@ class SceneContext:
     #: different tickers, or a clock in different cities, and neither is a
     #: property of the component.
     options: dict = dataclasses.field(default_factory=dict)
+    #: Which SHAPE the component is being drawn as, set by `build` from the
+    #: component's own declaration and this glass. Derived rather than passed
+    #: in: a caller cannot hand a component a shape its geometry contradicts,
+    #: and three components each re-deriving it from `caps` is how
+    #: `weather.wide_band`, `quotes.stacked` and `calendar`'s row loop came to
+    #: be three private rules that only the round panel ever saw.
+    variant: str = DEFAULT_VARIANT
+
+    def variant_of(self, name: str) -> str:
+        """The shape `name` would take on this glass.
+
+        On the context because the builder and the PREVIEW both need it, and
+        the preview asks about components this context was not built for.
+        """
+        return variant_for(name, self.caps) or DEFAULT_VARIANT
+
     #: Read what was fetched for one of this component's requirements.
     #:
     #: A PORT, injected by whoever builds the scene. A component asks with the
@@ -170,30 +190,60 @@ def surfaces(name: str) -> tuple:
     return tuple(d for d in declared if isinstance(d, dict))
 
 
-def supports(name: str, caps) -> tuple[bool, str]:
-    """(can this component draw on this glass, why not). Never raises.
+def variant_for(name: str, caps):
+    """Which SHAPE this component would draw on this glass, or None.
 
-    Any ONE declared surface matching is enough: a component may serve a small
-    round panel one way and a wide band another, and it only has to be able to
-    do one of them here.
+    Named shapes, not a size ladder: our slots run from 15:1 to 0.96:1, so
+    aspect decides the presentation and area decides the amount. `strip` is
+    not "smaller than `badge`", it is a different shape.
+
+        strip   a wide, shallow band -- a masthead, a markets row
+        badge   a small cell -- one ticker in a six-cell band
+        card    a modest block -- half a column
+        panel   room to lay things out -- a full column, a whole small screen
+
+    The FIRST matching entry wins, so a broad declaration written above a
+    narrow one shadows it. That is a real hazard and it is guarded by a test
+    that samples a geometry grid and fails when a declared shape is
+    unreachable, rather than by a rule nobody can check.
+
+    Returns None when nothing matches, which is exactly "this component cannot
+    draw here" -- so `supports` is defined in terms of this and the two cannot
+    drift apart.
     """
     from homescreen import surface as _surface
     declared = surfaces(name)
     if not declared:
-        return True, ""
+        return DEFAULT_VARIANT          # declaring nothing means anywhere
     screen = _surface.describe(caps)
     if not screen["w"] or not screen["h"]:
         # Geometry not declared yet. Unknown is not the same as too small, and
         # judging a device before it has said what it is would disable every
         # component on a board that has only just called in.
-        return True, ""
+        return DEFAULT_VARIANT
     for spec in declared:
+        rules = {k: v for k, v in spec.items() if k != "variant"}
         try:
-            if _surface.fits(screen, **spec):
-                return True, ""
+            if _surface.fits(screen, **rules):
+                return spec.get("variant") or DEFAULT_VARIANT
         except TypeError:
             continue                     # a spec naming an unknown constraint
-    return False, _why_not(declared, screen)
+    return None
+
+
+def supports(name: str, caps) -> tuple[bool, str]:
+    """(can this component draw on this glass, why not). Never raises.
+
+    Any ONE declared surface matching is enough: a component may serve a small
+    round panel one way and a wide band another, and it only has to be able to
+    do one of them here. Defined in terms of `variant_for` so the question
+    "does it fit" and the question "how would it look" are answered by one
+    piece of code reading one declaration.
+    """
+    if variant_for(name, caps) is not None:
+        return True, ""
+    from homescreen import surface as _surface
+    return False, _why_not(surfaces(name), _surface.describe(caps))
 
 
 def _why_not(declared, screen) -> str:
@@ -202,7 +252,7 @@ def _why_not(declared, screen) -> str:
     if wants_shape and screen.get("shape") not in wants_shape:
         return f"necesita pantalla {'/'.join(sorted(wants_shape))}"
     smallest = min((d.get("min_short") or d.get("min_w") or 0)
-                   for d in declared)
+                   for d in declared) if declared else 0
     if smallest and screen.get("short", 0) < smallest:
         return f"necesita al menos {smallest}px"
     return "no encaja en esta pantalla"
@@ -239,7 +289,11 @@ def names() -> tuple[str, ...]:
 
 def build(name: str, ctx: SceneContext) -> Scene:
     """Build a scene by name. Raises KeyError if unknown."""
-    return _fit_to_glass(_registry()[name](ctx), ctx.caps)
+    builder = _registry()[name]
+    shape = variant_for(name, ctx.caps) or DEFAULT_VARIANT
+    if ctx.variant != shape:
+        ctx = dataclasses.replace(ctx, variant=shape)
+    return _fit_to_glass(builder(ctx), ctx.caps)
 
 
 def _fit_item(item: dict, w: int, h: int, shape: str) -> dict:
