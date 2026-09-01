@@ -37,7 +37,13 @@ def test_a_line_names_a_source_and_a_team():
 def test_a_source_we_cannot_fetch_is_dropped_not_guessed_at():
     from homescreen.scenes import sport
     assert sport.needs({"teams": "X = cricket:5"}, {}) == ()
+    # Letters are read as a COMPETITION code, so this is refused for being
+    # the wrong length rather than for not being a number -- codes are 2-5
+    # characters and truncating a longer one produces a 404 against something
+    # nobody typed.
     assert sport.needs({"teams": "X = futbol:notanumber"}, {}) == ()
+    assert sport.needs({"teams": "X = futbol:CL"}, {})[0]["params"] == {
+        "competition": "CL", "days": 30}
 
 
 def test_the_same_team_twice_is_one_fetch():
@@ -136,3 +142,58 @@ def test_every_sport_source_emits_the_shared_shape(provider):
     assert made["status"] in (_fixtures.SCHEDULED, _fixtures.LIVE,
                               _fixtures.FINISHED)
     assert getattr(provider, "SECRETS") == (), "these were chosen for keyless"
+
+
+# --- competitions, not only teams --------------------------------------------
+
+def test_a_competition_is_a_source_in_its_own_right():
+    # "Every Champions League tie" is what you want from a tournament you
+    # follow but have no club in.
+    from homescreen.scenes import sport
+    got = sport.needs({"teams": "Champions = futbol:CL"}, {})
+    assert got[0]["params"]["competition"] == "CL"
+    assert "team" not in got[0]["params"]
+
+
+def test_a_number_is_a_club_and_letters_are_a_competition():
+    from homescreen.scenes import sport
+    club = sport.needs({"teams": "futbol:86"}, {})[0]["params"]
+    comp = sport.needs({"teams": "futbol:PD"}, {})[0]["params"]
+    assert club["team"] == 86 and "competition" not in club
+    assert comp["competition"] == "PD" and "team" not in comp
+
+
+def test_euroleague_and_eurocup_are_the_same_source_configured_differently():
+    from homescreen.scenes import sport
+    el = sport.needs({"teams": "euroliga"}, {})[0]
+    ec = sport.needs({"teams": "eurocup"}, {})[0]
+    assert el["provider"] == ec["provider"] == "euroleague"
+    assert el["params"]["competition"] == "E"
+    assert ec["params"]["competition"] == "U"
+
+
+def test_a_euroleague_team_narrows_the_same_competition():
+    from homescreen.scenes import sport
+    got = sport.needs({"teams": "Madrid = euroliga:MAD"}, {})[0]["params"]
+    assert got == {"competition": "E", "team": "MAD", "days": 30}
+
+
+def test_the_euroleague_season_is_derived_not_pinned():
+    # A hardcoded season silently stops returning fixtures one summer and
+    # looks exactly like the feed going away.
+    import datetime
+    from homescreen.fetch.providers import euroleague
+    autumn = datetime.datetime(2026, 10, 1, tzinfo=datetime.timezone.utc)
+    spring = datetime.datetime(2027, 3, 1, tzinfo=datetime.timezone.utc)
+    assert euroleague._season("E", autumn) == "E2026"
+    assert euroleague._season("E", spring) == "E2026", "a season spans new year"
+    assert euroleague._season("U", autumn) == "U2026"
+
+
+def test_euroleague_needs_no_key_and_no_xml():
+    # Deferred once because the documented endpoint answers in XML, and
+    # parsing untrusted XML with the standard library exposes entity
+    # expansion on a box with no defusedxml. The v2 endpoint is JSON.
+    from homescreen.fetch.providers import euroleague
+    assert euroleague.SECRETS == ()
+    assert "/v2/" in euroleague.ENDPOINT

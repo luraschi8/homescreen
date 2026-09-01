@@ -33,14 +33,20 @@ SURFACES = (
      "min_short": 90, "min_h": 240},
 )
 
-#: Which sources a line may name, and what identifier each one wants.
-SOURCES = {"futbol": "football", "nba": "nba", "f1": "f1"}
+#: Which sources a line may name. The identifier after the colon is a TEAM or
+#: a COMPETITION -- "every Champions League tie" is what you want from a
+#: tournament you follow but have no club in, and "Madrid" is what you want
+#: from a league you follow one club in.
+SOURCES = {"futbol": "football", "nba": "nba", "f1": "f1",
+           "euroliga": "euroleague", "eurocup": "euroleague"}
 
 OPTIONS = (
     {"key": "teams", "label": "Equipos", "type": "lines", "default": "",
-     "help": "Uno por línea: «Madrid = futbol:86», «Lakers = nba:LAL», "
-             "«F1 = f1». El nombre es opcional y aparece en cada fila "
-             "cuando hay más de uno."},
+     "help": "Uno por línea. Equipo: «Madrid = futbol:86», "
+             "«Lakers = nba:LAL», «Madrid = euroliga:MAD». Competición "
+             "entera: «Champions = futbol:CL», «Euroliga = euroliga», "
+             "«F1 = f1». El nombre es opcional y aparece en cada fila cuando "
+             "hay más de uno."},
     {"key": "team", "label": "ID del equipo", "type": "int", "default": 0,
      "help": "Ver football-data.org. 86 = Real Madrid, 81 = Barcelona."},
     {"key": "days", "label": "Días por delante", "type": "int", "default": 30},
@@ -91,12 +97,20 @@ def follows(options: dict) -> list:
             continue                     # a source we cannot fetch is dropped
         ident = ident.strip()
         if provider == "football":
-            try:
+            # A number is a club, letters are a competition. Nothing else
+            # distinguishes them, and football-data.org uses different
+            # endpoints for each.
+            if ident.isdigit():
                 params = {"team": int(ident), "days": days}
-            except (TypeError, ValueError):
+            elif ident.isalnum() and 2 <= len(ident) <= 5:
+                params = {"competition": ident.upper(), "days": days}
+            else:
                 continue
         elif provider == "nba":
             params = {"team": ident.upper(), "days": days}
+        elif provider == "euroleague":
+            params = {"competition": "U" if source.strip().lower() == "eurocup"
+                      else "E", "team": ident.upper(), "days": days}
         else:
             params = {"season": "current"}
         key = (provider, tuple(sorted(params.items())))

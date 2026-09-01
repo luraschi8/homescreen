@@ -311,6 +311,7 @@ _SAMPLE_PARAMS = {
     "football": {"team": 86, "days": 30},
     "nba": {"team": "LAL", "days": 30},
     "f1": {"season": "current"},
+    "euroleague": {"competition": "E", "team": "MAD", "days": 30},
     "claude_usage": {"days": 30},
     "fx": {"base": "EUR", "symbols": "USD,GBP"},
 }

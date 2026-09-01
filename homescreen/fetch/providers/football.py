@@ -13,7 +13,10 @@ from datetime import datetime, timedelta, timezone
 NAME = "football"
 
 PARAMS = (
-    {"key": "team", "label": "ID del equipo", "type": "int"},
+    {"key": "team", "label": "ID del equipo", "type": "int", "default": 0},
+    {"key": "competition", "label": "Competición", "type": "text",
+     "default": "",
+     "help": "Código: CL, PD, PL, SA, BL1, FL1, CLI. En lugar del equipo."},
     {"key": "days", "label": "Días por delante", "type": "int", "default": 30},
 )
 
@@ -26,6 +29,10 @@ MIN_SPACING_S = 1.0
 SECRETS = ("api_key",)
 
 ENDPOINT = "https://api.football-data.org/v4/teams/{team}/matches"
+#: A whole competition rather than one club: "every Champions League tie",
+#: which is what you want from a tournament you follow but have no team in.
+COMPETITION_ENDPOINT = ("https://api.football-data.org/v4/competitions"
+                        "/{competition}/matches")
 TIMEOUT_S = (3.05, 10)
 
 MAX_MATCHES = 10
@@ -33,17 +40,31 @@ MAX_MATCHES = 10
 
 def clean_params(raw: dict) -> dict:
     raw = raw if isinstance(raw, dict) else {}
+    competition = str(raw.get("competition") or "").strip().upper()
+    if competition:
+        # Refused rather than truncated. Codes are 2-5 characters (CL, PD,
+        # BL1, CLI), and quietly cutting a longer one to five produces a 404
+        # against a code nobody typed.
+        if not competition.isalnum() or not 2 <= len(competition) <= 5:
+            raise ValueError("el código de competición son 2-5 letras o "
+                             "cifras: CL, PD, PL, BL1")
+        try:
+            days = int(raw.get("days") or 30)
+        except (TypeError, ValueError):
+            days = 30
+        return {"team": 0, "competition": competition,
+                "days": max(1, min(120, days))}
     try:
         team = int(raw["team"])
     except (KeyError, TypeError, ValueError):
-        raise ValueError("hace falta el ID del equipo") from None
+        raise ValueError("hace falta un equipo o una competición") from None
     if not 1 <= team <= 99_999:
         raise ValueError("ID de equipo fuera de rango")
     try:
         days = int(raw.get("days") or 30)
     except (TypeError, ValueError):
         days = 30
-    return {"team": team, "days": max(1, min(120, days))}
+    return {"team": team, "competition": "", "days": max(1, min(120, days))}
 
 
 def fetch(params: dict, *, session=None, secrets=None) -> dict:
@@ -55,8 +76,11 @@ def fetch(params: dict, *, session=None, secrets=None) -> dict:
         session = requests.Session()
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=int(params.get("days", 30)))
+    competition = str(params.get("competition") or "")
+    url = (COMPETITION_ENDPOINT.format(competition=competition) if competition
+           else ENDPOINT.format(team=params["team"]))
     resp = session.get(
-        ENDPOINT.format(team=params["team"]), timeout=TIMEOUT_S,
+        url, timeout=TIMEOUT_S,
         headers={"X-Auth-Token": key},
         params={"dateFrom": (now - timedelta(days=3)).date().isoformat(),
                 "dateTo": horizon.date().isoformat()})
@@ -83,7 +107,8 @@ def fetch(params: dict, *, session=None, secrets=None) -> dict:
             "competition": _side(raw.get("competition")),
         })
     matches.sort(key=lambda m: m["when"])
-    return {"team": params["team"], "matches": matches}
+    return {"team": params.get("team", 0),
+            "competition": competition, "matches": matches}
 
 
 def _side(value) -> str:
