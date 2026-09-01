@@ -29,6 +29,11 @@ _STYLE = re.compile(r"<style>(?P<css>.*?)</style>(?P<body>.*)\Z", re.S)
 #: the size of the whole composition.
 _ROOT_SELECTORS = ("html,body", "html", "body", ":root", "*")
 
+#: What a section heading costs the block under it: SPEC SS9's 10px label, its
+#: 1px rule, and the gaps. Deducted BEFORE the component is measured -- it is
+#: told the height it will actually be rendered into, not the slot's.
+HEADING_PX = 17
+
 
 def scope_css(css: str, wrapper: str) -> str:
     """Prefix every selector so a fragment's styles cannot leave its region.
@@ -122,19 +127,21 @@ def compose(view: dict, caps: dict, build_scene) -> str:
     for index, placement, rect in _placed(view, regions):
         wrapper = f"rg-{_safe(placement.get('id') or index)}"
         x, y, w, h = rect
+        heading = str(placement.get("label") or "")
+        # Measured AFTER the heading is taken off. A component asked to lay
+        # out for 335px and then rendered into 318 makes every one of its size
+        # decisions against a rectangle that does not exist.
+        inner = max(1, h - HEADING_PX) if heading else h
         try:
             html = build_scene(placement.get("component"),
                                placement.get("options") or {},
-                               {**caps, "w": w, "h": h})
+                               {**caps, "w": w, "h": inner})
         except Exception:                               # noqa: BLE001
             continue                                    # one region, not the page
         css, body = fragment(html, wrapper)
         # The heading is drawn by the COMPOSER, not the component: a component
         # asked to render its own title would need to know it had one, and the
         # same calendar is "agenda" in one column and "cumpleanos" in another.
-        # It takes its height from the top of the slot, so the component gets
-        # what is left rather than overlapping it.
-        heading = str(placement.get("label") or "")
         if heading:
             body = (f'<div class="rg-label">{_escape(heading)}</div>'
                     f'<div class="rg-body">{body}</div>')
@@ -149,8 +156,7 @@ def compose(view: dict, caps: dict, build_scene) -> str:
                 f"letter-spacing:.14em;text-transform:uppercase;"
                 f"border-top:1px solid #000;padding-top:3px;margin-bottom:2px;"
                 f"font-family:Inter,'DejaVu Sans',sans-serif}}"
-                f"#{wrapper} .rg-body{{height:calc(100% - 17px);"
-                f"overflow:hidden}}")
+                f"#{wrapper} .rg-body{{height:{inner}px;overflow:hidden}}")
         styles.append(css)
         bodies.append(f'<div id="{wrapper}">{body}</div>')
     if not bodies:

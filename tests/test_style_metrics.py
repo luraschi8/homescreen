@@ -83,7 +83,14 @@ def _extra_css(name, w, h):
         caps={"w": w, "h": h, "depth": 1}, now=1_788_000_000.0,
         device={"hw": "p", "id": "p"}, options=scenes.defaults(name))
     html = scenes.build(name, ctx).html or ""
-    return html.split("<style>")[-1].split("</style>")[0]
+    css = html.split("<style>")[-1].split("</style>")[0]
+    # The SCENE's own CSS: everything after the shared block and the sizing
+    # rule `page()` writes. Taking the whole <style> would compare BASE_CSS
+    # against itself, which is how the first version of the collision test
+    # accused `calendar` of redefining a class it never mentions.
+    from homescreen.scenes import _style
+    css = css.replace(_style.BASE_CSS, "")
+    return css.split("}", 1)[1] if "html,body{width:" in css else css
 
 
 def test_no_scene_hardcodes_the_full_panel_padding():
@@ -156,3 +163,25 @@ def test_no_region_renders_completely_blank_with_no_data():
         for w, h in (COLUMN, (321, 335), MARKETS):
             got = _visible_text(name, w, h)
             assert got, f"{name} at {w}x{h} renders nothing at all"
+
+
+# --- the shared classes are shared --------------------------------------------
+
+def test_no_scene_redefines_a_shared_class():
+    # `BASE_CSS` defines `.lab` as the SECTION LABEL tier: 10px, 500, .14em
+    # tracking, uppercase. `weather` and `claude` each redefined `.lab` to set
+    # a size -- and inherited the tracking and the uppercase, so a place name
+    # rendered as "M A D R I D" in 16px caps where the design has an 8px label
+    # the eye skips over. The scene CSS is concatenated after the shared CSS,
+    # so a name collision is a silent partial override.
+    import re
+
+    from homescreen import scenes
+    from homescreen.scenes import _style
+    shared = set(re.findall(r"^\.([\w-]+)\{", _style.BASE_CSS, re.M))
+    assert shared, "BASE_CSS defines no classes; this test would pass vacuously"
+    for name in scenes.names():
+        css = _extra_css(name, *COLUMN)
+        for token in re.findall(r"^\.([\w-]+)\{", css, re.M):
+            assert token not in shared, (
+                f"{name} redefines the shared .{token}; give it its own name")

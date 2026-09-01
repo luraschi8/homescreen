@@ -244,3 +244,28 @@ def test_a_block_with_no_heading_spends_none_of_its_height_on_one():
         {"id": "a", "region": "main_left", "component": "clock", "options": {}}]}
     html = compose.compose(plain, EPAPER, _build)
     assert 'class="rg-label"' not in html
+
+
+def test_a_component_under_a_heading_is_told_the_height_it_actually_gets():
+    # The heading takes 17px off the top of the slot, and the component was
+    # being measured against the whole slot and then rendered into what was
+    # left. Harmless while nothing reads the height; the moment a component
+    # picks its layout from it, every such choice is made against a rectangle
+    # that does not exist.
+    seen = {}
+
+    def spy(component, options, region_caps):
+        seen[component] = region_caps["h"]
+        return _build(component, options, region_caps)
+
+    view = {"template": "dashboard", "placements": [
+        {"id": "p", "region": "main_left", "component": "clock",
+         "label": "RELOJ", "options": {}},
+        {"id": "q", "region": "main_right", "component": "weather",
+         "options": {}}]}
+    compose.compose(view, EPAPER, spy)
+    regions = layout.regions(EPAPER, "dashboard")
+    _, _, _, left = regions["main_left"]["rect"]
+    _, _, _, right = regions["main_right"]["rect"]
+    assert seen["clock"] == left - compose.HEADING_PX, seen
+    assert seen["weather"] == right, "no heading, no deduction"

@@ -129,15 +129,19 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
     dash removes it, and the row below is where the next one goes.
     """
     x, y, w, h = spec["rect"]
+    shares = [((extras or {}).get((region, i)) or {}).get("weight")
+              for i in range(spec["holds"])]
     rows = []
     for index in range(spec["holds"]):
         current = chosen[index] if index < len(chosen) else ""
-        # Judged at the size this slot would ACTUALLY get, not the region's.
-        # A region holding four divides four ways, so offering a component
-        # against the whole rectangle tells the operator it fits and then
-        # renders it into a quarter of that. Slot `index` is measured as the
-        # last one filled, which is what happens when they are filled in order.
-        here = layout.slots(spec, index + 1)[index] if index else spec["rect"]
+        # Judged at the size this slot ACTUALLY gets: divided the way the
+        # compositor divides it, by the shares the view asked for. Measuring
+        # an even share instead offered a block given `weight: 5` the picker
+        # for a fifth of the column and then drew it five times that -- so
+        # components were refused for not fitting a rectangle they would
+        # never be drawn in.
+        filled = max(len(chosen), index + 1)
+        here = layout.slots(spec, filled, shares)[index]
         slot_caps = {"w": here[2], "h": here[3]}
         picks = f'<option value="">{EMPTY}</option>' + "".join(
             f'<option value="{e(name)}"{" selected" if name == current else ""}'
@@ -214,13 +218,39 @@ def _map(view_name: str, regions: dict, by_region: dict, weights: dict,
     boxes = []
     for region, spec in regions.items():
         held = by_region.get(region) or []
-        # Drawn with the shares the view actually asked for, padded out to
-        # the region's capacity so the empty slots are still visible targets.
+        # Cut by what is FILLED, exactly as `compose` cuts it. Dividing by
+        # capacity instead drew three blocks in a five-slot column at 55/68/34
+        # against the panel's 116/146/73, and showed empty space that will not
+        # exist -- a picture that systematically understates every block.
         asked = list(weights.get(region) or [])
-        asked += [None] * (spec["holds"] - len(asked))
-        cut = layout.slots(spec, spec["holds"], asked)
+        filled = len(held)
+        if not filled:
+            # Nothing in it yet, so there is no reality to be faithful to.
+            # Show the template's own shape instead -- it is what the region
+            # WOULD look like, and for the markets band that is the whole
+            # point: the wide FX cell is visible before anything is in it.
+            cut = layout.slots(spec, spec["holds"])
+            filled = spec["holds"]
+        else:
+            cut = layout.slots(spec, filled, asked)
+        # The free slots stay visible, because they are where the next block
+        # goes, but they are drawn as a thin strip rather than as a share of a
+        # region they are not taking.
+        used = sum(r[3] if spec.get("stack") != "h" else r[2] for r in cut)
+        spare = spec["holds"] - filled
+        rx, ry, rw, rh = spec["rect"]
+        horizontal = spec.get("stack") == "h"
         for index in range(spec["holds"]):
-            x, y, w, h = cut[index]
+            if index < filled:
+                x, y, w, h = cut[index]
+            elif horizontal:
+                each = max(1, (rw - used) // spare)
+                x, y = rx + used + (index - filled) * each, ry
+                w, h = each, rh
+            else:
+                each = max(1, (rh - used) // spare)
+                x, y = rx, ry + used + (index - filled) * each
+                w, h = rw, each
             current = held[index] if index < len(held) else ""
             field = f"v.{e(view_name)}.{e(region)}.{index}"
             # The region names itself ONCE. Repeating it in all six cells of

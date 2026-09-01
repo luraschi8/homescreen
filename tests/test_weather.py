@@ -325,3 +325,33 @@ def test_a_response_without_the_sun_is_still_a_reading():
 def test_nonsense_sun_values_are_dropped_rather_than_rendered():
     got = _fetch(_raw(sys={"sunrise": "soon", "sunset": None}))
     assert got["sunrise"] is None and got["sunset"] is None
+
+
+# --- the range has to be a real range -----------------------------------------
+#
+# `/data/2.5/weather` returns `main.temp_min` and `main.temp_max`, which read
+# like today's low and high and are not: OpenWeather documents them as the
+# minimum and maximum CURRENTLY OBSERVED across a large city's extent. On a
+# real Madrid afternoon the panel showed "21° / 24°" while the day's actual
+# range was 18.0 / 33.6. A plausible wrong number is worse than none.
+
+def test_current_conditions_do_not_claim_a_daily_range():
+    got = _fetch(_raw())
+    for key in ("temp_min", "temp_max"):
+        assert got.get(key) is None, (
+            f"{key} from the current-conditions endpoint is the city's spread "
+            f"right now, not today's extreme")
+
+
+def test_a_daily_range_is_shown_only_when_the_reading_carries_one():
+    from homescreen.reading import Reading
+    caps = {"w": 240, "h": 240, "depth": 16, "shape": "round"}
+    without = Reading(data=dict(READING.data, temp_min=None, temp_max=None),
+                      ok=True, age_s=60.0)
+    lines = drawn(caps, data=lambda req: without)
+    assert not any("/" in v and "°" in v for v in lines), lines
+
+    with_range = Reading(data=dict(READING.data, temp_min=18.0, temp_max=33.6),
+                         ok=True, age_s=60.0)
+    lines = drawn(caps, data=lambda req: with_range)
+    assert any("18" in v and "34" in v for v in lines), lines

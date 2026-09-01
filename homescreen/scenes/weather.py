@@ -169,9 +169,9 @@ def build(ctx: SceneContext) -> Scene:
                         draw.text("below", "sin datos del tiempo", "xs", "dim")]
 
     body = (f'<div class="wrap"><div class="big">{temp}</div>'
-            f'<div class="lab">{place}</div>'
+            f'<div class="wx-place">{place}</div>'
             f'<div class="sub">{description}</div>'
-            f'<div class="ter">{span}</div></div>')
+            f'<div class="wx-range">{span}</div></div>')
     return Scene(layout="fill", components=({"c": "weather",
                                              "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,
@@ -182,7 +182,7 @@ CSS = """
 .wrap{padding:var(--pad);display:flex;flex-direction:column;height:100%;
   justify-content:center}
 .big{font-size:var(--hero);font-weight:600;letter-spacing:-.02em;line-height:1}
-.lab{font-size:var(--lg);margin-top:var(--pad-sm)}
+.wx-place{font-size:var(--lg);margin-top:var(--pad-sm)}
 .sub{font-size:var(--fs);margin-top:2px}
-.ter{font-size:var(--sm);margin-top:var(--pad-sm)}
+.wx-range{font-size:var(--sm);margin-top:var(--pad-sm)}
 """

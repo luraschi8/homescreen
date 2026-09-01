@@ -66,7 +66,7 @@ def build(ctx: SceneContext) -> Scene:
         ]
     body = (f'<div class="wrap"><div class="big">'
             f'{_short(reading.get("total_tokens"))}</div>'
-            f'<div class="lab">tokens · {days} días</div></div>')
+            f'<div class="cu-label">tokens · {days} días</div></div>')
     return Scene(layout="fill",
                  components=({"c": "claude", "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S, html=page(w, h, body, CSS))
@@ -76,5 +76,5 @@ CSS = """
 .wrap{padding:var(--pad);height:100%;display:flex;flex-direction:column;
   justify-content:center}
 .big{font-size:var(--hero);font-weight:600;line-height:1}
-.lab{font-size:var(--lg);margin-top:var(--pad-sm)}
+.cu-label{font-size:var(--lg);margin-top:var(--pad-sm)}
 """

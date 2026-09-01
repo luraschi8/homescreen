@@ -79,8 +79,16 @@ def fetch(params: dict, *, session=None, secrets=None) -> dict:
     return {
         "temp": _num(main.get("temp")),
         "feels_like": _num(main.get("feels_like")),
-        "temp_min": _num(main.get("temp_min")),
-        "temp_max": _num(main.get("temp_max")),
+        # `main.temp_min`/`temp_max` are NOT today's low and high. OpenWeather
+        # documents them as the minimum and maximum currently observed across
+        # a large city's extent -- a spatial spread at this instant. Rendered
+        # as a daily range they read as fact: a real Madrid afternoon showed
+        # "21 / 24" on the panel while the day ran 18.0 to 33.6.
+        #
+        # Emitted under their true meaning so nothing mistakes them again. A
+        # daily range needs a forecast endpoint, which this one is not.
+        "temp_spread_low": _num(main.get("temp_min")),
+        "temp_spread_high": _num(main.get("temp_max")),
         "humidity": _num(main.get("humidity")),
         "description": str(weather.get("description") or "").strip(),
         "icon": str(weather.get("icon") or "").strip(),

@@ -498,3 +498,66 @@ def test_a_share_left_blank_is_an_even_one(ctx):
     from homescreen import registry
     for p in registry.load(cache)[EPD]["views"]["panel"]["placements"]:
         assert p["weight"] == 1.0
+
+
+def test_the_map_draws_the_blocks_at_the_size_the_panel_will_draw_them(ctx):
+    # The map divided a region by its CAPACITY while the renderer divides it
+    # by what is actually IN it. With three blocks in a five-slot column the
+    # picture showed them at 55/68/34px with empty space below, and the panel
+    # rendered them at 116/146/73 filling the column. A picture that
+    # systematically understates every block is worse than no picture.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.main_left.0": "clock",
+        "v.panel.main_left.1": "calendar",
+        "v.panel.main_left.2": "sport"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+
+    from homescreen import layout, registry
+    caps = registry.clean_caps(registry.load(cache)[EPD]["caps"])
+    view = registry.load(cache)[EPD]["views"]["panel"]
+    _, _, _, column = layout.regions(caps, "dashboard")["main_left"]["rect"]
+
+    drawn = {}
+    for name, css, _ in _map_slots(html):
+        if ".main_left." in name:
+            found = re.search(r"height:([\d.]+)%", css.replace(" ", ""))
+            if found:
+                drawn[name] = float(found.group(1)) / 100 * caps["h"]
+    filled = [drawn[f"v.panel.main_left.{i}"] for i in range(3)]
+    assert abs(sum(filled) - column) <= 3, (filled, column)
+
+
+def test_the_map_still_offers_the_slots_that_are_free(ctx):
+    # Sizing by what is filled must not make an empty slot disappear -- it is
+    # where the next block goes, and it has to stay a target.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={"v.panel.main_left.0": "clock"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    names = [n for n, _, _ in _map_slots(html) if ".main_left." in n]
+    assert len(names) == 5, names
+
+
+def test_a_slot_is_judged_at_the_size_its_own_weight_buys_it(ctx):
+    # The builder measured every slot at an EVEN share while the compositor
+    # divides by weight, so a block given a large share was offered the picker
+    # for a small one -- components refused for not fitting a rectangle they
+    # were never going to be drawn in.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.main_left.0": "clock",  "wt.panel.main_left.0": "5",
+        "v.panel.main_left.1": "status", "wt.panel.main_left.1": "1"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    rows = dict(re.findall(
+        r'<select name="v\.panel\.main_left\.(\d)">(.*?)</select>', html, re.S))
+
+    def refused(markup):
+        return set(re.findall(r'<option value="(\w+)"[^>]*\sdisabled', markup))
+
+    # 5:1 of a 335px column is 279 against 56. The tall block fits a radar;
+    # the short one does not, and each has to be told the truth.
+    assert "planes" not in refused(rows["0"]), "the big share fits a radar"
+    assert "planes" in refused(rows["1"]), "the small one does not"
