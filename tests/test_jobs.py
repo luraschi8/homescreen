@@ -305,6 +305,7 @@ _SAMPLE_PARAMS = {
     "adsb": {"lat": 40.4, "lon": -3.7, "radius_km": 60,
              "endpoint": "https://example.invalid/api"},
     "openweather": {"lat": 40.4, "lon": -3.7, "units": "metric"},
+    "openmeteo": {"lat": 40.4, "lon": -3.7, "units": "metric", "days": 5},
     "quotes": {"symbol": "AAPL"},
     "ics": {"url": "https://example.invalid/c.ics", "days": 14},
     "football": {"team": 86, "days": 30},

@@ -15,13 +15,20 @@ from homescreen.reading import Reading
 CFG = {"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"},
        "feeds": {"adsb": {"endpoint": "https://x"}}}
 
-#: `icon` is what OpenWeather actually returns and what `_sky_icon` reads. It
-#: was missing here, so the only production caller of `draw.icon` never ran in
-#: a test and the whole shape vocabulary could be deleted with the suite green.
-READING = Reading(data={"temp": 21.4, "temp_min": 17.0, "temp_max": 26.0,
-                        "description": "cielo claro", "place": "Madrid",
-                        "icon": "01d", "units": "metric"}, ok=True,
-                  age_s=120.0)
+#: `sky` is the NORMALISED token every adapter emits -- not `01d`, which is
+#: OpenWeather's own encoding and is decoded in the adapter now. It was missing
+#: here entirely at one point, so the only production caller of `draw.icon`
+#: never ran in a test and the whole shape vocabulary could be deleted with
+#: the suite green.
+READING = Reading(data={"temp": 21.4, "description": "cielo claro",
+                        "place": "Madrid", "sky": "clear", "units": "metric",
+                        # A REAL daily range, from a forecast. The old fixture
+                        # carried `temp_min`/`temp_max` off the current
+                        # endpoint, which are not the day's extremes at all.
+                        "daily": [{"date": 1_788_213_600, "min": 17.0,
+                                   "max": 26.0, "sky": "clear",
+                                   "precip_pct": 0}]},
+                  ok=True, age_s=120.0)
 
 
 def ctx(caps, options=None, data=None):
@@ -230,18 +237,18 @@ def test_a_different_sky_draws_a_different_picture():
     # Holding everything else constant, so it is the icon being tested and not
     # the temperature that happens to travel with it.
     def sky(code):
-        data = dict(READING.data, icon=code)
+        data = dict(READING.data, sky=code)
         reading = Reading(data=data, ok=True, age_s=120.0)
         return shapes({"w": 240, "h": 240, "depth": 16},
                       data=lambda req: reading)
 
-    clear, rain = sky("01d"), sky("10d")
+    clear, rain = sky("clear"), sky("rain")
     assert clear and rain
     assert clear != rain, "a clear sky and a wet one must not draw the same"
 
 
 def test_a_sky_we_have_no_picture_for_still_shows_the_temperature():
-    reading = Reading(data=dict(READING.data, icon="99z"), ok=True, age_s=1.0)
+    reading = Reading(data=dict(READING.data, sky="aurora"), ok=True, age_s=1.0)
     caps = {"w": 240, "h": 240, "depth": 16, "shape": "round"}
     assert shapes(caps, data=lambda req: reading) == []
     assert drawn(caps, data=lambda req: reading)[0] == "21"
@@ -346,12 +353,66 @@ def test_current_conditions_do_not_claim_a_daily_range():
 def test_a_daily_range_is_shown_only_when_the_reading_carries_one():
     from homescreen.reading import Reading
     caps = {"w": 240, "h": 240, "depth": 16, "shape": "round"}
-    without = Reading(data=dict(READING.data, temp_min=None, temp_max=None),
-                      ok=True, age_s=60.0)
+    # No forecast at all: a current-conditions source has none, and the range
+    # line collapses rather than inventing one.
+    without = Reading(data={k: v for k, v in READING.data.items()
+                            if k != "daily"}, ok=True, age_s=60.0)
     lines = drawn(caps, data=lambda req: without)
     assert not any("/" in v and "°" in v for v in lines), lines
 
-    with_range = Reading(data=dict(READING.data, temp_min=18.0, temp_max=33.6),
-                         ok=True, age_s=60.0)
+    with_range = Reading(data=dict(
+        READING.data,
+        daily=[{"date": 1_788_213_600, "min": 18.0, "max": 33.6,
+                "sky": "clear", "precip_pct": 0}]), ok=True, age_s=60.0)
     lines = drawn(caps, data=lambda req: with_range)
     assert any("18" in v and "34" in v for v in lines), lines
+
+
+# --- the source is a setting --------------------------------------------------
+
+def test_the_source_is_selectable_and_defaults_to_the_keyless_one():
+    from homescreen import scenes
+    schema = {o["key"]: o for o in scenes.option_schema("weather")}
+    assert "source" in schema, "the operator can choose where weather comes from"
+    assert set(schema["source"]["choices"]) == {"openmeteo", "openweather"}
+    # Keyless by default: a screen works out of the box, and an operator who
+    # never opens the settings never hits a missing-key error.
+    assert schema["source"]["default"] == "openmeteo"
+
+
+def test_the_chosen_source_is_the_one_the_fetcher_is_asked_for():
+    from homescreen.scenes import weather
+    cfg = {"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}}
+    for source in ("openmeteo", "openweather"):
+        need = weather.needs({"source": source}, cfg)[0]
+        assert need["provider"] == source, need
+
+
+def test_two_screens_on_different_sources_are_two_fetches():
+    # `plan.collect` keys a job on (provider, params), so this falls out --
+    # but it is the property that makes the setting meaningful, so it is
+    # pinned rather than assumed.
+    from homescreen import fetch
+    cfg = {"location": {"lat": 40.4, "lon": -3.7}}
+    plan = fetch.derive({
+        "a": {"scene": "weather", "options": {"source": "openmeteo"}},
+        "b": {"scene": "weather", "options": {"source": "openweather"}}}, cfg)
+    assert {j.provider for j in plan.values()} == {"openmeteo", "openweather"}
+
+
+def test_the_component_reads_the_sky_not_a_vendor_code():
+    # `01d` never reaches here any more. A reading that still carried one
+    # would draw no icon rather than the wrong one.
+    from homescreen.reading import Reading
+    caps = {"w": 240, "h": 240, "depth": 16, "shape": "round"}
+    clear = Reading(data=dict(READING.data, sky="clear"), ok=True, age_s=60.0)
+    got = shapes(caps, data=lambda req: clear)
+    assert got, "a clear sky draws a sun"
+    assert sum(1 for s in got if s["t"] == "line") == 8
+
+
+def test_an_unknown_sky_draws_nothing_rather_than_the_wrong_picture():
+    from homescreen.reading import Reading
+    caps = {"w": 240, "h": 240, "depth": 16, "shape": "round"}
+    odd = Reading(data=dict(READING.data, sky="aurora"), ok=True, age_s=60.0)
+    assert shapes(caps, data=lambda req: odd) == []

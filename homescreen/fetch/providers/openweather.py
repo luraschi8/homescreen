@@ -91,7 +91,10 @@ def fetch(params: dict, *, session=None, secrets=None) -> dict:
         "temp_spread_high": _num(main.get("temp_max")),
         "humidity": _num(main.get("humidity")),
         "description": str(weather.get("description") or "").strip(),
-        "icon": str(weather.get("icon") or "").strip(),
+        # Normalised HERE. `01d` is OpenWeather's encoding, and a component
+        # that decodes it has learned which vendor answered -- which is
+        # exactly what stops the source being swappable.
+        "sky": sky_of(weather.get("icon")),
         "place": str(body.get("name") or "").strip(),
         # Already in every response and previously discarded. The original
         # dashboard puts these inline beside the clock, so this is data we
@@ -104,6 +107,18 @@ def fetch(params: dict, *, session=None, secrets=None) -> dict:
         "tz_offset_s": _epoch(body.get("timezone")),
         "units": params.get("units", "metric"),
     }
+
+
+#: OpenWeather's icon prefixes, folded onto the six skies this panel can draw.
+#: `50` is haze/mist/fog; `02`-`04` are degrees of cloud that a 1-bit line
+#: drawing cannot tell apart.
+_SKY = {"01": "clear", "02": "cloud", "03": "cloud", "04": "cloud",
+        "09": "rain", "10": "rain", "11": "storm", "13": "snow",
+        "50": "fog"}
+
+
+def sky_of(code) -> str:
+    return _SKY.get(str(code or "")[:2], "cloud")
 
 
 def _epoch(value):

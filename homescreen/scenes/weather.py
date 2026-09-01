@@ -30,16 +30,22 @@ SURFACES = ({"min_short": 90},
 #: and "scattered clouds" are the same picture at this size -- so this maps
 #: many to few deliberately rather than pretending to a precision the glass
 #: does not have.
-_SKY = {"01": "sun", "02": "cloud", "03": "cloud", "04": "cloud",
-        "09": "rain", "10": "rain", "11": "storm", "13": "snow",
-        "50": "cloud"}
+#: A normalised sky to a drawing. NOT a vendor's codes -- those are decoded in
+#: the adapter, so this component never learns which source answered and the
+#: source can be a dropdown rather than a rewrite.
+_PICTURE = {"clear": "sun", "cloud": "cloud", "rain": "rain",
+            "snow": "snow", "storm": "storm", "fog": "cloud"}
 
 
-def _sky_icon(code: str) -> str:
-    """The icon for an OpenWeather code, or none if we cannot tell."""
-    return _SKY.get(str(code or "")[:2], "")
+def _sky_icon(sky: str) -> str:
+    """The drawing for a sky, or none if we have no picture for it."""
+    return _PICTURE.get(str(sky or ""), "")
 
 OPTIONS = (
+    {"key": "source", "label": "Fuente", "type": "choice",
+     "choices": ("openmeteo", "openweather"), "default": "openmeteo",
+     "help": "Open-Meteo no necesita clave y trae previsión. "
+             "OpenWeather necesita una clave y sólo da el tiempo actual."},
     {"key": "place", "label": "Sitio", "type": "text", "default": "",
      "help": "En blanco usa la ubicación del servidor."},
     {"key": "lat", "label": "Latitud", "type": "text", "default": "",
@@ -73,9 +79,17 @@ def needs(options: dict, cfg: dict) -> tuple:
     lat, lon = _where(options, cfg)
     if lat is None or lon is None:
         return ()
-    return ({"provider": "openweather",
-             "params": {"lat": lat, "lon": lon,
-                        "units": (options or {}).get("units") or "metric"}},)
+    source = (options or {}).get("source") or "openmeteo"
+    if source not in ("openmeteo", "openweather"):
+        source = "openmeteo"
+    params = {"lat": lat, "lon": lon,
+              "units": (options or {}).get("units") or "metric"}
+    if source == "openmeteo":
+        # Open-Meteo answers coordinates, not names, so the operator's own
+        # label travels with the request. "Casa" beats whichever suburb a
+        # reverse lookup would have chosen anyway.
+        params["place"] = str((options or {}).get("place") or "").strip()
+    return ({"provider": source, "params": params},)
 
 
 def _degrees(value, units: str) -> str:
@@ -128,7 +142,13 @@ def build(ctx: SceneContext) -> Scene:
     description = (reading.get("description") or "").capitalize()
     span = ""
     if options.get("show_range", True):
-        low, high = reading.get("temp_min"), reading.get("temp_max")
+        # TODAY's extremes, from an actual forecast. This used to read
+        # `temp_min`/`temp_max` off the current-conditions endpoint, which are
+        # the spread across a city's extent at this instant -- the panel said
+        # "21 / 24" on an afternoon that ran 18.0 to 33.6. A source with no
+        # forecast now shows no range, which is the honest answer.
+        today = (reading.get("daily") or [{}])[0]
+        low, high = today.get("min"), today.get("max")
         if low is not None and high is not None:
             span = f"{round(float(low))}° / {round(float(high))}°"
 
@@ -148,7 +168,7 @@ def build(ctx: SceneContext) -> Scene:
         # The sky as a picture, above the number. A word for the sky is a word
         # you have to read; a sun is a thing you have already seen by the time
         # you have registered the temperature.
-        sky = _sky_icon(reading.get("icon"))
+        sky = _sky_icon(reading.get("sky"))
         instructions = list(draw.icon(sky, 0.5, 0.20, 0.30,
                                       "warn" if sky == "sun" else "dim")) \
             if sky else []

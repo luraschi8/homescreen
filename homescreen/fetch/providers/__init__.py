@@ -92,9 +92,10 @@ def _modules() -> dict:
         try:
             from homescreen.fetch.providers import (adsb, claude_usage,
                                                    football, fx, ics,
-                                                   openweather, quotes)
+                                                   openmeteo, openweather,
+                                                   quotes)
             for module in (adsb, claude_usage, football, fx, ics,
-                           openweather, quotes):
+                           openmeteo, openweather, quotes):
                 if not NAME_RE.match(getattr(module, "NAME", "")):
                     log.error("provider %r has an unusable NAME; not registered",
                               getattr(module, "NAME", None))
