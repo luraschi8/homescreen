@@ -107,6 +107,12 @@ def needs(options: dict, cfg: dict) -> tuple:
     params = {"lat": lat, "lon": lon,
               "units": (options or {}).get("units") or "metric"}
     if source == "openmeteo":
+        # Pinned by the COMPONENT, not inherited from the adapter's default.
+        # Job keys are built from cleaned parameters, so a default that moves
+        # takes every cached payload with it -- the panel showed "sin datos"
+        # while a good forecast sat on disk under the old name. Six because
+        # the panel lists five days from tomorrow.
+        params["days"] = 6
         # Open-Meteo answers coordinates, not names, so the label has to be
         # ours. The operator's own beats the server's home, which beats
         # nothing -- and either beats whichever suburb a reverse lookup would

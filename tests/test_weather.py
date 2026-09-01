@@ -521,3 +521,39 @@ def test_the_panel_hero_leaves_room_for_the_blocks_beneath_it():
     html = scenes.build("weather", ctx).html
     hero = int(re.search(r"--hero:(\d+)px", html).group(1))
     assert 30 <= hero <= 40, f"hero is {hero}px above an hourly strip and 5 days"
+
+
+def test_the_component_pins_what_it_needs_rather_than_inheriting_a_default():
+    # `days` is a fetch parameter the component never set, so it came from the
+    # provider's default -- and job keys are built from CLEANED parameters, so
+    # changing that default silently moved every key and orphaned every cached
+    # payload. The panel then showed "sin datos del tiempo" while a perfectly
+    # good forecast sat on disk under the old name.
+    #
+    # Pinning it here means the key depends on what the COMPONENT asked for,
+    # which is the thing that actually describes the request.
+    from homescreen.scenes import weather
+    cfg = {"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}}
+    params = weather.needs({"source": "openmeteo"}, cfg)[0]["params"]
+    assert params["days"] == 6, params
+
+
+def test_the_job_key_does_not_move_when_the_provider_default_changes():
+    from homescreen import fetch
+    from homescreen.scenes import weather
+    cfg = {"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}}
+    need = weather.needs({"source": "openmeteo"}, cfg)[0]
+    before = fetch.providers.key(
+        need["provider"], fetch.providers.clean_params(need["provider"],
+                                                       need["params"]))
+    original = fetch.providers.openmeteo.PARAMS
+    try:
+        # Pretend somebody changes the adapter's own default.
+        fetch.providers.openmeteo.PARAMS = tuple(
+            dict(p, default=99) if p["key"] == "days" else p for p in original)
+        after = fetch.providers.key(
+            need["provider"], fetch.providers.clean_params(need["provider"],
+                                                           need["params"]))
+    finally:
+        fetch.providers.openmeteo.PARAMS = original
+    assert before == after
