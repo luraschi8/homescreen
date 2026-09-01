@@ -10,16 +10,23 @@ from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._style import page
-
 SURFACES = (
+    # A genuine band: shallow AND long. The real ones are 800x53 (aspect 15)
+    # and 764x62 (12.3); at aspect 4.0 and 110px tall this was swallowing
+    # blocks with room for a list.
     {"variant": "strip", "at": (764, 62),
-     "min_w": 200, "min_h": 24, "max_h": 110, "min_aspect": 4.0},
+     "min_w": 200, "min_h": 24, "max_h": 80, "min_aspect": 6.0},
+    # A cell of a band: narrow AND shallow. Bounded on both, because bounding
+    # only the width left it overlapping `card` in a small square -- and an
+    # overlap is the ordering hazard back again.
     {"variant": "badge", "at": (127, 62),
-     "min_w": 90, "min_h": 40, "max_h": 110, "max_aspect": 4.0},
+     "min_w": 90, "max_w": 199, "min_h": 40, "max_h": 80},
+    # A block: several rows. v6's AGENDA is 417x104 and DEPORTES 417x50
+    # after their headings.
     {"variant": "card", "at": (417, 150),
-     "min_short": 90, "min_h": 111, "max_h": 239},
+     "min_short": 90, "min_h": 81, "max_h": 239},
     {"variant": "panel", "at": (417, 335),
-     "min_short": 90, "min_w": 200, "min_h": 240},
+     "min_short": 90, "min_h": 240},
 )
 
 OPTIONS = (

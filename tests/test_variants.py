@@ -52,10 +52,10 @@ def test_every_declared_shape_is_reachable():
     # so a broad one written above a narrow one silently shadows it -- and the
     # shadowed shape is dead code nobody notices. Sampling a geometry grid
     # makes that fail the moment it is written rather than on the glass.
-    grid = [{"w": w, "h": h, "depth": 1}
-            for w in (60, 127, 200, 321, 417, 600, 764, 800)
-            for h in (24, 40, 53, 62, 90, 140, 200, 335, 480)]
-    grid.append(ROUND)
+    # DENSE. The sparse version stepped 127 -> 200 and declared `sport`'s
+    # badge unreachable when it lives at 150-199 wide -- a sampling gap
+    # reported as a defect. A few thousand geometries cost milliseconds.
+    grid = _grid() + [ROUND]
     for name in scenes.names():
         declared = {s.get("variant") for s in scenes.surfaces(name)
                     if s.get("variant")}
