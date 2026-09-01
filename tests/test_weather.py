@@ -416,3 +416,23 @@ def test_an_unknown_sky_draws_nothing_rather_than_the_wrong_picture():
     caps = {"w": 240, "h": 240, "depth": 16, "shape": "round"}
     odd = Reading(data=dict(READING.data, sky="aurora"), ok=True, age_s=60.0)
     assert shapes(caps, data=lambda req: odd) == []
+
+
+def test_the_unit_is_shown_even_when_nothing_names_the_place():
+    # The place line carries the unit, and it was dropped whole when there was
+    # no name -- so a panel with no configured location showed a bare number
+    # and no way to tell C from F. Open-Meteo answers coordinates and has no
+    # name to give, so this is the DEFAULT case, not an edge one.
+    from homescreen.reading import Reading
+    caps = {"w": 240, "h": 240, "depth": 16, "shape": "round"}
+    nameless = Reading(data={k: v for k, v in READING.data.items()
+                             if k != "place"}, ok=True, age_s=60.0)
+    lines = drawn(caps, options={"place": ""}, data=lambda req: nameless)
+    assert any("°C" in v for v in lines), lines
+
+
+def test_the_operators_own_name_reaches_a_source_that_has_none():
+    from homescreen.scenes import weather
+    cfg = {"location": {"lat": 40.4, "lon": -3.7, "name": "Casa"}}
+    need = weather.needs({"source": "openmeteo"}, cfg)[0]
+    assert need["params"]["place"] == "Casa"

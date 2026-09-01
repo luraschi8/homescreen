@@ -85,10 +85,12 @@ def needs(options: dict, cfg: dict) -> tuple:
     params = {"lat": lat, "lon": lon,
               "units": (options or {}).get("units") or "metric"}
     if source == "openmeteo":
-        # Open-Meteo answers coordinates, not names, so the operator's own
-        # label travels with the request. "Casa" beats whichever suburb a
-        # reverse lookup would have chosen anyway.
-        params["place"] = str((options or {}).get("place") or "").strip()
+        # Open-Meteo answers coordinates, not names, so the label has to be
+        # ours. The operator's own beats the server's home, which beats
+        # nothing -- and either beats whichever suburb a reverse lookup would
+        # have picked. OpenWeather answered "Sol" for the centre of Madrid.
+        params["place"] = (str((options or {}).get("place") or "").strip()
+                           or str(home_location(cfg or {}).get("name") or ""))
     return ({"provider": source, "params": params},)
 
 
@@ -173,9 +175,13 @@ def build(ctx: SceneContext) -> Scene:
                                       "warn" if sky == "sun" else "dim")) \
             if sky else []
         instructions.append(draw.text("center", temp, "xl", tone))
-        if place:
-            instructions.append(
-                draw.text("below", f"{place} {unit}", "sm", "accent"))
+        # The unit rides on the place line, so dropping that line when there
+        # is no name left a bare number with no way to tell C from F. A source
+        # that answers coordinates has no name to give, so this is the normal
+        # case rather than an edge one.
+        instructions.append(
+            draw.text("below", f"{place} {unit}".strip(), "sm",
+                      "accent" if place else "dim"))
         if span:
             instructions.append(draw.text("rim_bottom", span, "xs", "cool"))
         elif description:
