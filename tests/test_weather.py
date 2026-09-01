@@ -4,6 +4,7 @@ It is here to prove the path end to end -- component declares a need, a job is
 derived, a payload is fetched, a Reading comes back, pixels result -- and to
 pin the contract every later component signs: adapt to the glass you are given.
 """
+import re
 import pathlib
 import tempfile
 
@@ -436,3 +437,43 @@ def test_the_operators_own_name_reaches_a_source_that_has_none():
     cfg = {"location": {"lat": 40.4, "lon": -3.7, "name": "Casa"}}
     need = weather.needs({"source": "openmeteo"}, cfg)[0]
     assert need["params"]["place"] == "Casa"
+
+
+def test_the_hourly_strip_starts_from_now_not_from_midnight():
+    # The filter read `reading["now"]`, a key no envelope carries, so it was
+    # always None -- every hour passed and the strip showed the first six of
+    # the day. At 12:17 the panel offered midnight to 05h.
+    from homescreen.reading import Reading
+    day = 1_788_213_600                      # 00:00 Madrid
+    hours = [{"time": day + i * 3600, "temp": 20 + i, "sky": "clear"}
+             for i in range(24)]
+    reading = Reading(data=dict(READING.data, tz_offset_s=7200, hourly=hours),
+                      ok=True, age_s=60.0)
+    caps = {"w": 321, "h": 335, "depth": 1}
+    ctx = scenes.SceneContext(
+        cfg=CFG, cache_dir=pathlib.Path(tempfile.mkdtemp()), caps=caps,
+        now=float(day + 13 * 3600),          # 13:00 Madrid
+        device={}, options=scenes.defaults("weather"),
+        data=lambda req: reading)
+    html = scenes.build("weather", ctx).html
+    shown = re.findall(r'<div class="t">(\d+)h</div>', html)
+    assert shown, html
+    assert shown[0] == "13", shown
+    assert shown == ["13", "14", "15", "16", "17", "18"], shown
+
+
+def test_the_strip_still_shows_something_when_the_forecast_is_all_past():
+    # A stale cache should not empty the strip: showing the last known hours
+    # beats showing a gap where the panel had a row.
+    from homescreen.reading import Reading
+    day = 1_788_213_600
+    hours = [{"time": day + i * 3600, "temp": 20, "sky": "clear"}
+             for i in range(6)]
+    reading = Reading(data=dict(READING.data, tz_offset_s=7200, hourly=hours),
+                      ok=True, age_s=60.0)
+    ctx = scenes.SceneContext(
+        cfg=CFG, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 321, "h": 335, "depth": 1}, now=float(day + 20 * 3600),
+        device={}, options=scenes.defaults("weather"), data=lambda req: reading)
+    assert re.findall(r'<div class="t">(\d+)h</div>',
+                      scenes.build("weather", ctx).html)

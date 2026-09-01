@@ -168,7 +168,7 @@ def _clock(stamp, offset, fmt: str) -> str:
 
 
 def _body(variant: str, reading, place: str, temp: str, unit: str,
-          description: str, span: str, w: int, h: int) -> str:
+          description: str, span: str, now: float) -> str:
     """The arrangement for this SHAPE.
 
     The size rule used to exist and reach only the round panel: `wide_band`
@@ -200,7 +200,7 @@ def _body(variant: str, reading, place: str, temp: str, unit: str,
 
     # `panel`: room to lay it out. Current conditions, the hours ahead, then
     # the days -- which is the right-hand column of the original design.
-    hours = _hourly(reading, offset)
+    hours = _hourly(reading, offset, now)
     days = _daily(reading, offset)
     return (f'<div class="wrap panel">'
             f'<div class="now">{icon}<div class="big">{temp}{unit}</div>'
@@ -209,11 +209,19 @@ def _body(variant: str, reading, place: str, temp: str, unit: str,
             f'{hours}{days}</div>')
 
 
-def _hourly(reading, offset) -> str:
-    """The next six hours, as the design has them: hour, sky, temperature."""
-    ahead = [h for h in (reading.get("hourly") or [])
-             if (h.get("time") or 0) >= (reading.get("now") or 0)]
-    cells = (ahead or (reading.get("hourly") or []))[:6]
+def _hourly(reading, offset, now: float) -> str:
+    """The next six hours, as the design has them: hour, sky, temperature.
+
+    From NOW. This filtered on `reading["now"]`, a key no envelope carries, so
+    it was always None and every hour passed the test -- at 12:17 the panel
+    offered midnight to 05h. The time is the component's to know, and the
+    component has it.
+    """
+    every = reading.get("hourly") or []
+    ahead = [h for h in every if (h.get("time") or 0) >= int(now or 0)]
+    # A cache stale enough that every hour is behind us still shows the last
+    # ones known: a gap where the panel had a row reads as broken.
+    cells = (ahead or every[-6:])[:6]
     if len(cells) < 2:
         return ""
     inner = "".join(
@@ -320,7 +328,8 @@ def build(ctx: SceneContext) -> Scene:
         instructions = [draw.text("center", "--", "xl"),
                         draw.text("below", "sin datos del tiempo", "xs", "dim")]
 
-    body = _body(ctx.variant, reading, place, temp, unit, description, span, w, h)
+    body = _body(ctx.variant, reading, place, temp, unit, description, span,
+                 ctx.now)
     return Scene(layout="fill", components=({"c": "weather",
                                              "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,
