@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from homescreen import draw
 from homescreen.scenes import Scene, SceneContext
+from homescreen.scenes._style import page
 
 #: Every screen, at any size. A blank panel has no legibility floor: there is
 #: nothing to read, which is the point. This is the one component that can be
@@ -46,11 +47,16 @@ def build(ctx: SceneContext) -> Scene:
     # image with no power, so a black page costs nothing to keep but takes ~3s
     # of full refresh to reach and leaves the worst ghosting. Blank there means
     # white -- no ink, the state the panel is happiest resting in.
+    w = int(ctx.caps.get("w") or 240)
+    h = int(ctx.caps.get("h") or 240)
     depth = int(ctx.caps.get("depth") or 16)
     ink = "#000" if depth > 1 else "#fff"
-    html = (f'<!doctype html><meta charset="utf-8"><style>'
-            f'html,body{{margin:0;width:100%;height:100%;background:{ink}}}'
-            f'</style><div class="blank"></div>')
+    # Through `page()` like every other scene, so the root box is the exact
+    # pixel size of the region. Sizing it in percentages let it escape: the
+    # composer appends a fragment's scoped CSS after its positioning rule at
+    # the same specificity, so `width:100%` won and painted the whole panel.
+    html = page(w, h, '<div class="blank"></div>',
+                f".blank{{width:100%;height:100%;background:{ink}}}")
 
     return Scene(
         layout="fill",

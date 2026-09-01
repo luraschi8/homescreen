@@ -81,7 +81,7 @@ def _credentials(hw: str, creds) -> str:
 def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
                   notice: str = "", plan=None, views=(), now: float = 0.0,
                   credentials=(), view_bodies=None, regions=None,
-                  template: str = "", fits=None) -> str:
+                  template: str = "", fits=None, templates=()) -> str:
     """`options` is [(scene, drawable, why)] for THIS device; `schemas` maps a
     scene to its option schema, so every component's settings travel with it."""
     hw = e(dev.get("hw"))
@@ -131,12 +131,32 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     # what the screen shows, this panel is just the screen's name.
     heading = "Esta pantalla" if arranged else "Qué muestra"
 
-    thumbs = "".join(
-        f'<figure class="pv">'
-        f'<img src="/api/devices/{hw}/preview.svg?view={e(name)}" '
-        f'alt="{e(name)} en esta pantalla" loading="lazy">'
-        f'<figcaption>{e(name)}</figcaption></figure>'
-        for name, ok, _ in options if ok)
+    # An arranged screen is previewed as the PAGE it is served, in an iframe:
+    # the operator's browser renders the same document `/frame` rasterises, so
+    # there is no second layout engine to disagree with the first and no
+    # Chromium on the Pi. A single-component screen keeps the SVG thumbnails,
+    # because a data-push panel executes that instruction list itself -- the
+    # SVG is what it will draw rather than a picture of it.
+    if arranged:
+        pw = int((caps or {}).get("w") or 800)
+        ph = int((caps or {}).get("h") or 480)
+        # Scaled server-side because the server knows the panel's real size:
+        # 544px is the column the dashboard gives it.
+        scale = round(544 / max(1, pw), 4)
+        thumbs = (f'<figure class="pv wide" '
+                  f'style="--pw:{pw}px;--ph:{ph}px;--pv-scale:{scale}">'
+                  f'<div class="glass">'
+                  f'<iframe src="/api/devices/{hw}/view.html" '
+                  f'title="la pantalla compuesta" loading="lazy"></iframe>'
+                  f'</div>'
+                  f'<figcaption>la pantalla, como se ve</figcaption></figure>')
+    else:
+        thumbs = "".join(
+            f'<figure class="pv">'
+            f'<img src="/api/devices/{hw}/preview.svg?view={e(name)}" '
+            f'alt="{e(name)} en esta pantalla" loading="lazy">'
+            f'<figcaption>{e(scene_label(name))}</figcaption></figure>'
+            for name, ok, _ in options if ok)
 
     unknown_scene = ("" if current in known else
                      f'<div class="notice">Esta pantalla tiene asignada '
@@ -189,7 +209,7 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
   </form>
 </div></div>
 {views_ui.editor(dev.get("hw") or "", view_bodies or {}, regions or {},
-                 options, template, schemas, fits, caps)}
+                 options, template, schemas, fits, caps, templates)}
 {_credentials(dev.get("hw") or "", credentials)}
 {schedule_ui.editor(dev.get("hw") or "", plan or {}, views, now) if views else ""}
 {f'<h2>Vista previa</h2><div class="panel"><div class="pad"><div class="pvs">{thumbs}</div></div></div>' if thumbs else ""}

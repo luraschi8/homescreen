@@ -28,6 +28,11 @@ from homescreen.config import (check_device, device, feed_cache_path,
 
 log = logging.getLogger(__name__)
 
+#: What the first view is called when a screen is arranged for the first time.
+#: `view_for` invents "unassigned" for a record with no views, which is a state
+#: rather than a name for the thing you are building.
+DEFAULT_VIEW_NAME = "panel"
+
 # ADDENDUM §6: "Each entry declares its render mode; serve.py routes on it."
 # Routing on `render` rather than `kind` keeps that field live config -- a new
 # data-push device class then declares itself instead of needing a Python edit.
@@ -408,13 +413,21 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         plan = rec.get("schedule") or {}
         caps = registry.clean_caps(rec.get("caps") or {})
         showing_view = layout.view_for(rec)
-        template = layout.template_of(showing_view)
+        # The arrangement the operator CHOSE, which may not be the one being
+        # shown: a view they have just created is empty, and an empty view
+        # never renders.
+        template = layout.chosen_template(rec)
         return Response(
             web.render_device(_fleet_entry(hw, rec, now), options=opts,
                               # Re-judged per slot: a region that divides four
                               # ways must not offer what only fits whole.
                               fits=lambda name, slot: scenes.supports(
                                   name, {**caps, **slot}),
+                              # What this glass could be divided into. The
+                              # page had no way to offer these at all.
+                              templates=tuple(
+                                  (n, layout.TEMPLATES[n].get("label") or n)
+                                  for n in layout.templates_for(caps)),
                               schemas=schemas, name_max=registry.NAME_MAX,
                               notice=request.args.get("m", ""),
                               # Only once the screen HAS views. Before that
@@ -432,6 +445,34 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                               regions=layout.regions(caps, template),
                               template=template),
             mimetype="text/html")
+
+    @app.get("/api/devices/<hw>/view.html")
+    def device_view_html(hw: str):
+        """The composed page this screen is being served, for an operator.
+
+        The SAME document `/frame` rasterises -- not a drawing of it. The
+        dashboard embeds it in an iframe, so the OPERATOR's browser does the
+        rendering: no Chromium on the Pi, no render slot taken from a device
+        asking for its frame, and no second layout engine to disagree with the
+        first.
+
+        Which is the point. The SVG preview executes the round panel's
+        instruction list, and a pixel-push screen never receives one -- so on
+        an 800x480 page it was showing the wrong layout engine in the wrong
+        palette at the wrong aspect.
+        """
+        rec = registry.load(cache_dir).get(hw)
+        if rec is None:
+            return jsonify({"error": "unknown device"}), 404
+        caps = registry.clean_caps(rec.get("caps") or {})
+        w = int(caps.get("w") or 800)
+        h = int(caps.get("h") or 480)
+        page = _composed_html(hw, rec, w, h)
+        if page is None:
+            return jsonify({"error": "not a composed view"}), 404
+        resp = Response(page, mimetype="text/html")
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     def _composed_html(hw: str, rec: dict, w: int, h: int):
         """The showing view as one page, or None if it is a single component.
@@ -504,9 +545,25 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         if rec is None:
             return redirect(url_for("home", m=f"no existe ninguna pantalla {hw}"))
         caps = registry.clean_caps(rec.get("caps") or {})
-        template = layout.template_of(layout.view_for(rec))
+        template = layout.chosen_template(rec)
+        # The operator may be changing how the panel is divided. Read it from
+        # the form, and only accept one this glass can actually carry.
+        asked_template = (request.form.get("template") or "").strip()
+        switching = (asked_template in layout.templates_for(caps)
+                     and asked_template != template)
+        # The template the FORM was rendered with. Views on it are the ones
+        # this request describes; views on any other are untouched by it.
+        rendered_with = template
+        if switching:
+            template = asked_template
         regions = layout.regions(caps, template)
         names = list(layout.view_names(rec))
+        # A screen that has never been arranged has no views: `view_names`
+        # answers with the synthetic one `view_for` invents from `scene`.
+        # Choosing an arrangement is the moment it gets a real one, and
+        # "unassigned" is a state rather than a name for what you are building.
+        if not (rec.get("views") or {}):
+            names = [DEFAULT_VIEW_NAME]
         # Narrowed on the way in, so every later use -- the field key it
         # becomes, the attribute it is written into -- is safe by construction.
         asked = (request.form.get("new_view") or "").strip()
@@ -526,7 +583,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # Silence from a form that never asked is not an instruction.
         stored = rec.get("views") or {}
         for name, body in stored.items():
-            if layout.template_of(body) != template:
+            if layout.template_of(body) != rendered_with:
                 views[name] = body
                 kept[name] = True
         for name, body in posted.items():
@@ -540,7 +597,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 # exists. Dropping it made "Anadir una vista" a control that
                 # reported success and did nothing, and took the schedule
                 # editor with it, since that needs a second view.
-                if name == new:
+                # A template change can drop every placement -- the new
+                # arrangement has different regions, and a placement naming a
+                # region this template lacks is a statement about a different
+                # layout. The view survives, empty, ready to be filled.
+                if name == new or switching:
                     views[name] = {"template": template, "placements": []}
                     kept[name] = True
                 continue
@@ -567,6 +628,13 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         if not views:
             return redirect(url_for("device_page", hw=hw,
                                     m="una pantalla necesita al menos una vista"))
+        # A template change can legitimately empty every view, and a view that
+        # posted nothing because its slots are not on the page yet still has to
+        # exist. Neither is a reason to leave the screen with nothing.
+        if switching:
+            for name in names:
+                views.setdefault(name, {"template": template,
+                                        "placements": []})
         plan = scheduling.clean_schedule(rec.get("schedule") or {}, views)
         try:
             registry.set_layout(cache_dir, hw, views, plan)
@@ -1062,9 +1130,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             body = draw.to_svg(
                 [draw.text("center", scene, "md"),
                  draw.text("below", "sin vista previa", "xs", "dim")],
-                w, h, round_panel=(w == h))
+                w, h, round_panel=(w == h), depth=int(caps.get("depth") or 16))
         else:
-            body = draw.to_svg(instructions, w, h, round_panel=(w == h))
+            body = draw.to_svg(instructions, w, h, round_panel=(w == h),
+                               depth=int(caps.get("depth") or 16))
         resp = Response(body, mimetype="image/svg+xml")
         # A preview is cheap to rebuild and always reflects live data.
         resp.headers["Cache-Control"] = "no-store"

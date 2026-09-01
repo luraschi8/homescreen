@@ -115,8 +115,17 @@ button.danger:hover{background:var(--bad-bg);filter:none}
 
 .pvs{display:flex;gap:.8rem;flex-wrap:wrap}
 figure.pv{margin:0;text-align:center}
-figure.pv img{width:108px;height:108px;border-radius:9px;background:#000;
-  display:block;border:1px solid var(--line)}
+figure.pv img{width:108px;height:auto;aspect-ratio:var(--pv-aspect,1);
+  border-radius:9px;background:#000;display:block;border:1px solid var(--line)}
+
+/* The composed panel, rendered by the operator's own browser at the panel's
+   real size and scaled down. Not a drawing of the page -- the page. */
+figure.pv.wide{width:100%;max-width:34rem}
+figure.pv.wide .glass{overflow:hidden;border:1px solid var(--line);
+  border-radius:8px;background:#fff;
+  height:calc(var(--ph) * var(--pv-scale))}
+figure.pv.wide iframe{width:var(--pw);height:var(--ph);border:0;display:block;
+  transform:scale(var(--pv-scale));transform-origin:top left}
 figure.pv figcaption{font-size:.74rem;color:var(--dim);margin-top:.3rem}
 
 .notice{margin:0 0 1.1rem;padding:.65rem .85rem;border-radius:8px;
@@ -173,8 +182,16 @@ def duration(seconds: float) -> str:
 
 #: Scene names the server uses internally that are not components at all, and
 #: that a human should not be shown in English next to Spanish chrome.
+#: Everything an operator reads is Spanish; the component NAMES were the one
+#: place still showing English, in the picker, the map and the fleet table.
+#: The keys stay English -- they are identifiers, stored in records and posted
+#: in forms -- and only the label is translated.
 _SCENE_LABELS = {"unassigned": "sin asignar", "pending": "esperando aprobación",
-                 "error": "error", "": "sin asignar", None: "sin asignar"}
+                 "error": "error", "": "sin asignar", None: "sin asignar",
+                 "clock": "reloj", "weather": "tiempo", "quotes": "cotizaciones",
+                 "calendar": "agenda", "sport": "deportes", "planes": "aviones",
+                 "claude": "uso de Claude", "blank": "en blanco",
+                 "status": "estado"}
 
 
 def scene_label(scene) -> str:

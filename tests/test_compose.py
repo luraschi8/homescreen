@@ -269,3 +269,25 @@ def test_a_component_under_a_heading_is_told_the_height_it_actually_gets():
     _, _, _, right = regions["main_right"]["rect"]
     assert seen["clock"] == left - compose.HEADING_PX, seen
     assert seen["weather"] == right, "no heading, no deduction"
+
+
+def test_a_component_cannot_size_itself_out_of_its_region():
+    # `compose` appends each fragment's scoped CSS AFTER the positioning rule,
+    # at the same `#id` specificity, so a fragment that sizes its own root in
+    # PERCENTAGES wins and escapes: `blank` became 800x480 at the region's
+    # origin, painting over everything drawn before it.
+    import re
+    view = {"template": "dashboard", "placements": [
+        {"id": "a", "region": "main_left", "component": "blank", "options": {}},
+        {"id": "b", "region": "main_right", "component": "clock", "options": {}}]}
+    html = compose.compose(view, EPAPER, _build)
+    for wrapper in ("rg-a", "rg-b"):
+        # The WRAPPER's own box only. A child sized at 100% of its parent is
+        # correct and common; what must not happen is the region itself being
+        # a percentage of the panel.
+        for rule in re.findall(
+                rf"(?:^|\}})\s*(?:#{wrapper}\s*,\s*)*#{wrapper}\s*\{{([^}}]*)\}}",
+                html):
+            flat = rule.replace(" ", "")
+            assert "width:100%" not in flat, (wrapper, rule)
+            assert "height:100%" not in flat, (wrapper, rule)

@@ -18,7 +18,7 @@ import re
 _UNSAFE_IN_NAME = re.compile(r"""[<>&"'.\\/]+""")
 
 from homescreen import layout
-from homescreen.web.layout import e
+from homescreen.web.layout import e, scene_label
 
 CSS = """
 .p-opts{margin:.35rem 0 .8rem 0;padding-left:.8rem;
@@ -154,12 +154,17 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
         slot_caps = {"w": here[2], "h": here[3]}
         picks = f'<option value="">{EMPTY}</option>' + "".join(
             f'<option value="{e(name)}"{" selected" if name == current else ""}'
-            f'{"" if ok else " disabled"}>{e(name)}'
+            f'{"" if ok else " disabled"}>{e(scene_label(name))}'
             f'{"" if ok else " — " + e(why)}</option>'
             for name, ok, why in _for_slot(offered, slot_caps, fits))
         held = (extras or {}).get((region, index)) or {}
         # Heading and share sit WITH the select, because all three describe the
         # slot rather than the component in it: moving a block moves them.
+        #
+        # Rendered for every region, including one that holds a single block.
+        # They used to appear only when `holds > 1` while `parse` read them
+        # unconditionally, so a masthead heading was erased by re-posting the
+        # form with no edits at all.
         trim = (f'<div class="slot-extra">'
                 f'<input type="text" name="l.{e(view_name)}.{e(region)}.{index}"'
                 f' maxlength="24" placeholder="titulo (opcional)"'
@@ -167,8 +172,7 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
                 f'<input type="number" name="wt.{e(view_name)}.{e(region)}.'
                 f'{index}" min="0.25" max="20" step="0.25" placeholder="1"'
                 f' title="Cuanto de la region ocupa, frente a sus vecinos"'
-                f' value="{e(held.get("weight") or "")}"></div>'
-                if spec["holds"] > 1 else "")
+                f' value="{e(held.get("weight") or "")}"></div>')
         rows.append(
             f'<select name="v.{e(view_name)}.{e(region)}.{index}">{picks}</select>'
             + trim
@@ -207,6 +211,21 @@ document.querySelectorAll('.view').forEach(function (view) {
   });
 });
 </script>"""
+
+
+def _template_picker(choices, current: str) -> str:
+    """How the panel is divided up. Nothing else here means anything until it
+    is chosen, so it sits above the picture rather than below the blocks."""
+    if len(choices) < 2:
+        return ""
+    options = "".join(
+        f'<option value="{e(name)}"{" selected" if name == current else ""}>'
+        f'{e(label)}</option>' for name, label in choices)
+    return (f'<label class="field">Distribución'
+            f'<select name="template">{options}</select>'
+            f'<span class="hint">Cambia cómo se divide la pantalla. Los '
+            f'bloques que no quepan en la nueva distribución se quitan.</span>'
+            f'</label>')
 
 
 def _map(view_name: str, regions: dict, by_region: dict, weights: dict,
@@ -281,21 +300,27 @@ def _map(view_name: str, regions: dict, by_region: dict, weights: dict,
                 f'data-for="{field}" '
                 f'style="left:{x / panel_w:.4%};top:{y / panel_h:.4%};'
                 f'width:{w / panel_w:.4%};height:{h / panel_h:.4%}">'
-                f'<span class="mn">{e(current) if current else VACANT}</span>'
+                f'<span class="mn">{e(scene_label(current)) if current else VACANT}</span>'
                 f'{caption}</div>')
     return (f'<div class="map" style="aspect-ratio:{panel_w}/{panel_h}">'
             f'{"".join(boxes)}</div>')
 
 
 def editor(hw: str, views: dict, regions: dict, offered, template: str,
-           schemas=None, fits=None, caps=None) -> str:
+           schemas=None, fits=None, caps=None, templates=()) -> str:
     """Every view on this screen, and what each holds.
 
     Options are NOT edited here. A placement's settings belong to the component
     and are already edited above; putting a second copy beside the arrangement
     would be two forms writing one value, which is how they come to disagree.
     """
-    if len(regions) < 2:
+    # Rendered when there is a CHOICE, not only when a composed arrangement is
+    # already in force. A device registers on `single`, so it has one region,
+    # so this returned "" -- and this was the only place that could have
+    # offered a different arrangement. The composed panel was unreachable from
+    # the web UI entirely; the only way in was to PUT JSON at the API.
+    choices = tuple(templates or ())
+    if len(regions) < 2 and len(choices) < 2:
         return ""
     blocks = []
     for view_name in sorted(views):
@@ -325,11 +350,12 @@ def editor(hw: str, views: dict, regions: dict, offered, template: str,
 
     return f"""<h2>Qué contiene cada vista</h2>
 <div class="panel"><div class="pad">
-  <p class="empty" style="margin-top:0">Distribución <strong>{e(template)}</strong>.
+  <p class="empty" style="margin-top:0">Distribución <strong>{e(dict(choices).get(template, template))}</strong>.
   Cada región muestra su tamaño real en píxeles. Deja «{EMPTY}» para vaciarla.
   Cada hueco tiene sus propios ajustes: dos calendarios en una pantalla son dos
   calendarios distintos.</p>
   <form class="stack" method="post" action="/device/{e(hw)}/views">
+    {_template_picker(choices, template)}
     {"".join(blocks)}
     <label class="field">Añadir una vista
       <input type="text" name="new_view" maxlength="40"

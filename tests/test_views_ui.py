@@ -416,8 +416,8 @@ def test_an_assigned_slot_is_labelled_with_what_is_in_it(ctx):
         "v.panel.main_left.0": "calendar"})
     html = client.get(f"/device/{EPD}").get_data(as_text=True)
     labels = {name: body for name, _, body in _map_slots(html)}
-    assert "clock" in labels["v.panel.masthead.0"]
-    assert "calendar" in labels["v.panel.main_left.0"]
+    assert "reloj" in labels["v.panel.masthead.0"]
+    assert "agenda" in labels["v.panel.main_left.0"]
 
 
 def test_an_empty_slot_reads_as_empty_rather_than_blank(ctx):
@@ -686,3 +686,139 @@ def test_a_free_slot_is_big_enough_to_click(ctx):
         assert found, (name, css)
         pixels = float(found.group(1)) / 100 * caps_h
         assert pixels >= 14, f"{name} is {pixels:.1f}px tall — unclickable"
+
+
+# --- choosing the arrangement -------------------------------------------------
+#
+# The dashboard template was unreachable from the web UI entirely. A device
+# registers on `single`, so it has one region, so the builder was suppressed --
+# and the builder was the only place that could have offered a template. The
+# only way in was to PUT JSON at the schedule API.
+
+def test_a_screen_that_could_hold_more_is_offered_the_choice(ctx):
+    client, _ = ctx
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert 'name="template"' in html, "no way to choose an arrangement"
+    for label in ("una sola cosa", "dos mitades", "panel compuesto"):
+        assert label in html, label
+
+
+def test_a_screen_with_no_choice_is_not_offered_one(ctx):
+    # The round panel fits only `single`. A select with one option is noise.
+    client, _ = ctx
+    html = client.get(f"/device/{ROUND}").get_data(as_text=True)
+    assert 'name="template"' not in html
+
+
+def test_choosing_the_composed_panel_makes_its_regions_appear(ctx):
+    client, cache = ctx
+    client.post(f"/device/{EPD}/views", data={"template": "dashboard"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    for region in ("masthead", "main_left", "main_right", "markets"):
+        assert f'name="v.panel.{region}.0"' in html, region
+
+
+def test_the_chosen_arrangement_is_what_the_screen_is_served(ctx):
+    client, cache = ctx
+    client.post(f"/device/{EPD}/views", data={"template": "dashboard"})
+    from homescreen import layout, registry
+    # `chosen_template`, not `template_of(view_for(...))`: the view they just
+    # created is empty, and an empty view never renders, so the display path
+    # would answer `single` for an arrangement that is really `dashboard`.
+    assert layout.chosen_template(registry.load(cache)[EPD]) == "dashboard"
+
+
+def test_changing_the_arrangement_keeps_what_still_fits(ctx):
+    # `split` has `top`; `dashboard` does not. A placement naming a region the
+    # new arrangement lacks cannot be relocated -- moving it would invent a
+    # layout nobody chose -- so it goes, and one that still fits stays.
+    client, cache = ctx
+    client.post(f"/device/{EPD}/views", data={"template": "split"})
+    client.post(f"/device/{EPD}/views", data={
+        "template": "split", "v.panel.top.0": "clock"})
+    from homescreen import registry
+    before = registry.load(cache)[EPD]["views"]["panel"]["placements"]
+    assert [p["component"] for p in before] == ["clock"]
+
+    client.post(f"/device/{EPD}/views", data={"template": "dashboard"})
+    rec = registry.load(cache)[EPD]
+    assert rec["views"]["panel"]["template"] == "dashboard"
+
+
+def test_an_arrangement_change_never_leaves_a_screen_with_no_view(ctx):
+    # Every placement can legitimately be dropped by a template change, and
+    # the screen must survive it: the view stays, empty, ready to be filled.
+    client, cache = ctx
+    client.post(f"/device/{EPD}/views", data={"template": "dashboard"})
+    from homescreen import layout, registry
+    assert layout.view_names(registry.load(cache)[EPD]), "a view survives"
+
+
+# --- the preview has to be of THIS panel --------------------------------------
+#
+# Every preview rendered the round panel's DRAW LIST: five vertical slots, a
+# black ground and colour tones. Shown on an 800x480 e-paper page that is the
+# wrong layout engine, the wrong palette and the wrong aspect -- the one place
+# in the UI that claims to show what the panel will look like.
+
+def test_a_composed_screen_previews_the_arrangement_not_the_components(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.masthead.0": "clock",
+        "v.panel.main_left.0": "calendar"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert f"/api/devices/{EPD}/view.html" in html, \
+        "no preview of the arrangement"
+
+
+def test_the_arrangement_preview_is_the_page_the_panel_receives(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.masthead.0": "clock",
+        "v.panel.main_left.0": "calendar"})
+    got = client.get(f"/api/devices/{EPD}/view.html")
+    assert got.status_code == 200
+    body = got.get_data(as_text=True)
+    # The real composed document: absolute region rectangles, both blocks.
+    assert "position:absolute" in body
+    assert body.count("rg-") >= 2
+    assert "800px" in body and "480px" in body
+
+
+def test_a_data_push_panel_keeps_the_preview_it_actually_executes(ctx):
+    # The round display renders the instruction list itself, so an SVG of that
+    # list IS what it will draw. Nothing to change there.
+    client, _ = ctx
+    html = client.get(f"/device/{ROUND}").get_data(as_text=True)
+    assert "preview.svg" in html
+
+
+def test_a_one_bit_preview_is_not_a_colour_negative(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    svg = client.get(
+        f"/api/devices/{EPD}/preview.svg?view=clock").get_data(as_text=True)
+    assert "#ffd23f" not in svg and "#6f6d6f" not in svg
+    assert 'fill="#fff"' in svg, "paper, not a black ground"
+
+
+def test_a_heading_on_a_single_slot_region_survives_a_save(ctx):
+    # The heading and share fields were rendered only when a region holds more
+    # than one, while `parse` read them unconditionally -- so the masthead's
+    # heading was silently erased by re-posting the form with no edits.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.masthead.0": "clock", "l.panel.masthead.0": "CABECERA"})
+    from homescreen import registry
+    stored = registry.load(cache)[EPD]["views"]["panel"]["placements"]
+    assert stored[0]["label"] == "CABECERA"
+
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert 'name="l.panel.masthead.0"' in html, "the field is on the page"
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.masthead.0": "clock", "l.panel.masthead.0": "CABECERA"})
+    again = registry.load(cache)[EPD]["views"]["panel"]["placements"]
+    assert again[0]["label"] == "CABECERA"

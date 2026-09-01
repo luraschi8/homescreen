@@ -554,7 +554,8 @@ def text(slot: str, value: str, size: str = "md",
             "tone": tone}
 
 
-def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True) -> str:
+def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True,
+           depth: int = 16) -> str:
     """Rasterise an instruction list to an SVG preview.
 
     SVG rather than PNG deliberately: no Chromium fork, no render queue, no
@@ -571,13 +572,21 @@ def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" '
         f'width="{w}" height="{h}" role="img">'
     ]
+    # A 1-bit panel is INK ON PAPER. Painting it the round OLED's way -- black
+    # ground, coloured tones -- makes the preview a colour negative of a panel
+    # that has no colours, and CLAUDE.md allows exactly #000000 and #ffffff
+    # there. `depth` is the device's own, so the preview follows the glass.
+    one_bit = int(depth or 16) <= 1
+    ground = "#fff" if one_bit else "#000"
     if round_panel:
         r = min(w, h) // 2
-        parts.append(f'<circle cx="{w // 2}" cy="{h // 2}" r="{r}" fill="#000"/>')
+        parts.append(f'<circle cx="{w // 2}" cy="{h // 2}" r="{r}" '
+                     f'fill="{ground}"/>')
         parts.append(f'<circle cx="{w // 2}" cy="{h // 2}" r="{r - 1}" '
-                     f'fill="none" stroke="#333" stroke-width="1"/>')
+                     f'fill="none" stroke="{"#000" if one_bit else "#333"}" '
+                     f'stroke-width="1"/>')
     else:
-        parts.append(f'<rect width="{w}" height="{h}" fill="#000"/>')
+        parts.append(f'<rect width="{w}" height="{h}" fill="{ground}"/>')
 
     # The preview's colours are the panel's, so a preview is not a nicer
     # picture of a duller screen.
@@ -594,7 +603,11 @@ def to_svg(draw: list, w: int, h: int, *, round_panel: bool = True) -> str:
             "bad": "#ff7a68", "accent": "#5acae6", "warn": "#ffd23f",
             "cool": "#4d8fff", "hot": "#f6894a", "off": "#000000"}
     for item in resolve(draw, w, h):
-        colour = fill.get(item["tone"], "#fff")
+        # On 1-bit glass there is no palette to pick from. Hierarchy there
+        # comes from size and weight, which the instruction list already
+        # carries -- so every tone is ink, and `off` is the paper.
+        colour = ("#000" if item["tone"] != "off" else "#fff") if one_bit \
+            else fill.get(item["tone"], "#fff")
         if item["t"] == "fill":
             parts.append(f'<rect x="0" y="0" width="{w}" height="{h}" '
                          f'fill="{colour}"/>')

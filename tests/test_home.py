@@ -213,7 +213,9 @@ def test_home_lists_registered_devices_with_state(tmp_path):
     _registry.touch(tmp_path, "deadbeef0000", fw="0.1.0", now=clock.t)
     _registry.set_approval(tmp_path, "deadbeef0000", True)
     body = client.get("/home").get_data(as_text=True)
-    assert "radar" in body and "planes" in body
+    # "aviones", not "planes": everything an operator reads is Spanish, and
+    # the component names were the last place still showing the identifier.
+    assert "radar" in body and "aviones" in body
     assert "a4cf12ab3c44" in body, "hw id shown so a new board is identifiable"
     assert "sin asignar" in body and "sin nombre" in body
     # Firmware and geometry are facts about ONE screen and are on its page --

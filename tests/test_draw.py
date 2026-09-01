@@ -377,3 +377,36 @@ def test_clipping_never_returns_nothing():
     # going blank: "..." is a better answer than an empty panel.
     got = draw.clip("something", "rim_bottom", "xl", 240, 240, "round")
     assert got, "never empty"
+
+
+# --- a preview of a 1-bit panel is black on white -----------------------------
+
+def test_a_one_bit_preview_is_ink_on_paper_not_a_negative():
+    # `to_svg` always painted a black ground and coloured tones -- the round
+    # OLED's palette. Shown for an 800x480 e-paper it is a colour negative of
+    # a panel that has no colours: CLAUDE.md allows #000000 and #ffffff there
+    # and nothing else.
+    svg = draw.to_svg([draw.text("center", "22:53", "xl"),
+                       draw.text("below", "Madrid", "sm", "dim"),
+                       draw.circle(0.5, 0.2, 0.1, "warn")],
+                      800, 480, round_panel=False, depth=1)
+    colours = set(re.findall(r'fill="(#[0-9a-fA-F]{3,6})"', svg))
+    colours |= set(re.findall(r'stroke="(#[0-9a-fA-F]{3,6})"', svg))
+    assert colours <= {"#000", "#fff", "#000000", "#ffffff"}, colours
+    assert any(c in colours for c in ("#fff", "#ffffff")), "paper"
+    assert any(c in colours for c in ("#000", "#000000")), "ink"
+
+
+def test_a_colour_panel_still_gets_its_palette():
+    svg = draw.to_svg([draw.text("center", "x", "md", "warn")], 240, 240,
+                      depth=16)
+    assert "#ffd23f" in svg
+
+
+def test_one_bit_keeps_hierarchy_without_grey():
+    # There are no greys to dim with, so `dim` must still be legible rather
+    # than vanishing into the paper.
+    svg = draw.to_svg([draw.text("center", "x", "md", "dim")], 800, 480,
+                      round_panel=False, depth=1)
+    assert "#6f6d6f" not in svg
+    assert 'fill="#000"' in svg or 'fill="#000000"' in svg

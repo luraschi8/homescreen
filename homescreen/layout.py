@@ -317,6 +317,34 @@ def view_for(rec: dict, name: str | None = None) -> dict:
     return single(rec.get("scene") or "unassigned", rec.get("options"))
 
 
+def chosen_template(rec: dict) -> str:
+    """The arrangement the OPERATOR picked, whether or not it holds anything.
+
+    Distinct from `template_of(view_for(rec))`, which answers for the view
+    being SHOWN -- and a view with no placements is never shown, so that
+    function falls back to `single`. Reading the editor's template through it
+    meant choosing the composed panel and then being handed the single-region
+    form, with no way to fill what you had just chosen.
+    """
+    rec = rec if isinstance(rec, dict) else {}
+    views = rec.get("views")
+    if isinstance(views, dict) and views:
+        # The DEFAULT view first, then a non-empty one, then anything stored.
+        # Answering with whichever name sorts first picked a view the operator
+        # was not looking at, and the editor then laid the page out for that
+        # one -- so saving dropped every block of the view they WERE editing.
+        schedule = rec.get("schedule")
+        default = (schedule or {}).get("default") if isinstance(schedule, dict) else None
+        order = ([default] if default in views else []) + \
+            [n for n in sorted(views) if (views[n] or {}).get("placements")] + \
+            sorted(views)
+        for name in order:
+            body = views.get(name)
+            if isinstance(body, dict) and body.get("template") in TEMPLATES:
+                return body["template"]
+    return template_of(view_for(rec))
+
+
 def view_names(rec: dict) -> tuple[str, ...]:
     rec = rec if isinstance(rec, dict) else {}
     views = rec.get("views")
