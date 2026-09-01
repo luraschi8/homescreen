@@ -117,3 +117,23 @@ def test_a_direction_arrow_is_filled_rather_than_stroked():
     up = _icons.arrow("up", 10)
     assert 'fill="#000"' in up and "stroke" not in up
     assert _icons.arrow("sideways", 10) == ""
+
+
+def test_sunrise_and_sunset_are_not_weather_glyphs():
+    # The clock borrowed `clear` and `cloud` for them, so on a cloudy
+    # afternoon the panel drew the identical cloud twice: once meaning
+    # "nublado" and once meaning "20:47".
+    rise = _icons.sun_event("sunrise", 13)
+    set_ = _icons.sun_event("sunset", 13)
+    assert rise and set_
+    assert rise != set_, "sunrise and sunset are the same picture"
+    assert rise != _icons.sky("clear", 13)
+    assert set_ != _icons.sky("cloud", 13)
+    for svg in (rise, set_):
+        # Filled, because a hairline arc at 13px thresholds to noise.
+        assert 'fill="#000"' in svg
+    assert _icons.sun_event("nonsense", 13) == ""
+
+
+def test_the_sun_event_glyphs_hold_the_type_floor():
+    assert 'width="10"' in _icons.sun_event("sunrise", 4)

@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from homescreen.scenes import Scene, SceneContext
 from homescreen import draw
-from homescreen.scenes._icons import sky as sky_icon
+from homescreen.scenes._icons import sun_event as sun_icon
 from homescreen.scenes._style import page
 
 #: What an operator can set per assignment. The dashboard renders fields from
@@ -155,8 +155,8 @@ def _sun(ctx) -> str:
         moment = datetime.fromtimestamp(int(stamp) + int(offset), timezone.utc)
         return moment.strftime("%H:%M")
 
-    return (f'<div>{sky_icon("clear", 13)}<span>{clock(rise)}</span></div>'
-            f'<div>{sky_icon("cloud", 13)}<span>{clock(set_)}</span></div>')
+    return (f'<div>{sun_icon("sunrise", 13)}<span>{clock(rise)}</span></div>'
+            f'<div>{sun_icon("sunset", 13)}<span>{clock(set_)}</span></div>')
 
 
 def _body(variant: str, primary, rest, sun: str = "") -> str:

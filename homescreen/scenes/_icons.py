@@ -122,6 +122,35 @@ def arrow(direction: str, px: int) -> str:
             f'<path d="{path}"/></svg>')
 
 
+#: Sunrise and sunset. Their own drawing, because they are a TIME, not a sky.
+#: The clock borrowed `clear` and `cloud` for them, so on a cloudy afternoon
+#: the panel drew the identical cloud twice, once meaning "nublado" and once
+#: meaning "20:47" -- the same mark for two unrelated things.
+#:
+#: A half disc on a horizon with a filled triangle for the direction. Filled
+#: rather than stroked because these live at 13px beside the clock, where a
+#: hairline arc lands half-covered along its length and thresholds to noise.
+_SUN_EVENT = {
+    "sunrise": ('M11 29A9 9 0 0 1 29 29Z M20 4l6 10h-12z', "M3 32h34"),
+    "sunset": ('M11 29A9 9 0 0 1 29 29Z M20 15L14 5h12z', "M3 32h34"),
+}
+
+
+def sun_event(kind: str, px: int) -> str:
+    """Sunrise or sunset, as a picture that means only that."""
+    px = max(MIN_PX, int(px))
+    shapes = _SUN_EVENT.get(str(kind or ""))
+    if not shapes:
+        return ""
+    solid, horizon = shapes
+    return (f'<svg class="ic" viewBox="0 0 {VIEWBOX} {VIEWBOX}" '
+            f'width="{px}" height="{px}" aria-hidden="true">'
+            f'<path d="{solid}" fill="#000"/>'
+            f'<path d="{horizon}" stroke="#000" fill="none" '
+            f'stroke-width="{_stroke(px, _GAP["simple"])}" '
+            f'stroke-linecap="round"/></svg>')
+
+
 def sky(name: str, px: int) -> str:
     """An inline SVG for a normalised sky, or "" if we have no picture.
 
