@@ -257,7 +257,10 @@ CSS = """
 .row .px{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:500}
 .row .ch{font-size:var(--sm);width:5.4em;text-align:right}
 td{padding:var(--pad-sm) 0}
-.sym{font-weight:600}
-.px{text-align:right;font-variant-numeric:tabular-nums}
-.ch{text-align:right;width:6em;font-size:var(--fs)}
+/* The bare `.sym`, `.px` and `.ch` rules that used to live here belonged to
+   the tabular layout this replaced. They outlived it and kept applying: `.q
+   .px` sets a size and a weight but no alignment, so a stray
+   `text-align:right` still won and pushed every price to the right edge of
+   its cell while the symbol stayed left. Dead CSS is not inert -- it is
+   CSS. */
 """ + EMPTY_CSS

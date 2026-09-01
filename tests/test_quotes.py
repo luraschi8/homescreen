@@ -202,7 +202,7 @@ def test_a_markets_cell_shows_one_symbol_in_three_lines():
     assert html.count('<div class="q">') == 1, "one symbol, not a rotation"
     for part in ('class="sym"', 'class="px"', 'class="ch"'):
         assert part in html, part
-    assert "<table" not in html
+    assert "<table" not in html.split("</style>")[-1], "no tabular markup"
 
 
 def test_a_whole_band_spreads_every_symbol_along_it():
@@ -237,3 +237,32 @@ def test_every_shape_quotes_declares_is_reachable_where_it_was_written_for():
         at = spec["at"]
         assert scenes.variant_for(
             "quotes", {"w": at[0], "h": at[1], "depth": 1}) == spec["variant"]
+
+
+def test_a_cell_stacks_its_three_lines_on_one_left_edge():
+    # Dead rules from the old <table> layout kept applying after it was
+    # replaced: `.px{text-align:right}` pushed every price to the right edge
+    # of its cell while the symbol stayed left, so a ticker read as two
+    # unrelated fragments. Nothing in a cell may be right-aligned.
+    css = _html({"w": 127, "h": 62, "depth": 1}, symbols="AAPL")
+    css = css.split("<style>")[-1].split("</style>")[0]
+    import re
+    # The BADGE's own rules only, line-anchored. `.row .ch` is the list
+    # layout's right-hand column and is right-aligned on purpose.
+    for rule in re.findall(r"^\.(?:q\s+)?(?:sym|px|ch)\{([^}]*)\}", css, re.M):
+        flat = rule.replace(" ", "").replace("\n", "")
+        assert "text-align:right" not in flat, rule
+        # A BARE width, not `min-width` or `max-width`: the leftover pinned
+        # the change column at 6em, which is what held it away from its price.
+        assert not re.search(r"(?:^|;)width:", flat), rule
+
+
+def test_no_rule_survives_the_markup_it_was_written_for():
+    # `.sym`, `.px` and `.ch` are only ever used INSIDE a `.q` or a `.row`.
+    # An unscoped rule for one of them is a leftover, and a leftover that
+    # still matches is a bug waiting to be blamed on something else.
+    css = _html({"w": 321, "h": 335, "depth": 1}, symbols=THREE)
+    css = css.split("<style>")[-1].split("</style>")[0]
+    import re
+    bare = re.findall(r"^\.(sym|px|ch)\{", css, re.M)
+    assert not bare, f"unscoped leftovers: {bare}"
