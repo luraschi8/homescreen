@@ -442,16 +442,7 @@ def slot_width(slot: str, w: int, h: int, shape: str = "rect",
                px: int = 0) -> int:
     """How many pixels of glass a line in this slot actually has.
 
-    On a round panel this is a CHORD, not a constant. `ROUND_USABLE = 0.72
-
-#: Kept off the bezel. A chord measured to the very edge of the glass puts the
-#: last pixel of a glyph under the rim, so both shapes hold a little back.
-ROUND_INSET = 0.94
-RECT_USABLE = 0.94
-
-#: What a shortened line ends with. Three dots, not an ellipsis: the panel's
-#: embedded face has 95 glyphs and no U+2026.
-TRUNCATION = "..."`
+    On a round panel this is a CHORD, not a constant. `ROUND_USABLE = 0.72`
     was one number standing in for a function, and it was wrong in both
     directions at once: too generous at the rim, where text slid under the
     bezel, and far too mean across the middle, where a headline had a third

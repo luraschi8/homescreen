@@ -49,10 +49,19 @@ CSS = """
   white-space:nowrap}
 .mslot.filled .mn{color:var(--fg)}
 /* The region name is context, not content: it shows when there is room. */
+/* An unfilled slot overlaid on the region's trailing edge: a target for
+   adding the next block, not a picture of space the panel will have. */
+.mslot.free{border-style:dotted;background:transparent;opacity:.75;
+  z-index:2}
+.mslot.free .mn{font-size:.6rem}
 .mslot .mr{font-size:.58rem;color:var(--faint);font-family:var(--mono);
   line-height:1;overflow:hidden;max-width:100%}
 @media (max-width:640px){.mslot .mr{display:none}}
 """
+
+#: How tall an unfilled slot is drawn in the map. Enough to be a click target
+#: and to fit the word "vacío"; the filled blocks give up the room.
+FREE_SLOT_PX = 18
 
 VACANT = "vacío"
 EMPTY = "—"
@@ -96,7 +105,7 @@ def _placement_options(view_name: str, region: str, index: int,
         # `opt.url`.
         rendered.append(one.replace(
             f'name="opt.{key}"',
-            f'name="o.{view_name}.{region}.{index}.{key}"'))
+            f'name="o.{e(view_name)}.{e(region)}.{index}.{key}"'))
     return (f'<div class="p-opts">{"".join(rendered)}</div>')
 
 
@@ -233,24 +242,33 @@ def _map(view_name: str, regions: dict, by_region: dict, weights: dict,
             filled = spec["holds"]
         else:
             cut = layout.slots(spec, filled, asked)
-        # The free slots stay visible, because they are where the next block
-        # goes, but they are drawn as a thin strip rather than as a share of a
-        # region they are not taking.
-        used = sum(r[3] if spec.get("stack") != "h" else r[2] for r in cut)
-        spare = spec["holds"] - filled
+        # Two requirements that pull against each other. The filled blocks
+        # must be drawn at the size the PANEL will draw them -- dividing by
+        # capacity instead showed every block too small and empty space that
+        # would not exist. And the free slots must stay CLICKABLE, because the
+        # script makes them the click-to-focus targets, and taking their
+        # height from what `slots()` left over gave them a single device pixel.
+        #
+        # So the filled blocks keep their exact rectangles and the free slots
+        # are OVERLAID along the region's trailing edge as a badge strip. The
+        # picture stays honest about the arrangement, and adding the next
+        # block stays a thing you can hit.
         rx, ry, rw, rh = spec["rect"]
         horizontal = spec.get("stack") == "h"
+        spare = spec["holds"] - filled
+        strip = min(FREE_SLOT_PX, (rw if horizontal else rh) // 2)
+
         for index in range(spec["holds"]):
             if index < filled:
                 x, y, w, h = cut[index]
             elif horizontal:
-                each = max(1, (rw - used) // spare)
-                x, y = rx + used + (index - filled) * each, ry
-                w, h = each, rh
+                each = max(1, (rw - strip) // max(1, spare))
+                x, y = rx + strip + (index - filled) * each, ry + rh - strip
+                w, h = each, strip
             else:
-                each = max(1, (rh - used) // spare)
-                x, y = rx, ry + used + (index - filled) * each
-                w, h = rw, each
+                each = max(1, rw // max(1, spare))
+                x, y = rx + (index - filled) * each, ry + rh - strip
+                w, h = each, strip
             current = held[index] if index < len(held) else ""
             field = f"v.{e(view_name)}.{e(region)}.{index}"
             # The region names itself ONCE. Repeating it in all six cells of
@@ -259,7 +277,8 @@ def _map(view_name: str, regions: dict, by_region: dict, weights: dict,
             caption = (f'<span class="mr">{e(region)}</span>' if index == 0
                        else "")
             boxes.append(
-                f'<div class="mslot" data-for="{field}" '
+                f'<div class="mslot{"" if index < filled else " free"}" '
+                f'data-for="{field}" '
                 f'style="left:{x / panel_w:.4%};top:{y / panel_h:.4%};'
                 f'width:{w / panel_w:.4%};height:{h / panel_h:.4%}">'
                 f'<span class="mn">{e(current) if current else VACANT}</span>'

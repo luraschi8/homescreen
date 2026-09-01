@@ -256,3 +256,26 @@ def test_a_key_quoted_back_in_prose_is_redacted_too():
 def test_redaction_does_not_mangle_an_ordinary_message():
     from homescreen.fetch.runner import redact
     assert redact("connection timed out", ["k"]) == "connection timed out"
+
+
+def test_a_scope_accepts_every_view_name_the_ui_blesses():
+    # `safe_view_name` deliberately keeps accents -- the UI is Spanish and
+    # folding `mañana` to ASCII trades a legibility bug for nothing. The scope
+    # pattern then rejected exactly those names, so the per-screen credential
+    # form rendered, saved nothing, and reported an internal-sounding error.
+    from homescreen.web.views_ui import safe_view_name
+    for raw in ("panel", "mañana", "Casa · Día", "Día 1", "x" * 24):
+        name = safe_view_name(raw)
+        scope = f"aabbccddeeff/{name}/p1/openweather"
+        assert secrets.SCOPE_RE.match(scope), (raw, name, scope)
+
+
+def test_a_scope_still_cannot_contain_the_separator():
+    # The one character it must never hold: the split would be ambiguous and
+    # a credential would be read back under the wrong placement.
+    assert not secrets.SCOPE_RE.match("aabb/one@two/p1/openweather")
+
+
+def test_a_scope_rejects_control_characters_and_absurd_length():
+    assert not secrets.SCOPE_RE.match("aabb/one\x00two/p/openweather")
+    assert not secrets.SCOPE_RE.match("x" * 200)

@@ -357,3 +357,40 @@ def test_a_nonsense_weight_does_not_collapse_the_column():
 def test_the_left_column_can_hold_the_five_blocks_the_design_has():
     # clock, sun times, agenda, deliveries, sport.
     assert layout.regions(EPD, "dashboard")["main_left"]["holds"] >= 5
+
+
+def test_a_placement_with_no_weight_lets_the_template_decide():
+    # THE REAL PATH. Every other weight test here passes `weights=None` --
+    # a shape `clean_placement` stopped producing the moment placements gained
+    # a `weight` field, because an absent weight was being stored as an
+    # explicit 1.0 that then shadowed the template's own. SPEC §9's markets
+    # band flattened to six equal cells in every view an operator could make,
+    # while the tests measured 181/117/117/117/116/116 and passed.
+    spec = layout.regions(EPD, "dashboard")["markets"]
+    made = [layout.clean_placement({"region": "markets", "component": "quotes"},
+                                   EPD, ["quotes"], "dashboard")
+            for _ in range(6)]
+    widths = [r[2] for r in layout.slots(spec, 6, [p["weight"] for p in made])]
+    assert widths[0] > widths[1] * 1.4, widths
+    assert abs(widths[0] - 181) <= 3, widths
+
+
+def test_a_weight_the_operator_did_set_still_wins():
+    spec = layout.regions(EPD, "dashboard")["markets"]
+    made = [layout.clean_placement(
+        {"region": "markets", "component": "quotes", "weight": w},
+        EPD, ["quotes"], "dashboard") for w in (1, 1, 1, 1, 1, 1)]
+    widths = [r[2] for r in layout.slots(spec, 6, [p["weight"] for p in made])]
+    assert max(widths) - min(widths) <= 1, widths
+
+
+def test_an_unusable_weight_falls_through_to_the_template_not_to_one():
+    # "abc" is not a considered decision to be even -- it is no decision, and
+    # the template's proportions are the better default.
+    spec = layout.regions(EPD, "dashboard")["markets"]
+    made = [layout.clean_placement(
+        {"region": "markets", "component": "quotes", "weight": bad},
+        EPD, ["quotes"], "dashboard")
+        for bad in ("abc", None, "", 0, -1, 1e9)]
+    widths = [r[2] for r in layout.slots(spec, 6, [p["weight"] for p in made])]
+    assert widths[0] > widths[1] * 1.4, widths

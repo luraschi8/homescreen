@@ -125,14 +125,20 @@ def test_a_new_view_can_be_added_and_is_created_empty_then_filled(ctx):
     assert view["placements"][0]["component"] == "weather"
 
 
-def test_a_view_left_completely_empty_is_dropped_not_stored(ctx):
-    # An empty view is not a view, and a schedule pointing at one shows
-    # nothing while looking configured.
+def test_an_empty_view_can_be_created_but_never_shown(ctx):
+    # Both halves matter, and they used to be in conflict. An empty view has
+    # to EXIST or "añadir una vista" is a control that reports success and
+    # does nothing -- its slots only appear on the page once it exists. But it
+    # must never be the view that renders: a screen showing an empty view
+    # shows nothing while looking configured.
     client, cache = ctx
     _dashboard(client, cache)
     client.post(f"/device/{EPD}/views", data={
         "v.panel.masthead.0": "clock", "new_view": "vacía"})
-    assert "vacía" not in layout.view_names(registry.load(cache)[EPD])
+    rec = registry.load(cache)[EPD]
+    assert "vacía" in layout.view_names(rec), "it exists, to be filled"
+    assert layout.view_for(rec, "vacía")["placements"], \
+        "and never renders as itself"
 
 
 def test_a_screen_cannot_be_left_with_no_view_at_all(ctx):
@@ -250,14 +256,26 @@ def test_a_view_name_cannot_break_out_of_the_attribute_it_is_written_into(ctx):
     # The dashboard is unauthenticated on the LAN by design, which makes a
     # stored name that executes a far worse trade than it would be behind a
     # login: anyone who can reach the page can also write the name.
+    #
+    # Asserts the INVARIANT, not a substring. `onfocus=alert(1)` survives as
+    # inert text inside a quoted title once the quotes are gone, and a test
+    # that forbids the text rather than the breakout fails on something
+    # harmless while missing the thing that matters.
     client, cache = ctx
     _dashboard(client, cache)
     client.post(f"/device/{EPD}/views", data={
+        "v.panel.masthead.0": "clock",
         "new_view": HOSTILE,
         f"v.{HOSTILE}.masthead.0": "clock"})
     html = client.get(f"/device/{EPD}").get_data(as_text=True)
-    assert "onfocus=alert(1)" not in html
-    assert "autofocus" not in html
+    # The page has its own <script>; what must not happen is the name landing
+    # inside one, or ending an attribute so it becomes markup.
+    for block in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S):
+        assert "alert(" not in block, block[:200]
+    for name in layout.view_names(registry.load(cache)[EPD]):
+        assert not set(name) & set("\"'<>&"), (
+            f"stored view name {name!r} carries a character that ends an "
+            f"attribute")
 
 
 def test_a_view_name_keeps_its_accents_and_loses_only_what_is_dangerous():
@@ -333,7 +351,7 @@ def test_the_markets_band_can_hold_the_ticker_it_was_designed_for(ctx):
 # what goes in it should look like the thing being chosen.
 
 def _map_slots(html):
-    return re.findall(r'<div class="mslot"[^>]*data-for="([^"]+)"[^>]*'
+    return re.findall(r'<div class="mslot[^"]*"[^>]*data-for="([^"]+)"[^>]*'
                       r'style="([^"]+)"[^>]*>(.*?)</div>', html, re.S)
 
 
@@ -489,15 +507,24 @@ def test_the_map_draws_the_share_that_was_asked_for(ctx):
     assert first > second * 2, heights
 
 
-def test_a_share_left_blank_is_an_even_one(ctx):
+def test_a_share_left_blank_defers_to_the_template(ctx):
+    # This test used to assert a blank share stored 1.0, which is what caused
+    # the bug: an explicit 1.0 is a DECISION and it shadows the template's own
+    # proportions. Blank means "no opinion", and the region keeps its shape.
     client, cache = ctx
     _dashboard(client, cache)
     client.post(f"/device/{EPD}/views", data={
-        "v.panel.main_left.0": "clock", "wt.panel.main_left.0": "",
-        "v.panel.main_left.1": "calendar", "wt.panel.main_left.1": ""})
-    from homescreen import registry
-    for p in registry.load(cache)[EPD]["views"]["panel"]["placements"]:
-        assert p["weight"] == 1.0
+        "v.panel.markets.0": "quotes", "wt.panel.markets.0": "",
+        "v.panel.markets.1": "quotes", "wt.panel.markets.1": ""})
+    from homescreen import layout, registry
+    rec = registry.load(cache)[EPD]
+    placements = rec["views"]["panel"]["placements"]
+    assert all(p["weight"] is None for p in placements), placements
+    caps = registry.clean_caps(rec["caps"])
+    spec = layout.regions(caps, "dashboard")["markets"]
+    widths = [r[2] for r in
+              layout.slots(spec, 2, [p["weight"] for p in placements])]
+    assert widths[0] > widths[1] * 1.4, widths
 
 
 def test_the_map_draws_the_blocks_at_the_size_the_panel_will_draw_them(ctx):
@@ -561,3 +588,101 @@ def test_a_slot_is_judged_at_the_size_its_own_weight_buys_it(ctx):
     # the short one does not, and each has to be told the truth.
     assert "planes" not in refused(rows["0"]), "the big share fits a radar"
     assert "planes" in refused(rows["1"]), "the small one does not"
+
+
+# --- saving must not destroy what the form could not show ---------------------
+
+def test_saving_with_no_edits_keeps_a_view_on_another_template(ctx):
+    # The form renders every view against ONE template's regions. A view on a
+    # different template has none of its fields in the page, so it posts
+    # nothing, and "an empty view is not a view" then deleted it -- reporting
+    # success. Pressing Guardar twice with no edits destroyed data.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.put(f"/api/devices/{EPD}/schedule", json={
+        "views": {
+            "panel": {"template": "dashboard", "placements": [
+                {"id": "m", "region": "masthead", "component": "clock",
+                 "options": {}}]},
+            "otra": {"template": "split", "placements": [
+                {"id": "t", "region": "top", "component": "weather",
+                 "options": {}}]}},
+        "schedule": {"default": "panel", "slots": []}})
+
+    from homescreen import registry
+    before = sorted(registry.load(cache)[EPD]["views"])
+    assert before == ["otra", "panel"], before
+
+    client.post(f"/device/{EPD}/views",
+                data={"v.panel.masthead.0": "clock"})
+    after = sorted(registry.load(cache)[EPD]["views"])
+    assert after == ["otra", "panel"], f"a save wiped a view: {after}"
+
+
+def test_adding_a_view_actually_adds_it(ctx):
+    # The field parsed, the redirect said "guardadas", and nothing was
+    # created: a new view has no slots in the page yet, so a browser can only
+    # post its name, and a nameless-and-empty view was dropped. The hint under
+    # the field promised exactly the behaviour the code forbade -- and with it
+    # went the schedule editor, which needs a second view to be reachable.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.masthead.0": "clock", "new_view": "noche"})
+    from homescreen import layout, registry
+    names = layout.view_names(registry.load(cache)[EPD])
+    assert "noche" in names, names
+
+
+def test_a_view_added_from_the_form_can_then_be_filled(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.masthead.0": "clock", "new_view": "noche"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert 'name="v.noche.masthead.0"' in html, "its slots are on the page"
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.masthead.0": "clock",
+        "v.noche.masthead.0": "blank"})
+    from homescreen import registry
+    views = registry.load(cache)[EPD]["views"]
+    assert views["noche"]["placements"][0]["component"] == "blank"
+
+
+def test_a_view_name_set_through_the_api_cannot_inject_into_the_page(ctx):
+    # `safe_view_name` guards the FORM. `PUT /schedule` stores the name as
+    # given, and `_placement_options` was the one place interpolating it
+    # without escaping -- so the API was a way round the sanitiser and onto
+    # the operator's page. Reachable only when the placement's component has
+    # an option schema, which most of them do.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.put(f"/api/devices/{EPD}/schedule", json={
+        "views": {'x"><script>alert(1)</script>': {
+            "template": "dashboard", "placements": [
+                {"id": "m", "region": "masthead", "component": "clock",
+                 "options": {}}]}},
+        "schedule": {"default": "panel", "slots": []}})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert "<script>alert(1)</script>" not in html
+    assert 'name="o.x"><script>' not in html
+
+
+def test_a_free_slot_is_big_enough_to_click(ctx):
+    # Sizing filled slots by what is filled left the free ones with nothing:
+    # `slots()` tiles exactly, so the remainder was always zero and every
+    # empty box came out 1 device pixel tall. The script makes those boxes the
+    # click-to-focus targets, so once a region held one block you could not
+    # click to add the next.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={"v.panel.main_left.0": "clock"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    caps_h = 480
+    for name, css, _ in _map_slots(html):
+        if ".main_left." not in name:
+            continue
+        found = re.search(r"height:([\d.]+)%", css.replace(" ", ""))
+        assert found, (name, css)
+        pixels = float(found.group(1)) / 100 * caps_h
+        assert pixels >= 14, f"{name} is {pixels:.1f}px tall — unclickable"

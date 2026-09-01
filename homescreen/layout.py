@@ -246,12 +246,22 @@ def clean_placement(raw, caps, known_components, template=DEFAULT_TEMPLATE):
 
 
 def _weight_of(raw):
+    """The share this block asked for, or None if it did not ask.
+
+    None, NOT 1.0. An explicit 1.0 is a decision -- "even, please" -- and it
+    shadows the template's own proportions, which is how SPEC SS9's markets band
+    came to render as six equal cells in every view an operator could make
+    while `_weights`'s fallback chain sat there working perfectly and unreached.
+
+    An unusable value is also no decision: "abc" is not a considered request
+    for an even share, and the template's proportions are the better default.
+    """
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        return 1.0
+        return None
     if not (value == value) or value <= 0 or value > MAX_WEIGHT:
-        return 1.0
+        return None
     return round(value, 2)
 
 
@@ -288,7 +298,12 @@ def view_for(rec: dict, name: str | None = None) -> dict:
     rec = rec if isinstance(rec, dict) else {}
     views = rec.get("views")
     if isinstance(views, dict):
-        usable = {k: v for k, v in views.items() if isinstance(v, dict)}
+        # A view with no placements can EXIST -- the builder creates one so
+        # its slots appear on the page to be filled -- but it can never be the
+        # one that renders. A screen showing an empty view shows nothing while
+        # looking configured, which is the failure this guard exists for.
+        usable = {k: v for k, v in views.items()
+                  if isinstance(v, dict) and (v.get("placements") or [])}
         if usable:
             if name and name in usable:
                 return usable[name]

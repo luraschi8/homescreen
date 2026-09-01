@@ -32,10 +32,17 @@ log = logging.getLogger(__name__)
 NAME_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 
 #: A per-assignment credential is stored under the same provider, with the
-#: placement it belongs to appended. Scopes come from hardware ids and view
-#: names, so they are constrained the same way everything else that becomes a
-#: key is.
-SCOPE_RE = re.compile(r"^[A-Za-z0-9_:./-]{1,120}$")
+#: placement it belongs to appended. Scopes are built from hardware ids and
+#: VIEW NAMES, and view names are Spanish: `safe_view_name` keeps accents on
+#: purpose, because folding `mañana` to ASCII trades a legibility bug for
+#: nothing.
+#:
+#: This was ASCII-only, so it rejected precisely the names the UI blesses --
+#: the per-screen credential form rendered, saved nothing, and reported
+#: "ámbito no válido". A scope is a JSON KEY, not a filename, so the only
+#: character it genuinely must not hold is the separator below; the rest is a
+#: length bound and a refusal of control characters.
+SCOPE_RE = re.compile(r"^[^@\x00-\x1f\x7f]{1,120}$")
 
 #: Separator between a credential's name and the placement that owns it. Not a
 #: character either side can contain, so the split is unambiguous.

@@ -519,11 +519,31 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
 
         known = set(scenes.names())
         views, kept = {}, {}
+        # Views this form could not render stay exactly as they were. The page
+        # lays every view out against ONE template's regions, so a view on a
+        # different template has no fields here and posts nothing -- and
+        # "empty means delete" then destroyed it on a save with no edits.
+        # Silence from a form that never asked is not an instruction.
+        stored = rec.get("views") or {}
+        for name, body in stored.items():
+            if layout.template_of(body) != template:
+                views[name] = body
+                kept[name] = True
         for name, body in posted.items():
+            if name in views:
+                continue                 # untouched, on another template
             body["template"] = template
             cleaned = layout.clean_view(body, caps, known)
             if not cleaned["placements"]:
-                continue                 # an empty view is not a view
+                # An empty view the operator just NAMED is a view they are
+                # about to fill -- its slots only appear on the page once it
+                # exists. Dropping it made "Anadir una vista" a control that
+                # reported success and did nothing, and took the schedule
+                # editor with it, since that needs a second view.
+                if name == new:
+                    views[name] = {"template": template, "placements": []}
+                    kept[name] = True
+                continue
             # Each placement keeps what its own fields posted. A slot that
             # posted none -- a component with no options -- falls back to what
             # that same slot held before, so rearranging does not wipe
