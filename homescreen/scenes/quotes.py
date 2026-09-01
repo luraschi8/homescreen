@@ -18,7 +18,7 @@ from __future__ import annotations
 from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
-from homescreen.scenes._style import page
+from homescreen.scenes._style import EMPTY_CSS, empty, page
 
 #: The Finnhub key is NOT an option here. Credentials come from the provider's
 #: own SECRETS declaration, which the dashboard renders per screen and
@@ -117,8 +117,14 @@ def build(ctx: SceneContext) -> Scene:
         shape=str(ctx.caps.get("shape") or "rect"))
 
     if not symbols:
-        return _scene(ctx, w, h, [draw.text("center", "sin símbolos", "sm", "dim")],
-                      poll_s=300, body="<div class='wrap'></div>")
+        # The same thing the draw list says. An empty `.wrap` is a silent
+        # band on the panel, and silence reads as a broken renderer.
+        return _scene(ctx, w, h,
+                      [draw.text("center", "sin símbolos", "sm", "dim")],
+                      poll_s=300,
+                      body=f'<div class="wrap">'
+                           f'{empty("sin símbolos", "añade alguno en los ajustes")}'
+                           f'</div>')
 
     if stacked:
         instructions = []
@@ -175,4 +181,4 @@ td{padding:var(--pad-sm) 0;border-bottom:1px solid #000}
 .sym{font-weight:600}
 .px{text-align:right;font-variant-numeric:tabular-nums}
 .ch{text-align:right;width:6em;font-size:var(--fs)}
-"""
+""" + EMPTY_CSS

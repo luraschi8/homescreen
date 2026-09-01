@@ -116,6 +116,34 @@ def _visible_text(name, w, h):
     return " ".join(re.sub(r"<[^>]+>", " ", body).split())
 
 
+#: What each component looks like with its key setting deliberately CLEARED,
+#: which is different from unset: defaults fill an unset option, so only this
+#: reaches the branch where a component has nothing to show.
+CLEARED = {"quotes": {"symbols": ""}, "calendar": {"url": ""},
+           "sport": {"team": ""}}
+
+
+def test_no_region_renders_completely_blank_with_a_setting_cleared():
+    from homescreen import scenes
+    for name in scenes.names():
+        if name == "blank":
+            continue
+        options = scenes.clean_options(name, CLEARED.get(name, {}))
+        for w, h in (COLUMN, MARKETS):
+            import pathlib
+            import tempfile
+            ctx = scenes.SceneContext(
+                cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+                cache_dir=pathlib.Path(tempfile.mkdtemp()),
+                caps={"w": w, "h": h, "depth": 1}, now=1_788_000_000.0,
+                device={"hw": "p", "id": "p"}, options=options)
+            html = scenes.build(name, ctx).html or ""
+            body = html.split("</style>")[-1]
+            text = " ".join(re.sub(r"<[^>]+>", " ", body).split())
+            assert len(text.strip(" -\u2014\u00b7")) > 1, (
+                f"{name} at {w}x{h} says nothing usable: {text!r}")
+
+
 def test_no_region_renders_completely_blank_with_no_data():
     # `calendar` with no URL emitted `<table></table>` -- a 417x335 hole in the
     # dashboard with nothing to say why, while the SAME component on the round

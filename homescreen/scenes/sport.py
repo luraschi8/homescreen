@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
-from homescreen.scenes._style import page
+from homescreen.scenes._style import EMPTY_CSS, empty, page
 
 SURFACES = ({"min_short": 90},
             {"min_w": 150, "min_h": 40})   # two names need the extra width
@@ -135,9 +135,17 @@ def build(ctx: SceneContext) -> Scene:
             "below" if (finished or live) else "rim_bottom", pairing, "xs",
             "accent"))
 
-    body = (f'<div class="wrap"><div class="big">'
-            f'{(match or {}).get("home", "")} — {(match or {}).get("away", "")}'
-            f'</div></div>')
+    # A bare em dash is what this rendered with no team configured, which
+    # says nothing at all -- while the same component on the round panel said
+    # "elige uno en los ajustes".
+    if not wanted:
+        inner = empty("sin equipo", "elige uno en los ajustes")
+    elif match is None:
+        inner = empty("sin partidos", "en el periodo elegido")
+    else:
+        inner = (f'<div class="big">{match.get("home", "")} — '
+                 f'{match.get("away", "")}</div>')
+    body = f'<div class="wrap">{inner}</div>' 
     return Scene(layout="fill",
                  components=({"c": "sport", "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S, html=page(w, h, body, CSS))
@@ -147,4 +155,4 @@ CSS = """
 .wrap{padding:var(--pad);height:100%;display:flex;align-items:center;
   justify-content:center}
 .big{font-size:var(--sub);font-weight:600;text-align:center}
-"""
+""" + EMPTY_CSS

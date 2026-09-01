@@ -12,7 +12,7 @@ from datetime import datetime
 from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
-from homescreen.scenes._style import page
+from homescreen.scenes._style import EMPTY_CSS, empty, page
 
 SURFACES = ({"min_short": 90},)
 
@@ -125,8 +125,7 @@ def build(ctx: SceneContext) -> Scene:
         note = ("sin calendario" if not wanted else "nada a la vista")
         hint = ("a\u00f1ade una URL .ics" if not wanted
                 else f"pr\u00f3ximos {options.get('days', 14)} d\u00edas")
-        body_html = (f'<div class="empty"><div>{note}</div>'
-                     f'<div class="hint">{hint}</div></div>')
+        body_html = empty(note, hint)
     else:
         body_html = f'<table>{body}</table>'
     return Scene(layout="fill",
@@ -140,7 +139,4 @@ CSS = """
 table{width:100%;border-collapse:collapse;font-size:var(--lg)}
 td{padding:var(--pad-sm) 0;border-bottom:1px solid #000;vertical-align:top}
 .w{width:9em;font-weight:600}
-.empty{height:100%;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;text-align:center;font-size:var(--lg)}
-.empty .hint{font-size:var(--fs);margin-top:var(--pad-sm)}
-"""
+""" + EMPTY_CSS

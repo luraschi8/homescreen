@@ -81,6 +81,26 @@ html,body{background:#fff;color:#000;font-family:Inter,'DejaVu Sans',sans-serif;
 """
 
 
+EMPTY_CSS = """
+.nothing{height:100%;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;text-align:center;font-size:var(--lg)}
+.nothing .hint{font-size:var(--fs);margin-top:var(--pad-sm)}
+"""
+
+
+def empty(note: str, hint: str = "") -> str:
+    """What a region says when it has nothing to show.
+
+    Shared because three components each grew their own and two of them grew
+    NOTHING -- `quotes` with no symbols rendered an empty table and `sport`
+    with no team rendered a bare em dash, while the identical components on
+    the round panel said "sin simbolos" and "elige uno en los ajustes". A
+    component cannot be forthcoming on one screen and silent on another.
+    """
+    tail = f'<div class="hint">{hint}</div>' if hint else ""
+    return f'<div class="nothing"><div>{note}</div>{tail}</div>'
+
+
 def page(width: int, height: int, body: str, extra_css: str = "") -> str:
     m = metrics(width, height)
     # On `html,body` rather than `:root`: `compose.scope_css` rewrites both to
