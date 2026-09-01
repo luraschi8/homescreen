@@ -85,8 +85,31 @@ def fetch(params: dict, *, session=None, secrets=None) -> dict:
         "description": str(weather.get("description") or "").strip(),
         "icon": str(weather.get("icon") or "").strip(),
         "place": str(body.get("name") or "").strip(),
+        # Already in every response and previously discarded. The original
+        # dashboard puts these inline beside the clock, so this is data we
+        # already pay a request for.
+        "sunrise": _epoch((body.get("sys") or {}).get("sunrise")),
+        "sunset": _epoch((body.get("sys") or {}).get("sunset")),
+        # The PLACE's offset, not the server's. These are UTC instants, and a
+        # screen showing another city would otherwise render its sunrise in
+        # Madrid time -- right here, wrong everywhere else.
+        "tz_offset_s": _epoch(body.get("timezone")),
         "units": params.get("units", "metric"),
     }
+
+
+def _epoch(value):
+    """A whole number of seconds, or None. Never raises.
+
+    Separate from `_num` because a timestamp of 0.5 is not a timestamp, and a
+    bool is an int in Python -- `sunrise: true` would otherwise become 1970.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _num(value):

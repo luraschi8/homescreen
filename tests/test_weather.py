@@ -256,3 +256,72 @@ def test_the_shapes_stay_on_the_glass():
                 assert 0.0 <= item[key] <= 1.0, (key, item)
         for value in item.get("p", ()):
             assert 0.0 <= value <= 1.0, item
+
+
+# --- the sun ------------------------------------------------------------------
+#
+# `sys.sunrise` and `sys.sunset` are in every OpenWeather current-conditions
+# response and were being discarded. The original dashboard puts them inline
+# beside the clock, so this is data we already pay for and already have.
+
+def _raw(**overrides):
+    body = {"main": {"temp": 21.4, "temp_min": 17.0, "temp_max": 26.0,
+                     "humidity": 50},
+            "weather": [{"description": "cielo claro", "icon": "01d"}],
+            "name": "Madrid",
+            "sys": {"sunrise": 1_788_000_000, "sunset": 1_788_050_000},
+            "timezone": 7200}
+    body.update(overrides)
+    return body
+
+
+class _Resp:
+    status_code = 200
+
+    def __init__(self, body):
+        self._body = body
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        pass
+
+
+def _fetch(body):
+    from homescreen.fetch.providers import openweather
+
+    class Session:
+        @staticmethod
+        def get(url, **kw):
+            return _Resp(body)
+
+    return openweather.fetch({"lat": 40.4, "lon": -3.7, "units": "metric",
+                              "lang": "es"},
+                             session=Session(), secrets={"api_key": "k"})
+
+
+def test_sunrise_and_sunset_reach_the_envelope():
+    got = _fetch(_raw())
+    assert got["sunrise"] == 1_788_000_000
+    assert got["sunset"] == 1_788_050_000
+
+
+def test_the_places_own_utc_offset_travels_with_them():
+    # The times are UTC instants; without the offset a component would render
+    # them in the SERVER's zone, which is right in Madrid and wrong anywhere
+    # a second screen might be.
+    assert _fetch(_raw())["tz_offset_s"] == 7200
+
+
+def test_a_response_without_the_sun_is_still_a_reading():
+    # Some vendors and some mocks do not send it. The temperature is the
+    # reason for the request; the sun is a bonus and must not fail the fetch.
+    got = _fetch(_raw(sys={}))
+    assert got["temp"] == 21.4
+    assert got["sunrise"] is None and got["sunset"] is None
+
+
+def test_nonsense_sun_values_are_dropped_rather_than_rendered():
+    got = _fetch(_raw(sys={"sunrise": "soon", "sunset": None}))
+    assert got["sunrise"] is None and got["sunset"] is None
