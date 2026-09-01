@@ -24,25 +24,26 @@ def _nothing() -> Reading:
     return Reading.nothing()
 
 #: Anywhere a number and a word are legible.
-#: Ordered MOST DEMANDING FIRST, because the first match wins and these are
-#: MINIMUMS: a rule with small minimums matches every larger glass too, so
-#: writing `badge` above `panel` makes every column a badge. I wrote it the
-#: other way round first and every shape below `badge` was dead.
-#:
-#: `tests/test_variants.py` samples a geometry grid and fails when a declared
-#: shape is unreachable, so the next person finds out at the moment they write
-#: it rather than on the glass.
+#: DISJOINT, so the order they are written in does not matter. Bounded only
+#: below, "a strip is shallow" cannot be said at all -- an entry with just
+#: `min_aspect: 4.0` matches every wide rectangle including tall ones, so it
+#: had to be written first and then swallowed 600x140 and 800x200, blocks with
+#: room for a list. Two tests hold this: no sampled geometry may match two
+#: entries, and each `at` must resolve to its own shape.
 SURFACES = (
-    # A wide, shallow band: one line along it. `min_aspect` is what makes this
-    # a SHAPE rather than a size -- 764x62 and 800x53 are both strips, and
-    # neither is "smaller" than the cell below.
-    {"variant": "strip", "min_w": 200, "min_h": 24, "min_aspect": 4.0},
-    # A column: current conditions, an hourly strip, and the days ahead.
-    {"variant": "panel", "min_short": 90, "min_h": 240},
+    # A wide, shallow band: one line along it. Shallow is the point, and it is
+    # `max_h` that says so.
+    {"variant": "strip", "at": (764, 62),
+     "min_w": 200, "min_h": 24, "max_h": 110, "min_aspect": 4.0},
+    # A small cell in a band: the number and the least that identifies it.
+    {"variant": "badge", "at": (127, 62),
+     "min_w": 90, "min_h": 40, "max_h": 110, "max_aspect": 4.0},
     # Room for the sky, the number and a line about it.
-    {"variant": "card", "min_short": 90, "min_h": 120},
-    # A small cell in a band: the temperature and the place, stacked.
-    {"variant": "badge", "min_w": 90, "min_h": 40},
+    {"variant": "card", "at": (417, 150),
+     "min_short": 90, "min_h": 111, "max_h": 239},
+    # A column: current conditions, the hours ahead, then the days.
+    {"variant": "panel", "at": (321, 335),
+     "min_short": 90, "min_w": 200, "min_h": 240},
 )
 
 #: OpenWeather's icon codes, reduced to the shapes we can draw.
@@ -233,7 +234,10 @@ def _hourly(reading, offset, now: float) -> str:
 
 def _daily(reading, offset) -> str:
     """The days ahead: name, sky, chance of rain, high and low."""
-    days = (reading.get("daily") or [])[1:6]
+    # Five, from tomorrow. The provider is asked for `days: 5`, so slicing
+    # `[1:6]` off a five-entry list left FOUR rows on a panel captioned as a
+    # five-day forecast.
+    days = (reading.get("daily") or [])[1:]
     if not days:
         return ""
     rows = []
@@ -243,10 +247,23 @@ def _daily(reading, offset) -> str:
             f'<div class="dy"><div class="d">'
             f'{_clock(day.get("date"), offset, "day")}</div>'
             f'{_icons.sky(day.get("sky"), 15)}'
-            f'<div class="p">{"" if not chance else str(round(chance)) + "%"}</div>'
+            f'<div class="p">{_precip(chance)}</div>'
             f'<div class="mx">{_round(day.get("max"))}°</div>'
             f'<div class="mn">{_round(day.get("min"))}°</div></div>')
     return f'<div class="days">{"".join(rows)}</div>'
+
+
+def _precip(chance) -> str:
+    """Chance of rain, or an em dash for none.
+
+    Blank read as "we do not know" in a column where every other row had a
+    number; the dash is the design's own answer and says "none".
+    """
+    try:
+        value = round(float(chance))
+    except (TypeError, ValueError):
+        return "—"
+    return f"{value}%" if value else "—"
 
 
 def _round(value) -> str:
@@ -292,7 +309,11 @@ def build(ctx: SceneContext) -> Scene:
     # to stack a label under a number, so the reading goes along it instead.
     w = int(ctx.caps.get("w") or 240)
     h = int(ctx.caps.get("h") or 240)
-    wide_band = h and w / max(h, 1) >= 4.0
+    # The DECLARED shape, not a second copy of the rule. This recomputed
+    # `w / h >= 4.0` beside a surface entry saying `min_aspect: 4.0` -- two
+    # rules with one meaning, free to drift, which is the disease the variant
+    # work exists to cure.
+    wide_band = ctx.variant == "strip"
 
     tone = _temp_tone(reading.get("temp"), units)
     unit = "°C" if units == "metric" else "°F"
@@ -333,7 +354,7 @@ def build(ctx: SceneContext) -> Scene:
     return Scene(layout="fill", components=({"c": "weather",
                                              "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,
-                 html=page(w, h, body, CSS))
+                 html=page(w, h, body, CSS, shape=ctx.variant))
 
 
 CSS = """
@@ -352,11 +373,12 @@ CSS = """
 .now{display:flex;align-items:center;gap:var(--pad-sm)}
 .now .big{line-height:1}
 .cond{margin-left:auto;text-align:right}
-.cond>div:first-child{font-size:var(--fs)}
+.cond>div:first-child{font-size:var(--xs)}
 .wrap.panel{justify-content:flex-start;gap:var(--pad-sm)}
 
 /* The hours ahead: six equal cells under a rule. */
-.hours{display:flex;border-top:1px solid #000;padding-top:var(--pad-sm)}
+.hours{display:flex;border-top:1px solid #000;
+  padding:var(--pad-sm) 0}
 .hr{flex:1;text-align:center}
 .hr .t{font-size:var(--xs)}
 .hr .ic{margin:1px auto}
@@ -365,11 +387,17 @@ CSS = """
 /* The days ahead: name, sky, chance of rain, high and low. */
 .days{border-top:1px solid #000;padding-top:var(--pad-sm)}
 .dy{display:flex;align-items:center;gap:var(--pad-sm);
-  padding:calc(var(--pad-sm) / 2) 0}
+  padding:var(--pad-sm) 0}
+/* Dotted, and not on the first. Five solid black hairlines in a 150px stack
+   is heavier than the design ever was -- and the design's own separators are
+   #ececec, which thresholds to nothing at 1-bit anyway. */
+.dy + .dy{border-top:1px dotted #000}
 .dy .d{font-size:var(--sm);font-weight:500;width:2.4em;flex:none}
 .dy .p{font-size:var(--xs);width:2.6em;flex:none}
 .dy .mx{margin-left:auto;font-size:var(--fs);font-weight:500}
-.dy .mn{font-size:var(--sm);width:2.4em;text-align:right}
+/* Beside the maximum, not exiled to the right edge: they are a pair, and a
+   fixed right-aligned column made them read as two unrelated numbers. */
+.dy .mn{font-size:var(--sm);margin-left:.45em}
 .big{font-size:var(--hero);font-weight:600;letter-spacing:-.02em;line-height:1}
 .wx-place{font-size:var(--lg);margin-top:var(--pad-sm)}
 .sub{font-size:var(--fs);margin-top:2px}

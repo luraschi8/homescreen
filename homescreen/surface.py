@@ -58,8 +58,17 @@ def describe(caps) -> dict:
 
 
 def fits(screen: dict, *, shape=None, min_short=0, min_w=0, min_h=0,
+         max_short=None, max_w=None, max_h=None,
          max_aspect=None, min_aspect=None) -> bool:
-    """Does this screen satisfy a set of requirements? Never raises."""
+    """Does this screen satisfy a set of requirements? Never raises.
+
+    The maximums exist so a set of requirements can be DISJOINT. With
+    minimums alone, "a strip is shallow" is inexpressible -- an entry saying
+    only `min_aspect: 4.0` matches every wide rectangle including tall ones,
+    so it had to be written first and it then shadowed the shapes below it.
+    Bounded on both sides, at most one entry matches any glass, and the order
+    they are written in stops mattering.
+    """
     screen = screen if isinstance(screen, dict) else describe(None)
     if shape is not None and screen.get("shape") != shape:
         return False
@@ -67,8 +76,17 @@ def fits(screen: dict, *, shape=None, min_short=0, min_w=0, min_h=0,
         return False
     if screen.get("w", 0) < min_w or screen.get("h", 0) < min_h:
         return False
+    if max_short is not None and screen.get("short", 0) > max_short:
+        return False
+    if max_w is not None and screen.get("w", 0) > max_w:
+        return False
+    if max_h is not None and screen.get("h", 0) > max_h:
+        return False
     aspect = screen.get("aspect", 0.0)
-    if max_aspect is not None and aspect > max_aspect:
+    # EXCLUSIVE, so `min_aspect: 4.0` and `max_aspect: 4.0` partition the
+    # axis at 4.0 rather than both claiming it. A boundary owned by two
+    # entries is an overlap, and an overlap is the ordering hazard back again.
+    if max_aspect is not None and aspect >= max_aspect:
         return False
     if min_aspect is not None and aspect < min_aspect:
         return False

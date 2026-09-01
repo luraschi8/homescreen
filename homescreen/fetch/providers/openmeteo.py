@@ -25,7 +25,7 @@ PARAMS = (
     {"key": "lon", "label": "Longitud", "type": "float"},
     {"key": "units", "label": "Unidades", "type": "choice",
      "choices": ("metric", "imperial"), "default": "metric"},
-    {"key": "days", "label": "Días de previsión", "type": "int", "default": 5},
+    {"key": "days", "label": "Días de previsión", "type": "int", "default": 6},
     {"key": "place", "label": "Nombre del sitio", "type": "text", "default": ""},
 )
 
@@ -69,7 +69,10 @@ def clean_params(raw: dict) -> dict:
     units = (raw or {}).get("units")
     return {"lat": round(lat, 4), "lon": round(lon, 4),
             "units": units if units in ("metric", "imperial") else "metric",
-            "days": max(1, min(7, _weather.epoch((raw or {}).get("days")) or 5)),
+            # SIX, because the panel shows five days from TOMORROW. Asking
+            # for five and dropping today left four rows under a heading that
+            # promises five.
+            "days": max(1, min(8, _weather.epoch((raw or {}).get("days")) or 6)),
             # Carried through, because this vendor answers coordinates and has
             # no name to give back. Part of the job key, so two screens
             # labelling the same coordinates differently are still one fetch

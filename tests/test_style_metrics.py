@@ -185,3 +185,42 @@ def test_no_scene_redefines_a_shared_class():
         for token in re.findall(r"^\.([\w-]+)\{", css, re.M):
             assert token not in shared, (
                 f"{name} redefines the shared .{token}; give it its own name")
+
+
+# --- the hero is sized for the SHAPE, not the region --------------------------
+
+def test_a_panel_hero_leaves_room_for_what_sits_under_it():
+    # `hero = inner * 0.55` assumes the region holds one line. A `panel` holds
+    # three stacked blocks -- current conditions, an hourly strip, a list of
+    # days -- and a 56px number in a 335px column ate 42px to say one thing,
+    # next to a 28px icon that then looked like a mistake.
+    tall = _style.metrics(321, 335, shape="panel")
+    assert 30 <= tall["hero"] <= 40, tall
+
+
+def test_a_card_hero_is_bigger_than_a_panels_because_it_stands_alone():
+    card = _style.metrics(417, 168, shape="card")
+    panel = _style.metrics(321, 335, shape="panel")
+    assert card["hero"] > panel["hero"], (card, panel)
+
+
+def test_a_strip_has_no_hero_at_all():
+    # One line along a band: a headline would be the line.
+    strip = _style.metrics(764, 62, shape="strip")
+    assert strip["hero"] <= strip["lg"] + 2, strip
+
+
+def test_an_unnamed_shape_keeps_the_old_behaviour():
+    # Every caller that does not name a shape must get exactly what it got
+    # before, or this change is a silent redesign of eight components.
+    for w, h in (FULL, MASTHEAD, MARKETS, COLUMN):
+        assert _style.metrics(w, h) == _style.metrics(w, h, shape=None)
+    assert _style.metrics(*FULL)["hero"] == 56
+
+
+def test_the_declared_tiers_still_fit_the_region():
+    for shape in ("strip", "badge", "card", "panel"):
+        for w, h in (FULL, MASTHEAD, MARKETS, COLUMN, (417, 168)):
+            got = _style.metrics(w, h, shape=shape)
+            assert got["pad"] * 2 + got["hero"] <= h, (shape, w, h, got)
+            assert got["fs"] >= 10, (shape, w, h, got)

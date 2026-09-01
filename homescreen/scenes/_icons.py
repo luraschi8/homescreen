@@ -12,15 +12,30 @@ blob; strokes at the sizes here threshold cleanly.
 
 from __future__ import annotations
 
-#: Stroke gets HEAVIER as the icon shrinks. A 1px stroke at the panel's ~124
-#: DPI thresholds to a dotted line, so a 13px icon needs a proportionally
-#: fatter pen than a 28px one to survive the same threshold.
+#: What a stroke must measure ON THE GLASS. Below one device pixel a stroke is
+#: drawn as partial coverage, which is a grey, and the panel has no greys -- so
+#: the threshold either eats it or turns it into a dotted line depending on
+#: where it happened to fall. A little over one gives it somewhere to land.
+_TARGET_DEVICE_PX = 1.25
+
+#: The box the paths are drawn in. A `stroke-width` is in THESE units, and its
+#: weight on the glass is `width * px / VIEWBOX`.
+VIEWBOX = 40
+
+
 def _stroke(px: int) -> float:
-    if px >= 24:
-        return 1.6
-    if px >= 16:
-        return 1.8
-    return 2.2
+    """Stroke width in user units, for a constant weight on the glass.
+
+    The first version of this was a ladder of literals -- 1.6, 1.8, 2.2 --
+    written as though they were device pixels. They are not: at 13px that is
+    0.72 device px and at 28px it is 1.12, so the SMALLEST icon got the
+    THINNEST pen, which is the exact opposite of the intent stated beside it.
+    It was also discontinuous the wrong way, a 16px icon drawing thinner than
+    a 15px one.
+
+    Arithmetic rather than a table, so it cannot drift again.
+    """
+    return round(_TARGET_DEVICE_PX * VIEWBOX / max(1, int(px)), 2)
 
 
 #: Drawn in a 40x40 box and scaled, so one set of coordinates serves every
@@ -56,7 +71,8 @@ def sky(name: str, px: int) -> str:
     if not path:
         return ""
     px = max(8, int(px))
-    return (f'<svg class="ic" viewBox="0 0 40 40" width="{px}" height="{px}" '
+    return (f'<svg class="ic" viewBox="0 0 {VIEWBOX} {VIEWBOX}" '
+            f'width="{px}" height="{px}" '
             f'aria-hidden="true" fill="none" stroke="#000" '
             f'stroke-width="{_stroke(px)}" stroke-linecap="round" '
             f'stroke-linejoin="round">{path}</svg>')

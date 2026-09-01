@@ -22,7 +22,15 @@ MIN_PX = 10
 
 #: SPEC SS9's Madrid clock, and the ceiling for any headline.
 HERO_PX = 56
-def metrics(width: int, height: int) -> dict:
+
+#: How much of a region's inner height the headline may take, by SHAPE.
+#:
+#: `panel` stacks three blocks under it, so it gets the least. `card` stands
+#: alone, so it gets the most. `strip` is one line ALONG a band -- a headline
+#: there would BE the line, so it is sized as body text. None is the old
+#: behaviour, unchanged, for every caller that does not name a shape.
+_HERO_SHARE = {"panel": 0.115, "card": 0.30, "badge": 0.42, "strip": 0.0}
+def metrics(width: int, height: int, shape: str | None = None) -> dict:
     """The type ladder and spacing for a region of this size, in WHOLE pixels.
 
     Computed here rather than expressed in CSS because `compose` puts every
@@ -51,7 +59,14 @@ def metrics(width: int, height: int) -> dict:
     if pad * 2 + row > height:              # a band too shallow for padding
         pad = max(0, (height - row) // 2)
         inner = max(1, height - 2 * pad)
-    hero = max(fs, min(HERO_PX, round(inner * 0.55)))
+    # The headline is sized for what the SHAPE has to hold, not for the
+    # region's height. `inner * 0.55` assumes one line: it gives a 335px
+    # column a 56px number, which is right for a clock face standing alone and
+    # 65% too big above an hourly strip and five days of forecast.
+    #
+    # An unnamed shape keeps the old arithmetic exactly, because eight
+    # components still call it that way and this must not redesign them.
+    hero = max(fs, min(HERO_PX, round(inner * _HERO_SHARE.get(shape, 0.55))))
     return {
         "pad": pad,
         "pad_sm": max(1, round(pad * 0.4)),
@@ -101,8 +116,9 @@ def empty(note: str, hint: str = "") -> str:
     return f'<div class="nothing"><div>{note}</div>{tail}</div>'
 
 
-def page(width: int, height: int, body: str, extra_css: str = "") -> str:
-    m = metrics(width, height)
+def page(width: int, height: int, body: str, extra_css: str = "",
+         shape: str | None = None) -> str:
+    m = metrics(width, height, shape=shape)
     # On `html,body` rather than `:root`: `compose.scope_css` rewrites both to
     # the placement's wrapper, so the properties stay inside their own region
     # and two fragments on one page cannot overwrite each other's scale.

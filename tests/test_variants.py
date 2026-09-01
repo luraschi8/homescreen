@@ -118,3 +118,75 @@ def test_a_component_that_declares_nothing_still_works():
     # shape, therefore crash".
     ctx_variant = scenes.variant_for("blank", CELL)
     assert ctx_variant is not None
+
+
+# --- the ordering hazard, ended rather than worked around ---------------------
+#
+# `variant_for` returns the first match and the constraints were all MINIMUMS,
+# so a permissive entry matched every larger glass and shadowed a stricter one.
+# The reachability test above is an EXISTENCE check: it caught the case where a
+# shape was unreachable everywhere, and missed partial shadowing -- `strip`
+# swallowed 600x140, 800x200 and 417x104, blocks with room for a list, while
+# `card` stayed reachable at 417x121 and the test stayed green.
+
+def _grid():
+    return [{"w": w, "h": h, "depth": 1}
+            for w in range(24, 801, 8) for h in range(24, 481, 8)]
+
+
+def test_no_geometry_matches_two_shapes():
+    # With disjoint entries, first-match-wins is a no-op and the hazard is
+    # gone -- rather than guarded by a comment telling the next person to
+    # order carefully.
+    from homescreen import surface as _surface
+    for name in scenes.names():
+        declared = [s for s in scenes.surfaces(name) if s.get("variant")]
+        if len(declared) < 2:
+            continue
+        for caps in _grid():
+            screen = _surface.describe(caps)
+            hit = [s["variant"] for s in declared
+                   if _surface.fits(screen, **{k: v for k, v in s.items()
+                                               if k != "variant" and k != "at"})]
+            assert len(hit) <= 1, (name, caps, hit)
+
+
+def test_every_shape_is_reached_at_the_size_it_was_written_for():
+    # An entry states the rectangle it was designed for, so "designed for"
+    # becomes an executable claim. Reachability somewhere is not the same as
+    # reachability WHERE IT MATTERS.
+    for name in scenes.names():
+        for spec in scenes.surfaces(name):
+            at = spec.get("at")
+            if not at:
+                continue
+            caps = {"w": at[0], "h": at[1], "depth": 1}
+            got = scenes.variant_for(name, caps)
+            assert got == spec["variant"], (name, at, spec["variant"], got)
+
+
+def test_a_misspelled_constraint_is_refused_rather_than_ignored():
+    # `except TypeError: continue` swallows an entry naming a key `fits` does
+    # not have, so it silently never matches. A shape that can never be
+    # reached is dead code nobody notices.
+    from homescreen import surface as _surface
+    import inspect
+    allowed = set(inspect.signature(_surface.fits).parameters) | {"variant", "at"}
+    for name in scenes.names():
+        for spec in scenes.surfaces(name):
+            unknown = set(spec) - allowed
+            assert not unknown, f"{name} declares {unknown}"
+
+
+def test_an_undeclared_geometry_does_not_invent_a_shape():
+    # Falling back to a global default handed a component a shape it never
+    # declared: `quotes` at 127x62 reported "panel". Harmless only while
+    # nothing branches on it, and branching on it is the whole point.
+    for name in scenes.names():
+        declared = {s.get("variant") for s in scenes.surfaces(name)
+                    if s.get("variant")}
+        if not declared:
+            continue
+        for caps in ({"w": 127, "h": 62, "depth": 1}, {"w": 800, "h": 480}):
+            got = scenes.variant_for(name, caps)
+            assert got is None or got in declared, (name, caps, got)

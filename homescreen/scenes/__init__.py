@@ -220,9 +220,17 @@ def variant_for(name: str, caps):
         # Geometry not declared yet. Unknown is not the same as too small, and
         # judging a device before it has said what it is would disable every
         # component on a board that has only just called in.
-        return DEFAULT_VARIANT
+        #
+        # The component's OWN first shape, not a global default: answering
+        # "panel" for a component that never declared one hands it a name it
+        # does not implement, and branching on that name is the whole point.
+        return declared[0].get("variant") or DEFAULT_VARIANT
     for spec in declared:
-        rules = {k: v for k, v in spec.items() if k != "variant"}
+        # `variant` names the shape and `at` records the rectangle it was
+        # written for; neither is a constraint. Passing them to `fits` raised
+        # TypeError, which the handler below swallows -- so every entry
+        # silently never matched and the component drew nothing anywhere.
+        rules = {k: v for k, v in spec.items() if k not in ("variant", "at")}
         try:
             if _surface.fits(screen, **rules):
                 return spec.get("variant") or DEFAULT_VARIANT

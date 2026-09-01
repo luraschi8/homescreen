@@ -477,3 +477,47 @@ def test_the_strip_still_shows_something_when_the_forecast_is_all_past():
         device={}, options=scenes.defaults("weather"), data=lambda req: reading)
     assert re.findall(r'<div class="t">(\d+)h</div>',
                       scenes.build("weather", ctx).html)
+
+
+def test_the_five_day_list_shows_five_days():
+    # It showed four: the provider was asked for 5 days and the panel drops
+    # today, so a heading promising five delivered four.
+    from homescreen.reading import Reading
+    day = 1_788_213_600
+    daily = [{"date": day + i * 86400, "min": 18.0 + i, "max": 33.0 + i,
+              "sky": "clear", "precip_pct": 0} for i in range(6)]
+    reading = Reading(data=dict(READING.data, tz_offset_s=7200, daily=daily),
+                      ok=True, age_s=60.0)
+    ctx = scenes.SceneContext(
+        cfg=CFG, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 321, "h": 335, "depth": 1}, now=float(day),
+        device={}, options=scenes.defaults("weather"), data=lambda req: reading)
+    html = scenes.build("weather", ctx).html
+    assert html.count('<div class="dy">') == 5, html.count('<div class="dy">')
+
+
+def test_a_dry_day_says_so_rather_than_leaving_a_hole():
+    from homescreen.reading import Reading
+    day = 1_788_213_600
+    daily = [{"date": day + i * 86400, "min": 18.0, "max": 33.0,
+              "sky": "clear", "precip_pct": 0 if i else 40} for i in range(3)]
+    reading = Reading(data=dict(READING.data, tz_offset_s=7200, daily=daily),
+                      ok=True, age_s=60.0)
+    ctx = scenes.SceneContext(
+        cfg=CFG, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 321, "h": 335, "depth": 1}, now=float(day),
+        device={}, options=scenes.defaults("weather"), data=lambda req: reading)
+    html = scenes.build("weather", ctx).html
+    assert '<div class="p">—</div>' in html
+
+
+def test_the_panel_hero_leaves_room_for_the_blocks_beneath_it():
+    from homescreen.reading import Reading
+    reading = Reading(data=READING.data, ok=True, age_s=60.0)
+    ctx = scenes.SceneContext(
+        cfg=CFG, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 321, "h": 335, "depth": 1}, now=1_788_213_600.0,
+        device={}, options=scenes.defaults("weather"), data=lambda req: reading)
+    html = scenes.build("weather", ctx).html
+    hero = int(re.search(r"--hero:(\d+)px", html).group(1))
+    assert 30 <= hero <= 40, f"hero is {hero}px above an hourly strip and 5 days"

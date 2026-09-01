@@ -113,7 +113,8 @@ def test_pixel_push_html_uses_only_the_two_inks(tmp_path, name):
                 f"{name} sets {prop}:{value.strip()} -- {token} is not an ink"
 
 
-@pytest.mark.parametrize("name", ["clock", "status", "planes"])
+@pytest.mark.parametrize("name", ["clock", "status", "planes", "weather",
+                                  "calendar", "quotes", "sport", "claude"])
 def test_pixel_push_type_is_whole_pixels_at_or_above_the_floor(tmp_path, name):
     # A 10px floor stated in px says nothing about `font-size:0.6rem`, and a
     # fractional px lands on a half-lit pixel that thresholding turns to grey.
