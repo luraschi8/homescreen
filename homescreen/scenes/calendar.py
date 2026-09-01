@@ -36,6 +36,9 @@ SURFACES = (
 )
 
 OPTIONS = (
+    {"key": "calendars", "label": "Calendarios", "type": "lines", "default": "",
+     "help": "Uno por línea: «Trabajo = https://…/basic.ics». El nombre es "
+             "opcional y aparece en cada evento cuando hay más de uno."},
     {"key": "url", "label": "URL del calendario (.ics)", "type": "text",
      "default": "",
      "help": "La dirección privada de Google/Apple. Sólo la ve el servidor."},
@@ -53,15 +56,48 @@ MONTHS = ("ene", "feb", "mar", "abr", "may", "jun",
           "jul", "ago", "sep", "oct", "nov", "dic")
 
 
+def sources(options: dict) -> list:
+    """(name, url) for every calendar this placement shows.
+
+    One per line, `Nombre = https://...`, with the name optional. Newlines
+    rather than commas because an ICS address may legally contain a comma, so
+    a comma-separated field would sometimes split a URL in half and nothing
+    in the value would say which had happened.
+
+    `url` is still read, because records written before this exist and must
+    keep working without a migration.
+    """
+    out, seen = [], set()
+    raw = str((options or {}).get("calendars") or "")
+    lines = [ln.strip() for ln in raw.replace("\r", "").split("\n")]
+    single = str((options or {}).get("url") or "").strip()
+    if single:
+        lines.append(single)
+    for line in lines:
+        if not line:
+            continue
+        name, sep, address = line.partition("=")
+        if not sep:
+            name, address = "", line
+        name, address = name.strip()[:16], address.strip()
+        if not address or address in seen:
+            continue
+        seen.add(address)
+        out.append((name, address))
+    return out
+
+
 def needs(options: dict, cfg: dict) -> tuple:
-    url = str((options or {}).get("url") or "").strip()
-    if not url:
-        return ()
     try:
         days = int((options or {}).get("days") or 14)
     except (TypeError, ValueError):
         days = 14
-    return ({"provider": "ics", "params": {"url": url, "days": days}},)
+    # One requirement per calendar. The fetcher keys a job on (provider,
+    # params), so two screens naming the same address share one fetch and two
+    # addresses are two -- which is what makes several calendars cost what
+    # they actually cost.
+    return tuple({"provider": "ics", "params": {"url": url, "days": days}}
+                 for _, url in sources(options))
 
 
 def _when(stamp: str, now: float) -> str:
@@ -85,9 +121,24 @@ def _when(stamp: str, now: float) -> str:
 def build(ctx: SceneContext) -> Scene:
     options = ctx.options or {}
     wanted = needs(options, ctx.cfg)
-    reading = (ctx.data(wanted[0]) if wanted and callable(ctx.data) else None)
-    reading = reading if reading is not None else Reading.nothing()
-    events = [e for e in (reading.get("events") or ()) if isinstance(e, dict)]
+    named = sources(options)
+    # Merged, then sorted by when they start. Two calendars shown as two
+    # blocks is two lists to read; one list is the thing you actually want
+    # when work and home overlap on a Tuesday.
+    readings = []
+    events = []
+    for requirement, (name, _url) in zip(wanted, named):
+        one = ctx.data(requirement) if callable(ctx.data) else None
+        one = one if one is not None else Reading.nothing()
+        readings.append(one)
+        for event in (one.get("events") or ()):
+            if isinstance(event, dict):
+                events.append({**event, "source": name})
+    events.sort(key=lambda e: str(e.get("when") or ""))
+    reading = readings[0] if readings else Reading.nothing()
+    # A marker on every row of a single-calendar agenda says the same thing
+    # four times.
+    show_source = len([n for n, _ in named if n]) > 1
 
     w = int(ctx.caps.get("w") or 240)
     h = int(ctx.caps.get("h") or 240)
@@ -141,7 +192,10 @@ def build(ctx: SceneContext) -> Scene:
         else events[:1]
     body = "".join(
         f'<div class="row"><div class="w">{_when(e.get("when"), ctx.now)}</div>'
-        f'<div class="s">{str(e.get("summary") or "")}</div></div>'
+        f'<div class="s">{str(e.get("summary") or "")}</div>'
+        + (f'<div class="src">{str(e.get("source") or "")}</div>'
+           if show_source and e.get("source") else "")
+        + '</div>'
         for e in shown)
     # The same thing the draw list says. An empty table is a 417x335 hole in
     # the dashboard with nothing to explain it, while the identical component
@@ -172,4 +226,8 @@ CSS = """
 .row .w{width:3.2em;flex:none;font-weight:500;font-size:var(--sm)}
 .row .s{min-width:0;flex:1;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
+/* Which calendar this came from. Small and last: it answers a question you
+   only ask about a row you have already read. */
+.row .src{flex:none;font-size:var(--xs);letter-spacing:.06em;
+  text-transform:uppercase}
 """ + EMPTY_CSS

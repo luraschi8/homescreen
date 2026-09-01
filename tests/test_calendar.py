@@ -220,3 +220,98 @@ def test_webcal_is_accepted_and_fetched_over_https():
     with pytest.raises(RuntimeError):
         fetch.providers.ics.fetch(params, session=Session())
     assert asked["url"] == "https://x/c.ics", "fetched over https"
+
+
+# --- several calendars in one block -------------------------------------------
+#
+# Two placements already gave two calendars, as two separate blocks. What was
+# missing was ONE agenda merging several, with each row saying where it came
+# from -- which is the thing you actually want when work and home overlap.
+
+def test_several_calendars_become_one_requirement_each():
+    from homescreen.scenes import calendar
+    need = calendar.needs(
+        {"calendars": "Trabajo = https://a.invalid/w.ics\n"
+                      "Casa = https://b.invalid/h.ics"}, {})
+    assert len(need) == 2
+    assert {n["params"]["url"] for n in need} == {
+        "https://a.invalid/w.ics", "https://b.invalid/h.ics"}
+
+
+def test_a_line_without_a_name_still_works():
+    from homescreen.scenes import calendar
+    need = calendar.needs({"calendars": "https://a.invalid/w.ics"}, {})
+    assert len(need) == 1
+    assert need[0]["params"]["url"] == "https://a.invalid/w.ics"
+
+
+def test_the_old_single_url_still_works():
+    # Records written before this existed carry `url`, and they must keep
+    # working without a migration.
+    from homescreen.scenes import calendar
+    need = calendar.needs({"url": "https://a.invalid/w.ics"}, {})
+    assert len(need) == 1
+
+
+def test_events_from_several_calendars_are_merged_in_time_order():
+    from homescreen.reading import Reading
+    from homescreen import scenes
+
+    def data(req):
+        url = req["params"]["url"]
+        if "w.ics" in url:
+            return Reading(data={"events": [
+                {"when": "2026-09-01T15:00:00+02:00", "summary": "Revisión"}]},
+                ok=True, age_s=10.0)
+        return Reading(data={"events": [
+            {"when": "2026-09-01T09:00:00+02:00", "summary": "Dentista"}]},
+            ok=True, age_s=10.0)
+
+    ctx = scenes.SceneContext(
+        cfg={}, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 417, "h": 200, "depth": 1}, now=1_788_260_000.0,
+        device={}, data=data,
+        options=scenes.clean_options("calendar", {
+            "calendars": "Trabajo = https://a.invalid/w.ics\n"
+                         "Casa = https://b.invalid/h.ics"}))
+    html = scenes.build("calendar", ctx).html
+    assert "Dentista" in html and "Revisión" in html
+    assert html.index("Dentista") < html.index("Revisión"), "time order"
+
+
+def test_each_row_says_which_calendar_it_came_from():
+    from homescreen.reading import Reading
+    from homescreen import scenes
+
+    def data(req):
+        name = "w" if "w.ics" in req["params"]["url"] else "h"
+        return Reading(data={"events": [
+            {"when": "2026-09-01T15:00:00+02:00", "summary": f"cita {name}"}]},
+            ok=True, age_s=10.0)
+
+    ctx = scenes.SceneContext(
+        cfg={}, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 417, "h": 200, "depth": 1}, now=1_788_260_000.0,
+        device={}, data=data,
+        options=scenes.clean_options("calendar", {
+            "calendars": "Trabajo = https://a.invalid/w.ics\n"
+                         "Casa = https://b.invalid/h.ics"}))
+    html = scenes.build("calendar", ctx).html
+    assert "Trabajo" in html and "Casa" in html
+
+
+def test_one_calendar_alone_is_not_labelled():
+    # A source marker on every row of a single-calendar agenda is noise: it
+    # says the same thing four times.
+    from homescreen.reading import Reading
+    from homescreen import scenes
+    reading = Reading(data={"events": [
+        {"when": "2026-09-01T15:00:00+02:00", "summary": "Revisión"}]},
+        ok=True, age_s=10.0)
+    ctx = scenes.SceneContext(
+        cfg={}, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 417, "h": 200, "depth": 1}, now=1_788_260_000.0,
+        device={}, data=lambda req: reading,
+        options=scenes.clean_options("calendar", {
+            "calendars": "Trabajo = https://a.invalid/w.ics"}))
+    assert "Trabajo" not in scenes.build("calendar", ctx).html

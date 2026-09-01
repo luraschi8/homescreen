@@ -33,7 +33,14 @@ SURFACES = (
      "min_short": 90, "min_h": 240},
 )
 
+#: Which sources a line may name, and what identifier each one wants.
+SOURCES = {"futbol": "football", "nba": "nba", "f1": "f1"}
+
 OPTIONS = (
+    {"key": "teams", "label": "Equipos", "type": "lines", "default": "",
+     "help": "Uno por línea: «Madrid = futbol:86», «Lakers = nba:LAL», "
+             "«F1 = f1». El nombre es opcional y aparece en cada fila "
+             "cuando hay más de uno."},
     {"key": "team", "label": "ID del equipo", "type": "int", "default": 0,
      "help": "Ver football-data.org. 86 = Real Madrid, 81 = Barcelona."},
     {"key": "days", "label": "Días por delante", "type": "int", "default": 30},
@@ -49,18 +56,60 @@ LIVE = {"IN_PLAY", "PAUSED"}
 WEEKDAYS = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
 
 
-def needs(options: dict, cfg: dict) -> tuple:
-    try:
-        team = int((options or {}).get("team") or 0)
-    except (TypeError, ValueError):
-        return ()
-    if team <= 0:
-        return ()
+def follows(options: dict) -> list:
+    """(name, provider, params) for every team or series this block shows.
+
+    One per line, `Nombre = fuente:id`. `futbol` wants a numeric
+    football-data.org team, `nba` a three-letter code, `f1` nothing at all --
+    a season has no team to follow.
+
+    `team` is still read, because records written before this exist and must
+    keep working without a migration.
+    """
     try:
         days = int((options or {}).get("days") or 30)
     except (TypeError, ValueError):
         days = 30
-    return ({"provider": "football", "params": {"team": team, "days": days}},)
+
+    lines = [ln.strip() for ln in
+             str((options or {}).get("teams") or "").replace("\r", "").split("\n")]
+    legacy = str((options or {}).get("team") or "").strip()
+    if legacy and legacy not in ("0", ""):
+        lines.append(f"futbol:{legacy}")
+
+    out, seen = [], set()
+    for line in lines:
+        if not line:
+            continue
+        name, sep, rest = line.partition("=")
+        if not sep:
+            name, rest = "", line
+        name, rest = name.strip()[:16], rest.strip()
+        source, _, ident = rest.partition(":")
+        provider = SOURCES.get(source.strip().lower())
+        if not provider:
+            continue                     # a source we cannot fetch is dropped
+        ident = ident.strip()
+        if provider == "football":
+            try:
+                params = {"team": int(ident), "days": days}
+            except (TypeError, ValueError):
+                continue
+        elif provider == "nba":
+            params = {"team": ident.upper(), "days": days}
+        else:
+            params = {"season": "current"}
+        key = (provider, tuple(sorted(params.items())))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((name, provider, params))
+    return out
+
+
+def needs(options: dict, cfg: dict) -> tuple:
+    return tuple({"provider": provider, "params": params}
+                 for _, provider, params in follows(options))
 
 
 def _pick(matches, now: float):
@@ -80,6 +129,26 @@ def _pick(matches, now: float):
         if when >= moment and match.get("status") not in FINISHED:
             return when, match
     return parsed[-1]
+
+
+def _parse(matches) -> list:
+    """(datetime, match) for every readable fixture, in time order.
+
+    Shared with `_pick`, so a block and a cell agree on what the fixtures ARE
+    and differ only in how many they show.
+    """
+    parsed = []
+    for match in matches or ():
+        if not isinstance(match, dict):
+            continue
+        try:
+            when = datetime.fromisoformat(
+                str(match.get("when", "")).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        parsed.append((when, match))
+    parsed.sort(key=lambda p: p[0])
+    return parsed
 
 
 def _when(when, now: float) -> str:
@@ -126,16 +195,30 @@ def _upcoming(matches, now: float, limit: int) -> list:
     # Nothing ahead: the most recent results, so the block says something
     # rather than collapsing between seasons.
     chosen = ahead[:limit] or _parse(matches)[-limit:]
-    return [(_when(w, now), str(m.get("home") or ""), str(m.get("away") or ""))
-            for w, m in chosen]
+    return [(_when(w, now), str(m.get("home") or ""), str(m.get("away") or ""),
+             str(m.get("source") or "")) for w, m in chosen]
 
 
 def build(ctx: SceneContext) -> Scene:
     options = ctx.options or {}
     wanted = needs(options, ctx.cfg)
-    reading = (ctx.data(wanted[0]) if wanted and callable(ctx.data) else None)
-    reading = reading if reading is not None else Reading.nothing()
-    when, match = _pick(reading.get("matches"), ctx.now)
+    # Merged across every source, then sorted. Three separate blocks is
+    # three lists to read; one is what you want when the Madrid game and the
+    # Lakers game are on the same evening.
+    followed = follows(ctx.options or {})
+    readings, matches = [], []
+    for requirement, (name, _p, _q) in zip(wanted, followed):
+        one = ctx.data(requirement) if callable(ctx.data) else None
+        one = one if one is not None else Reading.nothing()
+        readings.append(one)
+        for entry in (one.get("matches") or ()):
+            if isinstance(entry, dict):
+                matches.append({**entry, "source": name})
+    reading = readings[0] if readings else Reading.nothing()
+    # A marker on every row of a single-team block says the same thing three
+    # times.
+    show_source = len([n for n, _p, _q in followed if n]) > 1
+    when, match = _pick(matches, ctx.now)
 
     w = int(ctx.caps.get("w") or 240)
     h = int(ctx.caps.get("h") or 240)
@@ -185,12 +268,12 @@ def build(ctx: SceneContext) -> Scene:
     elif ctx.variant in ("card", "panel"):
         # A fixture with no date is not information. The draw list has
         # computed the kickoff all along and the HTML threw it away.
-        upcoming = _upcoming(reading.get("matches"), ctx.now,
-                             max(1, ctx.rows))
+        upcoming = _upcoming(matches, ctx.now, max(1, ctx.rows))
         inner = '<div class="list">' + "".join(
             f'<div class="row"><div class="t">{home} — {away}</div>'
-            f'<div class="k">{kick}</div></div>'
-            for kick, home, away in upcoming) + "</div>"
+            + (f'<div class="src">{src}</div>' if show_source and src else "")
+            + f'<div class="k">{kick}</div></div>'
+            for kick, home, away, src in upcoming) + "</div>"
     else:
         inner = (f'<div class="big">{match.get("home", "")} — '
                  f'{match.get("away", "")}</div>')
@@ -212,4 +295,8 @@ CSS = """
 .row .t{min-width:0;flex:1;font-weight:500;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 .row .k{flex:none;font-size:var(--sm)}
+/* Which team or series this row belongs to. Small and before the time: it
+   answers a question you only ask about a row you have already read. */
+.row .src{flex:none;font-size:var(--xs);letter-spacing:.06em;
+  text-transform:uppercase}
 """ + EMPTY_CSS

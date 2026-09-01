@@ -480,6 +480,14 @@ def clean_options(name: str, raw) -> dict:
         elif kind == "choice":
             allowed = tuple(field.get("choices", ()))
             out[key] = value if value in allowed else field.get("default")
+        elif kind == "lines":
+            # Newlines preserved, everything else about it a text field. The
+            # cap is per LIST rather than per line, and blank lines go: an
+            # operator pasting three URLs leaves a trailing newline and that
+            # is not a fourth calendar.
+            text = "" if value is None else str(value)
+            kept = [ln.strip() for ln in text.replace("\r", "").split("\n")]
+            out[key] = "\n".join(ln for ln in kept if ln)[:MAX_OPTION_LEN * 4]
         else:
             text = "" if value is None else str(value)
             out[key] = text.strip()[:MAX_OPTION_LEN]

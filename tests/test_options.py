@@ -56,8 +56,15 @@ def test_every_declared_option_has_what_the_form_needs():
         for field in scenes.option_schema(name):
             assert field.get("key"), f"{name}: option without a key"
             assert field.get("label"), f"{name}: {field['key']} has no label"
-            assert field.get("type") in ("text", "int", "bool", "choice"), \
-                f"{name}: {field['key']} has an unrenderable type"
+            # Asked of the RENDERER rather than compared against a literal
+            # list: a hardcoded list has to be edited every time a type is
+            # added, and until someone does it reports a working field as
+            # broken. This asks whether the thing can actually be drawn.
+            from homescreen.web.fields import field as render
+            markup = render(field, field.get("default"))
+            assert any(tag in markup for tag in
+                       ("<input", "<select", "<textarea")), \
+                f"{name}: {field['key']} renders no control"
             assert "default" in field, f"{name}: {field['key']} has no default"
             if field["type"] == "choice":
                 assert field.get("choices"), f"{name}: {field['key']} has no choices"

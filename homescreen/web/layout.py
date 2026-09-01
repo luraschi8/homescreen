@@ -98,7 +98,10 @@ fieldset.optgroup .stack{gap:1rem}
 input[type=text],input[type=number],input[type=url],select,textarea{
   font:inherit;font-size:.9rem;padding:.45rem .6rem;color:var(--fg);
   background:var(--bg);border:1px solid var(--line);border-radius:7px;width:100%}
-input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+textarea{font:inherit;width:100%;resize:vertical;min-height:4.2em;
+  padding:.45rem .6rem;border:1px solid var(--line);border-radius:7px;
+  background:var(--panel);color:var(--fg);box-sizing:border-box}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
 label.check{display:flex;flex-direction:row;align-items:center;gap:.5rem;
   font-size:.86rem;color:var(--fg)}
 label.check input{width:auto}

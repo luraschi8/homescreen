@@ -309,6 +309,8 @@ _SAMPLE_PARAMS = {
     "quotes": {"symbol": "AAPL"},
     "ics": {"url": "https://example.invalid/c.ics", "days": 14},
     "football": {"team": 86, "days": 30},
+    "nba": {"team": "LAL", "days": 30},
+    "f1": {"season": "current"},
     "claude_usage": {"days": 30},
     "fx": {"base": "EUR", "symbols": "USD,GBP"},
 }

@@ -90,11 +90,11 @@ _CACHE: dict = {}
 def _modules() -> dict:
     if not _CACHE:
         try:
-            from homescreen.fetch.providers import (adsb, claude_usage,
-                                                   football, fx, ics,
+            from homescreen.fetch.providers import (adsb, claude_usage, f1,
+                                                   football, fx, ics, nba,
                                                    openmeteo, openweather,
                                                    quotes)
-            for module in (adsb, claude_usage, football, fx, ics,
+            for module in (adsb, claude_usage, f1, football, fx, ics, nba,
                            openmeteo, openweather, quotes):
                 if not NAME_RE.match(getattr(module, "NAME", "")):
                     log.error("provider %r has an unusable NAME; not registered",
