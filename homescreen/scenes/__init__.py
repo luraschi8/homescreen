@@ -317,9 +317,10 @@ def clean_poll_s(value):
 
 
 def _registry() -> dict:
-    from homescreen.scenes import (blank, calendar, claude, clock, planes,
-                                   quotes, sport, status, weather)
+    from homescreen.scenes import (blank, calendar, claude, clock, date,
+                                   planes, quotes, sport, status, weather)
     return {"clock": clock.build, "status": status.build, "blank": blank.build,
+            "date": date.build,
             "planes": planes.build, "weather": weather.build,
             "quotes": quotes.build, "calendar": calendar.build,
             "sport": sport.build, "claude": claude.build}

@@ -54,6 +54,17 @@ TEMPLATES = {
         "label": "panel compuesto",
         # Four regions on glass under this size gives bands too short for
         # legible text; the smallest is the masthead at 11% of height.
+        # The lines that carry the arrangement, as FRACTIONS like the regions.
+        # They belong to the template rather than to any component: the rule
+        # down the gutter divides two regions and is nobody's internal
+        # decoration, and a component that drew one had it leak across the
+        # page.
+        #
+        # (x1, y1, x2, y2). Only horizontal and vertical -- a diagonal
+        # hairline is the worst case for a hard threshold.
+        "rules": ((0.0, 0.1104, 1.0, 0.1104),        # under the masthead
+                  (0.560, 0.131, 0.560, 0.829),      # down the gutter
+                  (0.0225, 0.8313, 0.9775, 0.8313)), # above the markets band
         "requires": {"shape": "rect", "min_w": 600, "min_h": 380,
                      "min_aspect": 1.2},
         "regions": {

@@ -133,7 +133,9 @@ def test_a_composed_view_reaches_the_renderer_as_one_page(ctx):
     view = layout.view_for(stored, "panel")
     assert len(view["placements"]) == 3, "all three survived validation"
     html = compose.compose(view, {"w": 800, "h": 480, "depth": 1}, _build)
-    assert html.count("position:absolute") == 3
+    # Three placements plus the template's own rules, which are also
+    # absolutely positioned.
+    assert html.count('id="rg-') == 3
 
 
 # --- Several placements in one region ----------------------------------------
@@ -291,3 +293,46 @@ def test_a_component_cannot_size_itself_out_of_its_region():
             flat = rule.replace(" ", "")
             assert "width:100%" not in flat, (wrapper, rule)
             assert "height:100%" not in flat, (wrapper, rule)
+
+
+# --- the arrangement's own rules ----------------------------------------------
+#
+# The design's structure is carried by RULES: under the masthead, down the
+# gutter between the columns, above the markets band. The composer drew none
+# of them, so a composed page was blocks of text floating with nothing between
+# them -- and the only full-width line on it was a component's internal rule
+# leaking out of its region.
+
+def test_the_template_draws_its_own_rules():
+    html = compose.compose(VIEW, EPAPER, _build)
+    assert 'class="rg-rule"' in html, "the arrangement draws nothing structural"
+
+
+def test_a_rule_is_one_black_pixel():
+    # CLAUDE.md: only #000 and #fff, and hierarchy from size and weight. A
+    # rule is the one structural mark available, so it has to be exact.
+    html = compose.compose(VIEW, EPAPER, _build)
+    for style in re.findall(r'class="rg-rule"[^>]*style="([^"]+)"', html):
+        assert "background:#000" in style.replace(" ", "")
+        assert "width:1px" in style.replace(" ", "") or \
+            "height:1px" in style.replace(" ", ""), style
+
+
+def test_the_rules_are_where_the_design_puts_them():
+    html = compose.compose(VIEW, EPAPER, _build)
+    styles = re.findall(r'class="rg-rule"[^>]*style="([^"]+)"', html)
+    flat = [s.replace(" ", "") for s in styles]
+    # Under the masthead, full width.
+    assert any("top:53px" in s and "width:800px" in s for s in flat), flat
+    # Down the gutter, full column height.
+    assert any("width:1px" in s and "top:63px" in s for s in flat), flat
+    # Above the markets band.
+    assert any("width:764px" in s and "top:399px" in s for s in flat), flat
+
+
+def test_a_single_region_template_draws_no_rules():
+    # There is nothing to divide. A line across a one-thing screen is a mark
+    # that means nothing.
+    single = {"template": "single", "placements": [
+        {"id": "a", "region": "full", "component": "clock", "options": {}}]}
+    assert 'class="rg-rule"' not in compose.compose(single, EPAPER, _build)

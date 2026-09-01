@@ -161,12 +161,43 @@ def compose(view: dict, caps: dict, build_scene) -> str:
         bodies.append(f'<div id="{wrapper}">{body}</div>')
     if not bodies:
         return ""
+    bodies.extend(_rules(layout.TEMPLATES.get(template) or {}, caps))
     width = int(caps.get("w") or 800)
     height = int(caps.get("h") or 480)
     return (f'<!doctype html><meta charset="utf-8"><style>{BASE_CSS}'
             f'html,body{{width:{width}px;height:{height}px;'
             f'position:relative;margin:0}}'
             f'{"".join(styles)}</style>{"".join(bodies)}')
+
+
+def _rules(spec: dict, caps: dict) -> list:
+    """The template's own lines, in pixels.
+
+    The design's whole structure is carried by these -- under the masthead,
+    down the gutter, above the markets band -- and the composer drew none of
+    them. A composed page was blocks of text floating side by side, and the
+    only full-width line on it was a component's internal rule leaking out of
+    its region.
+
+    They belong to the TEMPLATE because a line between two regions is not any
+    component's decoration.
+    """
+    from homescreen import surface
+    screen = surface.describe(caps)
+    w, h = int(screen.get("w") or 0), int(screen.get("h") or 0)
+    if not w or not h:
+        return []
+    out = []
+    for x1, y1, x2, y2 in spec.get("rules") or ():
+        left, top = round(x1 * w), round(y1 * h)
+        # One pixel in the thin direction, exactly. A rule two pixels wide on
+        # 1-bit glass is twice the ink and twice the ghosting.
+        width = max(1, round((x2 - x1) * w))
+        height = max(1, round((y2 - y1) * h))
+        out.append(f'<div class="rg-rule" style="position:absolute;'
+                   f'left:{left}px;top:{top}px;width:{width}px;'
+                   f'height:{height}px;background:#000"></div>')
+    return out
 
 
 def _escape(value: str) -> str:

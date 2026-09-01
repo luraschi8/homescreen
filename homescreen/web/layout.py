@@ -191,7 +191,7 @@ _SCENE_LABELS = {"unassigned": "sin asignar", "pending": "esperando aprobación"
                  "clock": "reloj", "weather": "tiempo", "quotes": "cotizaciones",
                  "calendar": "agenda", "sport": "deportes", "planes": "aviones",
                  "claude": "uso de Claude", "blank": "en blanco",
-                 "status": "estado"}
+                 "status": "estado", "date": "fecha"}
 
 
 def scene_label(scene) -> str:

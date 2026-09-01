@@ -64,7 +64,11 @@ CSS = """
 .sub{font-size:var(--sub);font-weight:500;line-height:1;
   margin-top:var(--pad-sm)}
 .city{margin-top:4px}
-.foot{margin-top:auto}
+/* A band: everything along the line, with air between the pairs. */
+.wrap.row{flex-direction:row;align-items:baseline;gap:.35em}
+.wrap.row .big{line-height:1}
+.wrap.row .sub{margin-top:0;margin-left:.9em}
+.wrap.row .lab{align-self:center}
 """
 
 
@@ -98,6 +102,36 @@ def _clocks(cfg: dict, now: float, options: dict) -> list[tuple[str, str]]:
     return out
 
 
+def _body(variant: str, primary, rest) -> str:
+    """The arrangement for this SHAPE.
+
+    It used to stack vertically at every size, and then append a rule and an
+    ISO timestamp. In an 800x53 masthead that is a hero, two labels, a second
+    time and a rule inside 53 pixels: everything below the first line was
+    clipped, and the rule was the stray divider showing under the masthead.
+
+    The stamp is gone entirely. `2026-09-01 14:07` is an operator artefact on
+    Spanish-facing glass, and the masthead's own `actualizado` is the honest
+    version of what it was trying to say.
+    """
+    if variant in ("strip", "badge"):
+        # Along the line, because a band has no room to stack a label under a
+        # number -- which is why the second city was invisible in the header.
+        parts = [f'<span class="big">{primary[1]}</span>',
+                 f'<span class="lab">{primary[0]}</span>']
+        for label, value in rest:
+            parts.append(f'<span class="sub">{value}</span>'
+                         f'<span class="lab">{label}</span>')
+        return f'<div class="wrap row">{"".join(parts)}</div>'
+
+    out = [f'<div class="wrap"><div class="big">{primary[1]}</div>',
+           f'<div class="lab city">{primary[0]}</div>']
+    for label, value in rest:
+        out.append(f'<div class="sub">{value}</div>'
+                   f'<div class="lab city">{label}</div>')
+    return "".join(out) + "</div>"
+
+
 def build(ctx: SceneContext) -> Scene:
     w = int(ctx.caps.get("w") or 800)
     h = int(ctx.caps.get("h") or 480)
@@ -105,14 +139,7 @@ def build(ctx: SceneContext) -> Scene:
     if not clocks:
         clocks = [("", "--:--")]
     primary, rest = clocks[0], clocks[1:]
-    body = [f'<div class="wrap"><div class="big">{primary[1]}</div>',
-            f'<div class="lab city">{primary[0]}</div>']
-    for label, value in rest:
-        body.append(f'<div class="sub">{value}</div>'
-                    f'<div class="lab city">{label}</div>')
-    stamp = datetime.fromtimestamp(ctx.now).strftime("%Y-%m-%d %H:%M")
-    body.append(f'<div class="foot"><div class="rule"></div>'
-                f'<div class="ter" style="margin-top:6px">{stamp}</div></div></div>')
+    body = _body(ctx.variant, primary, rest)
 
     # The same clocks as instructions. A 240x240 round panel has room for one
     # time and its label plus a second city small at the rim -- deciding that
@@ -135,4 +162,4 @@ def build(ctx: SceneContext) -> Scene:
 
     return Scene(layout="fill", components=components,
                  poll_s=poll_s, poll_max_s=1 if seconds else 60,
-                 html=page(w, h, "".join(body), CSS))
+                 html=page(w, h, body, CSS, shape=ctx.variant))

@@ -225,9 +225,12 @@ def _body(variant: str, reading, place: str, temp: str, unit: str,
         # The unit ALWAYS. `place or unit` dropped it whenever the place was
         # named, so C and F rendered identically -- the same bug as "the unit
         # vanished with the place name", reintroduced in the HTML path.
-        label = f"{place} {unit}".strip() if place else unit
-        return (f'<div class="wrap badge"><div class="big">{temp}</div>'
-                f'<div class="wx-place">{label}</div></div>')
+        # The unit rides ON the number. As its own line it wrapped to a
+        # second row in a 116px cell and sat under the temperature looking
+        # like a separate reading.
+        return (f'<div class="wrap badge">'
+                f'<div class="big">{temp}{unit}</div>'
+                f'<div class="wx-place">{place}</div></div>')
 
     if variant == "card":
         return (f'<div class="wrap card">'
