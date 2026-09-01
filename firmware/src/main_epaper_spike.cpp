@@ -105,6 +105,38 @@ void setup() {
   Serial.println("[epaper] Now the negative. Whichever of the two read");
   Serial.println("[epaper] correctly tells us the panel's polarity.");
 
+  delay(6000);
+
+  // The question the L cannot answer. That probe used GxEPD2's own colour
+  // constants; a FRAME is raw bytes, and CLAUDE.md fixes the wire format at
+  // 1 = black, corrected against the driver source after the addendum had it
+  // backwards. Whether GxEPD2's drawImage agrees is a separate fact, and
+  // assuming it renders a photographic negative -- which is the exact failure
+  // that correction exists to prevent.
+  //
+  // So: a buffer whose LEFT half has every bit SET and whose right half is
+  // clear. One look answers it.
+  started = millis();
+  uint8_t* frame = (uint8_t*)malloc(kFrameBytes);
+  if (frame == nullptr) {
+    Serial.println("[epaper] could not allocate a frame; skipping raw probe");
+  } else {
+    const int stride = kWidth / 8;                  // 100 bytes a row
+    for (int y = 0; y < kHeight; ++y) {
+      for (int b = 0; b < stride; ++b) {
+        frame[y * stride + b] = (b < stride / 2) ? 0xFF : 0x00;
+      }
+    }
+    display.setFullWindow();
+    display.drawImage(frame, 0, 0, kWidth, kHeight, false, false, false);
+    free(frame);
+    report("full refresh, raw bytes", started);
+    Serial.println("[epaper] RAW PROBE: the LEFT half is the half whose bits");
+    Serial.println("[epaper] are SET (our 1). If the left half is BLACK, our");
+    Serial.println("[epaper] frames go straight through. If it is WHITE, the");
+    Serial.println("[epaper] client must invert every byte.");
+  }
+
   // On every path, including the ones that go wrong. Omitting it is the most
   // common cause of a dead panel.
   display.hibernate();

@@ -320,3 +320,50 @@ def test_a_radar_nobody_configured_behaves_exactly_as_before(tmp_path):
     registry.assign(tmp_path, HW, scene="planes")
     body = client.get(f"/api/devices/{HW}/scene?{q}").get_json()
     assert body["components"][0]["radius_km"] == 60.0, "the server's own default"
+
+
+# --- the v6 clock block ------------------------------------------------------
+
+def test_the_clock_block_puts_each_city_under_its_own_time():
+    # The design: a time with its city NAME beneath it, the sun times beside
+    # it, a rule where the mockup drew an obelisk, then the second city. It
+    # stacked all four lines vertically instead, so a 417x100 block showed a
+    # time, a label, a time and a label down the left edge.
+    import pathlib
+    import re
+    import tempfile
+    from homescreen import scenes
+    ctx = scenes.SceneContext(
+        cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+        cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 417, "h": 120, "depth": 1}, now=1_788_290_000.0, device={},
+        options=scenes.clean_options("clock", {
+            "timezone": "Europe/Madrid", "second_label": "BS AS",
+            "second_timezone": "America/Argentina/Buenos_Aires"}))
+    html = scenes.build("clock", ctx).html
+    body = html.split("</style>")[-1]
+    assert 'class="wrap block"' in body, body[:200]
+    # Two columns, each a TIME followed by its own label.
+    columns = re.findall(
+        r'<div class="c"><div class="(big|sub)">([^<]+)</div>'
+        r'<div class="lab">([^<]*)</div></div>', body)
+    assert len(columns) == 2, body
+    assert columns[0][1] and columns[0][2], columns
+    assert columns[1][1] and columns[1][2], columns
+    assert columns[0][0] == "big" and columns[1][0] == "sub", \
+        "the home city leads and the second is smaller"
+    # And a rule between them, where the obelisk was.
+    assert '<div class="bar"></div>' in body
+
+
+def test_the_masthead_clock_stays_on_one_line():
+    import pathlib
+    import tempfile
+    from homescreen import scenes
+    ctx = scenes.SceneContext(
+        cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+        cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 800, "h": 53, "depth": 1}, now=1_788_290_000.0, device={},
+        options=scenes.clean_options("clock", {"timezone": "Europe/Madrid"}))
+    body = (scenes.build("clock", ctx).html or "").split("</style>")[-1]
+    assert 'class="wrap row"' in body

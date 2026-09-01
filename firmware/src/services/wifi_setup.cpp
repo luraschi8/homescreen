@@ -140,10 +140,16 @@ void onPortalParamsSaved() {
 void attachPortalParams(WiFiManager& wm) {
   refreshPortalParamDefaults();
   wm.addParameter(&s_param_server);
+#ifndef EPAPER_CLIENT
+  // The radar's centre and its unit preferences. Offered only where they can
+  // do something: on the e-paper client they are four fields that change
+  // nothing, which is the kind of setup screen that costs somebody an
+  // afternoon wondering why the coordinates had no effect.
   wm.addParameter(&s_param_lat);
   wm.addParameter(&s_param_lon);
   wm.addParameter(&s_param_miles);
   wm.addParameter(&s_param_runways);
+#endif
   wm.setSaveParamsCallback(onPortalParamsSaved);
 }
 

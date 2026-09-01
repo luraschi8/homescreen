@@ -9,11 +9,12 @@ preview. Neither invents layout, so the preview cannot drift from the glass.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from homescreen.scenes import Scene, SceneContext
 from homescreen import draw
+from homescreen.scenes._icons import sky as sky_icon
 from homescreen.scenes._style import page
 
 #: What an operator can set per assignment. The dashboard renders fields from
@@ -43,6 +44,9 @@ SURFACES = (
 )
 
 OPTIONS = (
+    {"key": "show_sun", "label": "Mostrar amanecer y atardecer", "type": "bool",
+     "default": True,
+     "help": "Usa el tiempo que ya trae esta pantalla; no pide nada extra."},
     {"key": "timezone", "label": "Zona horaria", "type": "text",
      "default": "",
      # The dashboard renders this as a list the browser filters as you type.
@@ -69,6 +73,19 @@ CSS = """
 .wrap.row .big{line-height:1}
 .wrap.row .sub{margin-top:0;margin-left:.9em}
 .wrap.row .lab{align-self:center}
+
+/* Side by side: time over city, sun times, a rule, the second city. */
+.wrap.block{flex-direction:row;align-items:flex-end;gap:.7em}
+.wrap.block .c{min-width:0}
+.wrap.block .big{line-height:1}
+.wrap.block .sub{margin-top:0}
+/* Where the mockup drew an obelisk. A 1px rule for a fiftieth of the ink. */
+.wrap.block .bar{width:1px;align-self:stretch;background:#000;
+  margin:0 .2em}
+.wrap.block .sun{display:flex;flex-direction:column;gap:2px;
+  font-size:var(--sm);font-weight:500}
+.wrap.block .sun div{display:flex;align-items:center;gap:3px;
+  white-space:nowrap}
 """
 
 
@@ -102,7 +119,37 @@ def _clocks(cfg: dict, now: float, options: dict) -> list[tuple[str, str]]:
     return out
 
 
-def _body(variant: str, primary, rest) -> str:
+def _sun(ctx) -> str:
+    """Sunrise and sunset, beside the clock, as the v6 design has them.
+
+    Read from whatever weather reading this screen already has rather than
+    fetched again: the envelope has carried `sunrise`/`sunset` since the day
+    the fields were added and nothing has read them until now.
+    """
+    if not (ctx.options or {}).get("show_sun", True):
+        return ""
+    try:
+        from homescreen.scenes import weather as _weather
+        wanted = _weather.needs(ctx.options or {}, ctx.cfg)
+        reading = ctx.data(wanted[0]) if wanted and callable(ctx.data) else None
+    except Exception:                                   # noqa: BLE001
+        return ""
+    if reading is None:
+        return ""
+    rise, set_ = reading.get("sunrise"), reading.get("sunset")
+    if rise is None or set_ is None:
+        return ""
+    offset = reading.get("tz_offset_s") or 0
+
+    def clock(stamp):
+        moment = datetime.fromtimestamp(int(stamp) + int(offset), timezone.utc)
+        return moment.strftime("%H:%M")
+
+    return (f'<div>{sky_icon("clear", 13)}<span>{clock(rise)}</span></div>'
+            f'<div>{sky_icon("cloud", 13)}<span>{clock(set_)}</span></div>')
+
+
+def _body(variant: str, primary, rest, sun: str = "") -> str:
     """The arrangement for this SHAPE.
 
     It used to stack vertically at every size, and then append a rule and an
@@ -124,12 +171,20 @@ def _body(variant: str, primary, rest) -> str:
                          f'<span class="lab">{label}</span>')
         return f'<div class="wrap row">{"".join(parts)}</div>'
 
-    out = [f'<div class="wrap"><div class="big">{primary[1]}</div>',
-           f'<div class="lab city">{primary[0]}</div>']
+    # The design's clock block, side by side. Each city is its time with its
+    # name UNDER it, the sun times sit beside the first, and a 1px rule stands
+    # where the mockup drew a stone obelisk -- which is a grey illustration
+    # and thresholds to nothing, so it becomes the divider it was acting as.
+    columns = [f'<div class="c"><div class="big">{primary[1]}</div>'
+               f'<div class="lab">{primary[0]}</div></div>']
+    if sun:
+        columns.append(f'<div class="sun">{sun}</div>')
     for label, value in rest:
-        out.append(f'<div class="sub">{value}</div>'
-                   f'<div class="lab city">{label}</div>')
-    return "".join(out) + "</div>"
+        columns.append('<div class="bar"></div>')
+        columns.append(f'<div class="c"><div class="sub">{value}</div>'
+                       f'<div class="lab">{label}</div></div>')
+    return f'<div class="wrap block">{"".join(columns)}</div>'
+
 
 
 def build(ctx: SceneContext) -> Scene:
@@ -139,7 +194,7 @@ def build(ctx: SceneContext) -> Scene:
     if not clocks:
         clocks = [("", "--:--")]
     primary, rest = clocks[0], clocks[1:]
-    body = _body(ctx.variant, primary, rest)
+    body = _body(ctx.variant, primary, rest, _sun(ctx))
 
     # The same clocks as instructions. A 240x240 round panel has room for one
     # time and its label plus a second city small at the rim -- deciding that
