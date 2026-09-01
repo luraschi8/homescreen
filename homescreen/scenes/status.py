@@ -25,9 +25,10 @@ SURFACES = ({"min_short": 90},
                                            # somewhere it can be drawn
 
 CSS = """
-.wrap{padding:18px;display:flex;flex-direction:column;height:100%;
+.wrap{padding:var(--pad);display:flex;flex-direction:column;height:100%;
   align-items:center;justify-content:center;text-align:center}
-.hw{font-size:20px;font-weight:500;margin:10px 0 4px;
+.hw{font-size:var(--lg);font-weight:500;
+  margin:var(--pad-sm) 0 4px;
   font-family:'DejaVu Sans Mono',monospace}
 .msg{margin-top:10px;max-width:80%}
 """

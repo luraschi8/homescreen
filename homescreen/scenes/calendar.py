@@ -117,16 +117,30 @@ def build(ctx: SceneContext) -> Scene:
     body = "".join(
         f'<tr><td class="w">{_when(e.get("when"), ctx.now)}</td>'
         f'<td>{str(e.get("summary") or "")}</td></tr>' for e in events[:8])
+    # The same thing the draw list says. An empty table is a 417x335 hole in
+    # the dashboard with nothing to explain it, while the identical component
+    # on the round panel said "sin calendario" -- one component cannot be
+    # forthcoming on one screen and silent on another.
+    if not body:
+        note = ("sin calendario" if not wanted else "nada a la vista")
+        hint = ("a\u00f1ade una URL .ics" if not wanted
+                else f"pr\u00f3ximos {options.get('days', 14)} d\u00edas")
+        body_html = (f'<div class="empty"><div>{note}</div>'
+                     f'<div class="hint">{hint}</div></div>')
+    else:
+        body_html = f'<table>{body}</table>'
     return Scene(layout="fill",
                  components=({"c": "calendar", "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,
-                 html=page(w, h, f'<div class="wrap"><table>{body}</table></div>',
-                           CSS))
+                 html=page(w, h, f'<div class="wrap">{body_html}</div>', CSS))
 
 
 CSS = """
-.wrap{padding:18px;height:100%}
-table{width:100%;border-collapse:collapse;font-size:22px}
-td{padding:7px 0;border-bottom:1px solid #000;vertical-align:top}
+.wrap{padding:var(--pad);height:100%}
+table{width:100%;border-collapse:collapse;font-size:var(--lg)}
+td{padding:var(--pad-sm) 0;border-bottom:1px solid #000;vertical-align:top}
 .w{width:9em;font-weight:600}
+.empty{height:100%;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;text-align:center;font-size:var(--lg)}
+.empty .hint{font-size:var(--fs);margin-top:var(--pad-sm)}
 """

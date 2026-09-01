@@ -169,10 +169,10 @@ def _scene(ctx, w, h, instructions, *, poll_s, body) -> Scene:
 
 
 CSS = """
-.wrap{padding:18px;height:100%;display:flex;align-items:center}
-table{width:100%;border-collapse:collapse;font-size:22px}
-td{padding:6px 0;border-bottom:1px solid #000}
+.wrap{padding:var(--pad);height:100%;display:flex;align-items:center}
+table{width:100%;border-collapse:collapse;font-size:var(--lg)}
+td{padding:var(--pad-sm) 0;border-bottom:1px solid #000}
 .sym{font-weight:600}
 .px{text-align:right;font-variant-numeric:tabular-nums}
-.ch{text-align:right;width:6em;font-size:18px}
+.ch{text-align:right;width:6em;font-size:var(--fs)}
 """

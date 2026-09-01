@@ -179,10 +179,10 @@ def build(ctx: SceneContext) -> Scene:
 
 
 CSS = """
-.wrap{padding:18px;display:flex;flex-direction:column;height:100%;
+.wrap{padding:var(--pad);display:flex;flex-direction:column;height:100%;
   justify-content:center}
-.big{font-size:64px;font-weight:600;letter-spacing:-.02em;line-height:1}
-.lab{font-size:20px;margin-top:6px}
-.sub{font-size:16px;margin-top:2px}
-.ter{font-size:14px;margin-top:10px}
+.big{font-size:var(--hero);font-weight:600;letter-spacing:-.02em;line-height:1}
+.lab{font-size:var(--lg);margin-top:var(--pad-sm)}
+.sub{font-size:var(--fs);margin-top:2px}
+.ter{font-size:var(--sm);margin-top:var(--pad-sm)}
 """

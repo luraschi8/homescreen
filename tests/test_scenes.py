@@ -118,13 +118,32 @@ def test_pixel_push_type_is_whole_pixels_at_or_above_the_floor(tmp_path, name):
     # A 10px floor stated in px says nothing about `font-size:0.6rem`, and a
     # fractional px lands on a half-lit pixel that thresholding turns to grey.
     html = scenes.build(name, ctx(tmp_path)).html
+    # The ladder is declared once as custom properties and referenced by name,
+    # so resolve it before checking. The invariant is unchanged -- every size
+    # that reaches the panel is a whole pixel at or above the floor -- but it
+    # is now a property of the LADDER as well as of each use of it.
+    ladder = {f"--{n}": v for n, v in
+              re.findall(r"(--[\w-]+)\s*:\s*(\d+)px", html)}
+    ladder = {n: int(v) for n, v in
+              re.findall(r"(--[\w-]+)\s*:\s*(\d+)px", html)}
+    for token, value in ladder.items():
+        assert value >= 1, f"{name} declares {token} as {value}px"
     sizes = re.findall(r"font-size\s*:\s*([^;\"'}]+)", html)
     assert sizes, f"{name} sets no type size at all"
     for raw in sizes:
         value = raw.strip()
-        m = re.fullmatch(r"(\d+)px", value)
-        assert m, f"{name} sizes type as {value!r}; only whole px is honest here"
-        assert int(m.group(1)) >= 10, f"{name} has type below the 10px floor"
+        ref = re.fullmatch(r"var\((--[\w-]+)\)", value)
+        if ref:
+            assert ref.group(1) in ladder, \
+                f"{name} uses undeclared {ref.group(1)}"
+            resolved = ladder[ref.group(1)]
+        else:
+            m = re.fullmatch(r"(\d+)px", value)
+            assert m, (f"{name} sizes type as {value!r}; only whole px, or a "
+                       f"ladder step that is one, is honest here")
+            resolved = int(m.group(1))
+        assert resolved >= 10, \
+            f"{name} has type below the 10px floor ({value} = {resolved}px)"
 
 
 @pytest.mark.parametrize("name", ["clock", "status", "planes"])

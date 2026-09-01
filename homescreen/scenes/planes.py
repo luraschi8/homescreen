@@ -65,9 +65,9 @@ OPTIONS = (
 )
 
 CSS = """
-.wrap{padding:18px;display:flex;flex-direction:column;height:100%}
+.wrap{padding:var(--pad);display:flex;flex-direction:column;height:100%}
 table{width:100%;border-collapse:collapse;margin-top:8px}
-td{padding:3px 0;font-size:13px}
+td{padding:2px 0;font-size:var(--fs)}
 td.r{text-align:right}
 tr+tr td{border-top:1px dotted #000}
 .foot{margin-top:auto}

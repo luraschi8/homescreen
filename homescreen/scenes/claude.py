@@ -73,8 +73,8 @@ def build(ctx: SceneContext) -> Scene:
 
 
 CSS = """
-.wrap{padding:18px;height:100%;display:flex;flex-direction:column;
+.wrap{padding:var(--pad);height:100%;display:flex;flex-direction:column;
   justify-content:center}
-.big{font-size:64px;font-weight:600;line-height:1}
-.lab{font-size:20px;margin-top:6px}
+.big{font-size:var(--hero);font-weight:600;line-height:1}
+.lab{font-size:var(--lg);margin-top:var(--pad-sm)}
 """

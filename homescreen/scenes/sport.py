@@ -144,7 +144,7 @@ def build(ctx: SceneContext) -> Scene:
 
 
 CSS = """
-.wrap{padding:18px;height:100%;display:flex;align-items:center;
+.wrap{padding:var(--pad);height:100%;display:flex;align-items:center;
   justify-content:center}
-.big{font-size:36px;font-weight:600;text-align:center}
+.big{font-size:var(--sub);font-weight:600;text-align:center}
 """

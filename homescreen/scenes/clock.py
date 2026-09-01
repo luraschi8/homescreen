@@ -42,9 +42,10 @@ OPTIONS = (
 )
 
 CSS = """
-.wrap{padding:18px;display:flex;flex-direction:column;height:100%}
-.big{font-size:56px;font-weight:500;letter-spacing:-.02em;line-height:1}
-.sub{font-size:31px;font-weight:500;line-height:1;margin-top:14px}
+.wrap{padding:var(--pad);display:flex;flex-direction:column;height:100%}
+.big{font-size:var(--hero);font-weight:500;letter-spacing:-.02em;line-height:1}
+.sub{font-size:var(--sub);font-weight:500;line-height:1;
+  margin-top:var(--pad-sm)}
 .city{margin-top:4px}
 .foot{margin-top:auto}
 """
