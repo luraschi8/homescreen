@@ -14,7 +14,19 @@ from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._style import EMPTY_CSS, empty, page
 
-SURFACES = ({"min_short": 90},)
+#: DISJOINT; see `weather.SURFACES` for why the maximums are what make that
+#: true rather than the order.
+SURFACES = (
+    {"variant": "strip", "at": (764, 62),
+     "min_w": 200, "min_h": 24, "max_h": 110, "min_aspect": 4.0},
+    {"variant": "badge", "at": (127, 62),
+     "min_w": 90, "min_h": 40, "max_h": 110, "max_aspect": 4.0},
+    # v6's AGENDA block is 417x104 under its heading: four rows.
+    {"variant": "card", "at": (417, 150),
+     "min_short": 90, "min_h": 111, "max_h": 239},
+    {"variant": "panel", "at": (417, 335),
+     "min_short": 90, "min_w": 200, "min_h": 240},
+)
 
 OPTIONS = (
     {"key": "url", "label": "URL del calendario (.ics)", "type": "text",
@@ -114,9 +126,16 @@ def build(ctx: SceneContext) -> Scene:
                       else "normal")
             for e, slot in zip(events[:rows], slots)]
 
+    # As many as the region holds, not eight. The HTML hard-coded a count
+    # while `build` computed a fit for the DRAW list and used neither -- so a
+    # 318px block was handed eight rows and clipped the last one through its
+    # x-height, which is worse than dropping it.
+    shown = events[:max(1, ctx.rows)] if ctx.variant in ("card", "panel") \
+        else events[:1]
     body = "".join(
-        f'<tr><td class="w">{_when(e.get("when"), ctx.now)}</td>'
-        f'<td>{str(e.get("summary") or "")}</td></tr>' for e in events[:8])
+        f'<div class="row"><div class="w">{_when(e.get("when"), ctx.now)}</div>'
+        f'<div class="s">{str(e.get("summary") or "")}</div></div>'
+        for e in shown)
     # The same thing the draw list says. An empty table is a 417x335 hole in
     # the dashboard with nothing to explain it, while the identical component
     # on the round panel said "sin calendario" -- one component cannot be
@@ -131,12 +150,19 @@ def build(ctx: SceneContext) -> Scene:
     return Scene(layout="fill",
                  components=({"c": "calendar", "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,
-                 html=page(w, h, f'<div class="wrap">{body_html}</div>', CSS))
+                 html=page(w, h, f'<div class="wrap">{body_html}</div>', CSS,
+                           shape=ctx.variant))
 
 
 CSS = """
 .wrap{padding:var(--pad);height:100%}
-table{width:100%;border-collapse:collapse;font-size:var(--lg)}
-td{padding:var(--pad-sm) 0;border-bottom:1px solid #000;vertical-align:top}
-.w{width:9em;font-weight:600}
+/* A fixed time column and a weight change carry the rows. The design's own
+   separators are #ececec, which thresholds to nothing at 1-bit, so a solid
+   black rule under every line is not a translation of it -- it is a ledger. */
+.list{display:flex;flex-direction:column;justify-content:center;height:100%}
+.row{display:flex;gap:var(--pad-sm);align-items:baseline;
+  padding:var(--pad-sm) 0;font-size:var(--fs)}
+.row .w{width:3.2em;flex:none;font-weight:500;font-size:var(--sm)}
+.row .s{min-width:0;flex:1;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
 """ + EMPTY_CSS

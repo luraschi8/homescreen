@@ -116,6 +116,19 @@ def empty(note: str, hint: str = "") -> str:
     return f'<div class="nothing"><div>{note}</div>{tail}</div>'
 
 
+def rows(width: int, height: int, shape: str | None = None) -> int:
+    """How many body lines fit in a region of this size.
+
+    Shared, because `calendar`, `sport` and `quotes` all need the number and
+    three private answers is exactly the drift the variant work exists to
+    stop. `calendar` hard-coded eight rows in its HTML while computing a fit
+    for its draw list and using neither.
+    """
+    m = metrics(width, height, shape=shape)
+    usable = max(0, int(height) - 2 * m["pad"])
+    return max(0, usable // max(1, m["row"]))
+
+
 def page(width: int, height: int, body: str, extra_css: str = "",
          shape: str | None = None) -> str:
     m = metrics(width, height, shape=shape)

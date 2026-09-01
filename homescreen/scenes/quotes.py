@@ -18,6 +18,7 @@ from __future__ import annotations
 from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
+from homescreen.scenes import _icons
 from homescreen.scenes._style import EMPTY_CSS, empty, page
 
 #: The Finnhub key is NOT an option here. Credentials come from the provider's
@@ -27,11 +28,23 @@ from homescreen.scenes._style import EMPTY_CSS, empty, page
 #:
 #: A price and a percentage. Less demanding than the radar; about the same as
 #: the clock, since it is two lines of text.
-SURFACES = (# A square-ish panel, or a ticker cell in a wide band. SPEC SS9's markets
-            # row is six of the latter, 127x62 each, and until this second entry
-            # existed the band that row was designed for could hold nothing.
-            {"min_short": 90},
-            {"min_w": 110, "min_h": 40})
+#: DISJOINT, so the order these are written in does not matter. See
+#: `weather.SURFACES` for why maximums are what make that true.
+SURFACES = (
+    # The whole band: every symbol along it, evenly spread.
+    {"variant": "strip", "at": (764, 62),
+     "min_w": 200, "min_h": 24, "max_h": 110, "min_aspect": 4.0},
+    # One cell of a markets band. SPEC SS9's row is six of these, and the
+    # design stacks three lines in each: symbol, price, change.
+    {"variant": "badge", "at": (127, 62),
+     "min_w": 90, "min_h": 40, "max_h": 110, "max_aspect": 4.0},
+    # A block: as many rows as fit.
+    {"variant": "card", "at": (417, 150),
+     "min_short": 90, "min_h": 111, "max_h": 239},
+    # A column of them.
+    {"variant": "panel", "at": (321, 335),
+     "min_short": 90, "min_w": 200, "min_h": 240},
+)
 
 OPTIONS = (
     {"key": "symbols", "label": "Símbolos", "type": "text",
@@ -158,26 +171,87 @@ def build(ctx: SceneContext) -> Scene:
         # trick the clock uses for the minute boundary.
         poll_s = max(1, int(every - (ctx.now % every)))
 
-    rows = "".join(
-        f'<tr><td class="sym">{s}</td><td class="px">'
-        f'{_fmt_price(readings[s].get("price"))}</td>'
-        f'<td class="ch">{_fmt_change(readings[s].get("change_pct"))[0]}</td></tr>'
-        for s in symbols)
     return _scene(ctx, w, h, instructions, poll_s=poll_s,
-                  body=f'<div class="wrap"><table>{rows}</table></div>')
+                  body=_body(ctx.variant, symbols, readings))
+
+
+def _cell(symbol: str, reading) -> str:
+    """One quote as three stacked lines: what a markets cell is made of."""
+    pct = reading.get("change_pct")
+    direction = "" if pct is None else ("up" if pct >= 0 else "down")
+    delta = "" if pct is None else f"{abs(float(pct)):.2f}%"
+    return (f'<div class="q"><div class="sym">{symbol}</div>'
+            f'<div class="px">{_fmt_price(reading.get("price"))}</div>'
+            f'<div class="ch">{_icons.arrow(direction, 10)}'
+            f'<span>{delta}</span></div></div>')
+
+
+def _body(variant: str, symbols, readings) -> str:
+    """The arrangement for this SHAPE.
+
+    `stacked` used to decide this and reached only the round panel; the HTML
+    was a `<table>` at every size, so a 117x62 markets cell got a three-column
+    table with a 6em change column inside 120px of usable width and ran
+    `AAPL228.40` together.
+    """
+    if not symbols:
+        return f'<div class="wrap">{empty("sin símbolos", "añade alguno en los ajustes")}</div>'
+
+    if variant == "badge":
+        # ONE symbol. A cell that rotates is a cell you cannot read at a
+        # glance, and the band already has five more of them.
+        return f'<div class="wrap badge">{_cell(symbols[0], readings[symbols[0]])}</div>'
+
+    if variant == "strip":
+        # Every symbol along the band, evenly spread rather than huddled in
+        # the leftmost 200px.
+        inner = "".join(_cell(s, readings[s]) for s in symbols)
+        return f'<div class="wrap strip">{inner}</div>'
+
+    rows = "".join(
+        f'<div class="row"><div class="sym">{s}</div>'
+        f'<div class="px">{_fmt_price(readings[s].get("price"))}</div>'
+        f'<div class="ch">{_fmt_change(readings[s].get("change_pct"))[0]}</div>'
+        f'</div>' for s in symbols)
+    return f'<div class="wrap list">{rows}</div>' 
 
 
 def _scene(ctx, w, h, instructions, *, poll_s, body) -> Scene:
     return Scene(layout="fill",
                  components=({"c": "quotes", "draw": instructions},),
                  poll_s=poll_s, poll_max_s=300,
-                 html=page(w, h, body, CSS))
+                 html=page(w, h, body, CSS, shape=ctx.variant))
 
 
 CSS = """
 .wrap{padding:var(--pad);height:100%;display:flex;align-items:center}
-table{width:100%;border-collapse:collapse;font-size:var(--lg)}
-td{padding:var(--pad-sm) 0;border-bottom:1px solid #000}
+
+/* A quote as three lines. Tabular numerals so a column of prices lines up on
+   the decimal rather than wandering. */
+.q{min-width:0;text-align:left}
+.q .sym{font-size:var(--xs);font-weight:500;letter-spacing:.03em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.q .px{font-size:var(--lg);font-weight:500;font-variant-numeric:tabular-nums;
+  line-height:1.15}
+.q .ch{display:flex;align-items:center;gap:2px;font-size:var(--xs)}
+.ar{flex:none;display:block}
+
+.wrap.badge{align-items:center}
+/* Evenly spread along the band, not huddled at the left. */
+.wrap.strip{gap:var(--pad)}
+.wrap.strip .q{flex:1}
+
+/* A list. No rule under each row: the design separates these with whitespace
+   and a weight change, and a black hairline under every line reads as a
+   ledger. */
+.wrap.list{flex-direction:column;align-items:stretch;justify-content:center}
+.row{display:flex;align-items:baseline;gap:var(--pad-sm);
+  padding:var(--pad-sm) 0;font-size:var(--fs)}
+.row + .row{border-top:1px dotted #000}
+.row .sym{font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.row .px{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:500}
+.row .ch{font-size:var(--sm);width:5.4em;text-align:right}
+td{padding:var(--pad-sm) 0}
 .sym{font-weight:600}
 .px{text-align:right;font-variant-numeric:tabular-nums}
 .ch{text-align:right;width:6em;font-size:var(--fs)}

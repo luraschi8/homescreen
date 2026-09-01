@@ -11,8 +11,16 @@ from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._style import page
 
-SURFACES = ({"min_short": 90},
-            {"min_w": 110, "min_h": 40})   # a number and its label
+SURFACES = (
+    {"variant": "strip", "at": (764, 62),
+     "min_w": 200, "min_h": 24, "max_h": 110, "min_aspect": 4.0},
+    {"variant": "badge", "at": (127, 62),
+     "min_w": 90, "min_h": 40, "max_h": 110, "max_aspect": 4.0},
+    {"variant": "card", "at": (417, 150),
+     "min_short": 90, "min_h": 111, "max_h": 239},
+    {"variant": "panel", "at": (417, 335),
+     "min_short": 90, "min_w": 200, "min_h": 240},
+)
 
 OPTIONS = (
     {"key": "days", "label": "Días", "type": "int", "default": 30,

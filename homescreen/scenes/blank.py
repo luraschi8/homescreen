@@ -24,7 +24,7 @@ from homescreen.scenes._style import page
 #: Every screen, at any size. A blank panel has no legibility floor: there is
 #: nothing to read, which is the point. This is the one component that can be
 #: put in the narrowest cell of a markets band without lying about it.
-SURFACES = ({"min_w": 1, "min_h": 1},)
+SURFACES = ({"variant": "panel", "at": (127, 62), "min_w": 1, "min_h": 1},)
 
 OPTIONS = (
     {"key": "tone", "label": "Color", "type": "choice",

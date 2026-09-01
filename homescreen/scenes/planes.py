@@ -35,7 +35,9 @@ from homescreen.scenes._style import page
 #: A radar draws range rings, a heading vector and collision-laddered labels
 #: around a centre. Under this it is a smear: the innermost ring and the
 #: aircraft symbol overlap, and every label collides with every other.
-SURFACES = ({"min_short": 160},)
+#: Geometry, not text: it needs room in BOTH directions or it is a smear.
+#: The one component that correctly refuses a band.
+SURFACES = ({"variant": "panel", "at": (321, 335), "min_short": 160},)
 
 #: Per ASSIGNMENT, with the deployment's values as the defaults.
 #:

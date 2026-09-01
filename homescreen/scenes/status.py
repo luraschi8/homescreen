@@ -20,9 +20,23 @@ from homescreen.scenes._style import page
 #: serve.py routes every such device here whatever its glass -- so declaring
 #: itself rect-only was a lie that the router ignored, on the one scene that
 #: has to work on hardware nobody has configured yet.
-SURFACES = ({"min_short": 90},
-            {"min_w": 90, "min_h": 40})    # the fallback must always have
-                                           # somewhere it can be drawn
+#: The fallback, so it must have a shape EVERYWHERE. `safe_build` routes any
+#: failure here, including one inside an 800x53 masthead.
+SURFACES = (
+    {"variant": "strip", "at": (764, 62),
+     "min_w": 200, "min_h": 24, "max_h": 110, "min_aspect": 4.0},
+    {"variant": "badge", "at": (127, 62),
+     "min_w": 90, "min_h": 40, "max_h": 110, "max_aspect": 4.0},
+    {"variant": "card", "at": (417, 150),
+     "min_short": 90, "min_h": 111, "max_h": 239},
+    {"variant": "panel", "at": (417, 335),
+     "min_short": 90, "min_w": 200, "min_h": 240},
+    # Smaller than anything above: a broken panel still has to say so.
+    # `max_aspect` because without it this overlaps `strip` at 200x24 -- and
+    # an overlap is the ordering hazard back again.
+    {"variant": "badge", "at": (60, 30), "min_w": 40, "min_h": 24,
+     "max_h": 39, "max_aspect": 4.0},
+)
 
 CSS = """
 .wrap{padding:var(--pad);display:flex;flex-direction:column;height:100%;

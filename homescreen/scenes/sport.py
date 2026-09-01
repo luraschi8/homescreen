@@ -15,8 +15,18 @@ from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._style import EMPTY_CSS, empty, page
 
-SURFACES = ({"min_short": 90},
-            {"min_w": 150, "min_h": 40})   # two names need the extra width
+SURFACES = (
+    {"variant": "strip", "at": (764, 62),
+     "min_w": 200, "min_h": 24, "max_h": 110, "min_aspect": 4.0},
+    # Two team names need the extra width even in a cell.
+    {"variant": "badge", "at": (181, 62),
+     "min_w": 150, "min_h": 40, "max_h": 110, "max_aspect": 4.0},
+    # v6's DEPORTES block: three fixtures.
+    {"variant": "card", "at": (417, 150),
+     "min_short": 90, "min_h": 111, "max_h": 239},
+    {"variant": "panel", "at": (417, 335),
+     "min_short": 90, "min_w": 200, "min_h": 240},
+)
 
 OPTIONS = (
     {"key": "team", "label": "ID del equipo", "type": "int", "default": 0,
@@ -54,19 +64,9 @@ def _pick(matches, now: float):
     In that order because a live match beats everything, a fixture beats a
     result you have already seen, and an old result beats an empty screen.
     """
-    parsed = []
-    for match in matches or ():
-        if not isinstance(match, dict):
-            continue
-        try:
-            when = datetime.fromisoformat(
-                str(match.get("when", "")).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            continue
-        parsed.append((when, match))
+    parsed = _parse(matches)
     if not parsed:
         return None, None
-    parsed.sort(key=lambda p: p[0])
     for when, match in parsed:
         if match.get("status") in LIVE:
             return when, match
@@ -88,6 +88,41 @@ def _when(when, now: float) -> str:
     if 0 < delta < 7:
         return f"{WEEKDAYS[when.weekday()]} {clock}"
     return when.astimezone().strftime("%d/%m %H:%M")
+
+
+def _parse(matches) -> list:
+    """(datetime, match) for every readable fixture, in time order.
+
+    Shared with `_pick`, so a block and a cell agree on what the fixtures ARE
+    and differ only in how many they show.
+    """
+    parsed = []
+    for match in matches or ():
+        if not isinstance(match, dict):
+            continue
+        try:
+            when = datetime.fromisoformat(
+                str(match.get("when", "")).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        parsed.append((when, match))
+    parsed.sort(key=lambda p: p[0])
+    return parsed
+
+
+def _upcoming(matches, now: float, limit: int) -> list:
+    """The next `limit` fixtures as (when, home, away).
+
+    `_pick` answers with ONE, which is right for a cell and wrong for a block:
+    the design's DEPORTES section lists three.
+    """
+    moment = datetime.fromtimestamp(now, timezone.utc)
+    ahead = [(w, m) for w, m in _parse(matches) if w >= moment]
+    # Nothing ahead: the most recent results, so the block says something
+    # rather than collapsing between seasons.
+    chosen = ahead[:limit] or _parse(matches)[-limit:]
+    return [(_when(w, now), str(m.get("home") or ""), str(m.get("away") or ""))
+            for w, m in chosen]
 
 
 def build(ctx: SceneContext) -> Scene:
@@ -142,17 +177,34 @@ def build(ctx: SceneContext) -> Scene:
         inner = empty("sin equipo", "elige uno en los ajustes")
     elif match is None:
         inner = empty("sin partidos", "en el periodo elegido")
+    elif ctx.variant in ("card", "panel"):
+        # A fixture with no date is not information. The draw list has
+        # computed the kickoff all along and the HTML threw it away.
+        upcoming = _upcoming(reading.get("matches"), ctx.now,
+                             max(1, ctx.rows))
+        inner = '<div class="list">' + "".join(
+            f'<div class="row"><div class="t">{home} — {away}</div>'
+            f'<div class="k">{kick}</div></div>'
+            for kick, home, away in upcoming) + "</div>"
     else:
         inner = (f'<div class="big">{match.get("home", "")} — '
                  f'{match.get("away", "")}</div>')
     body = f'<div class="wrap">{inner}</div>' 
     return Scene(layout="fill",
                  components=({"c": "sport", "draw": instructions},),
-                 poll_s=POLL_S, poll_max_s=POLL_S, html=page(w, h, body, CSS))
+                 poll_s=POLL_S, poll_max_s=POLL_S,
+                 html=page(w, h, body, CSS, shape=ctx.variant))
 
 
 CSS = """
 .wrap{padding:var(--pad);height:100%;display:flex;align-items:center;
   justify-content:center}
 .big{font-size:var(--sub);font-weight:600;text-align:center}
+.list{display:flex;flex-direction:column;justify-content:center;
+  width:100%;height:100%}
+.row{display:flex;gap:var(--pad-sm);align-items:baseline;
+  padding:var(--pad-sm) 0;font-size:var(--fs)}
+.row .t{min-width:0;flex:1;font-weight:500;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.row .k{flex:none;font-size:var(--sm)}
 """ + EMPTY_CSS

@@ -190,3 +190,36 @@ def test_an_undeclared_geometry_does_not_invent_a_shape():
         for caps in ({"w": 127, "h": 62, "depth": 1}, {"w": 800, "h": 480}):
             got = scenes.variant_for(name, caps)
             assert got is None or got in declared, (name, caps, got)
+
+
+# --- every component, not just the first one ---------------------------------
+
+def test_every_component_declares_its_shapes():
+    # `weather` was the only one of nine reading `ctx.variant`; the rest
+    # declared unnamed surfaces, so `clock` at 800x53 reported "panel" and the
+    # mechanism reached one component out of nine.
+    unnamed = [name for name in scenes.names()
+               if scenes.surfaces(name)
+               and not any(s.get("variant") for s in scenes.surfaces(name))]
+    assert not unnamed, f"still shapeless: {unnamed}"
+
+
+def test_the_dashboards_own_slots_get_sensible_shapes():
+    # The golden map. This is the test that fails when a layout regresses,
+    # which is the thing that actually matters -- reachability somewhere is
+    # not the same as the right answer HERE.
+    from homescreen import layout
+    caps = {"w": 800, "h": 480, "depth": 1}
+    regions = layout.regions(caps, "dashboard")
+    want = {
+        ("masthead", 1): "strip",     # 800x53
+        ("main_left", 2): "card",     # 417x167
+        ("main_right", 1): "panel",   # 321x335
+        ("markets", 6): "badge",      # 127x62
+        ("markets", 1): "strip",      # 764x62
+    }
+    for (region, count), shape in want.items():
+        x, y, w, h = layout.slots(regions[region], count)[0]
+        for name in ("weather", "quotes", "calendar", "sport"):
+            got = scenes.variant_for(name, {**caps, "w": w, "h": h})
+            assert got in (shape, None), (name, region, count, w, h, got)

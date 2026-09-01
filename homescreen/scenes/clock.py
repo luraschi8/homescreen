@@ -22,8 +22,17 @@ from homescreen.scenes._style import page
 #: rather than three that can disagree.
 #: A clock is the least demanding thing here: a time and a label fit
 #: anywhere text is legible at all, on any shape, at any depth.
-SURFACES = ({"min_short": 100},
-            {"min_w": 90, "min_h": 40})    # just the time, in a band cell
+#: The clock reads at any size -- it is a number.
+SURFACES = (
+    {"variant": "strip", "at": (764, 62),
+     "min_w": 200, "min_h": 24, "max_h": 110, "min_aspect": 4.0},
+    {"variant": "badge", "at": (127, 62),
+     "min_w": 90, "min_h": 40, "max_h": 110, "max_aspect": 4.0},
+    {"variant": "card", "at": (417, 150),
+     "min_short": 90, "min_h": 111, "max_h": 239},
+    {"variant": "panel", "at": (417, 335),
+     "min_short": 90, "min_w": 200, "min_h": 240},
+)
 
 OPTIONS = (
     {"key": "timezone", "label": "Zona horaria", "type": "text",

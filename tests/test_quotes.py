@@ -186,3 +186,54 @@ def test_the_provider_refuses_to_fetch_without_its_key():
     from homescreen.fetch.providers import quotes as provider
     with pytest.raises(ValueError, match="clave"):
         provider.fetch({"symbol": "AAPL"}, secrets={})
+
+
+# --- one component, several shapes -------------------------------------------
+
+def _html(caps, **kw):
+    return build(caps, **kw).html or ""
+
+
+def test_a_markets_cell_shows_one_symbol_in_three_lines():
+    # 117x62 is what SPEC §9's band is made of, six times. It used to get a
+    # three-column table with a 6em change column inside 120px of usable
+    # width, which ran "AAPL228.40" together.
+    html = _html({"w": 127, "h": 62, "depth": 1}, symbols=THREE)
+    assert html.count('<div class="q">') == 1, "one symbol, not a rotation"
+    for part in ('class="sym"', 'class="px"', 'class="ch"'):
+        assert part in html, part
+    assert "<table" not in html
+
+
+def test_a_whole_band_spreads_every_symbol_along_it():
+    html = _html({"w": 764, "h": 62, "depth": 1}, symbols=THREE)
+    assert html.count('<div class="q">') == 3
+
+
+def test_a_block_is_a_list_not_a_band():
+    html = _html({"w": 321, "h": 335, "depth": 1}, symbols="AAPL,MSFT")
+    assert html.count('<div class="row">') == 2
+    assert 'class="wrap list"' in html
+
+
+def test_no_row_carries_a_black_rule_under_it():
+    # `td{border-bottom:1px solid #000}` put a hairline under every ticker,
+    # including the last. The design separates these with whitespace and a
+    # weight change; five solid rules read as a ledger.
+    html = _html({"w": 321, "h": 335, "depth": 1}, symbols=THREE)
+    assert "border-bottom:1px solid #000" not in html
+
+
+def test_direction_is_a_filled_triangle_not_a_hairline_diagonal():
+    # A diagonal 1px stroke is the worst case for a hard threshold: it lands
+    # half-covered along its whole length. A filled shape covers a pixel or
+    # does not.
+    html = _html({"w": 127, "h": 62, "depth": 1}, symbols="AAPL")
+    assert 'class="ar"' in html and 'fill="#000"' in html
+
+
+def test_every_shape_quotes_declares_is_reachable_where_it_was_written_for():
+    for spec in scenes.surfaces("quotes"):
+        at = spec["at"]
+        assert scenes.variant_for(
+            "quotes", {"w": at[0], "h": at[1], "depth": 1}) == spec["variant"]

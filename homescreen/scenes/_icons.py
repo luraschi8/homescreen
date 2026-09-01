@@ -59,6 +59,24 @@ _PATHS = {
     "fog": '<path d="M6 14h28M9 21h22M6 28h28"/>',
 }
 
+#: Direction, as FILLED triangles rather than the design's hairline diagonal
+#: arrows. A diagonal 1px stroke is the worst case for a hard threshold -- it
+#: lands half-covered along its whole length -- while a filled shape either
+#: covers a pixel or does not. Solid also reads at 10px, which is where these
+#: live in a markets cell.
+_ARROWS = {"up": "M20 8l12 20H8z", "down": "M20 32L8 12h24z"}
+
+
+def arrow(direction: str, px: int) -> str:
+    """A filled triangle, up or down. "" for anything else."""
+    path = _ARROWS.get(str(direction or ""))
+    if not path:
+        return ""
+    px = max(6, int(px))
+    return (f'<svg class="ar" viewBox="0 0 {VIEWBOX} {VIEWBOX}" '
+            f'width="{px}" height="{px}" aria-hidden="true" fill="#000">'
+            f'<path d="{path}"/></svg>')
+
 
 def sky(name: str, px: int) -> str:
     """An inline SVG for a normalised sky, or "" if we have no picture.

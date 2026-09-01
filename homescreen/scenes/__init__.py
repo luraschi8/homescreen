@@ -53,6 +53,19 @@ class SceneContext:
     #: be three private rules that only the round panel ever saw.
     variant: str = DEFAULT_VARIANT
 
+    @property
+    def rows(self) -> int:
+        """How many body lines this region can hold.
+
+        On the context so a component asks rather than derives: the number
+        depends on the type ladder, which depends on the shape, which the
+        context already knows.
+        """
+        from homescreen.scenes import _style
+        caps = self.caps if isinstance(self.caps, dict) else {}
+        return _style.rows(int(caps.get("w") or 0), int(caps.get("h") or 0),
+                           shape=self.variant)
+
     def variant_of(self, name: str) -> str:
         """The shape `name` would take on this glass.
 
