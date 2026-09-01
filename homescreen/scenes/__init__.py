@@ -225,6 +225,11 @@ def variant_for(name: str, caps):
     drift apart.
     """
     from homescreen import surface as _surface
+    if name not in _registry():
+        # A typo in a stored record is not a component that fits everywhere.
+        # `surfaces()` swallows the KeyError and answers `()`, which reads as
+        # "declares nothing, so anywhere".
+        return None
     declared = surfaces(name)
     if not declared:
         return DEFAULT_VARIANT          # declaring nothing means anywhere
@@ -234,10 +239,12 @@ def variant_for(name: str, caps):
         # judging a device before it has said what it is would disable every
         # component on a board that has only just called in.
         #
-        # The component's OWN first shape, not a global default: answering
-        # "panel" for a component that never declared one hands it a name it
-        # does not implement, and branching on that name is the whole point.
-        return declared[0].get("variant") or DEFAULT_VARIANT
+        # The component's own most GENEROUS shape, not a global default and
+        # not whichever entry happens to be written first. Answering "panel"
+        # for a component that never declared one hands it a name it does not
+        # implement; answering `declared[0]` made a legal reordering of
+        # disjoint entries silently change the answer.
+        return _roomiest(declared)
     for spec in declared:
         # `variant` names the shape and `at` records the rectangle it was
         # written for; neither is a constraint. Passing them to `fits` raised
@@ -265,6 +272,20 @@ def supports(name: str, caps) -> tuple[bool, str]:
         return True, ""
     from homescreen import surface as _surface
     return False, _why_not(surfaces(name), _surface.describe(caps))
+
+
+#: Most room first. Used only for a device that has not said what it is: it
+#: will report its geometry on its next poll, and until then the fullest
+#: presentation is the better guess.
+_ROOM = ("panel", "card", "badge", "strip")
+
+
+def _roomiest(declared) -> str:
+    names = {s.get("variant") for s in declared if s.get("variant")}
+    for shape in _ROOM:
+        if shape in names:
+            return shape
+    return DEFAULT_VARIANT
 
 
 def _why_not(declared, screen) -> str:

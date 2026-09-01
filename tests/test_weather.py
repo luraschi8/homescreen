@@ -656,3 +656,27 @@ def _icons_day(stamp, tz):
     import datetime
     names = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
     return names[datetime.datetime.fromtimestamp(stamp, tz).weekday()]
+
+
+def test_the_weekday_table_is_not_rotated():
+    # Mutation testing rotated `_DAYS` by one and nothing noticed: every
+    # forecast row carried the wrong name and the suite stayed green. Anchored
+    # against a date whose weekday is not in question.
+    from homescreen.scenes import weather
+    import datetime
+    import zoneinfo
+    madrid = zoneinfo.ZoneInfo("Europe/Madrid")
+    # 2026-09-01 is a Tuesday.
+    stamp = int(datetime.datetime(2026, 9, 1, 12, tzinfo=madrid).timestamp())
+    assert weather._clock(stamp, 7200, "day", "Europe/Madrid") == "mar"
+    assert weather._DAYS[0] == "lun" and weather._DAYS[6] == "dom"
+
+
+def test_a_missing_number_reads_as_missing_not_as_zero():
+    # `_round`'s fallback was unpinned: returning "0" instead of "--" puts a
+    # temperature of zero on the panel for a reading that has none.
+    from homescreen.scenes import weather
+    for absent in (None, "", "n/a", float("nan")):
+        assert weather._round(absent) == "--", absent
+    assert weather._round(0) == "0"
+    assert weather._round(33.6) == "34"

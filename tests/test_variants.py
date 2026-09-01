@@ -308,3 +308,37 @@ def test_the_hourly_strip_thins_out_rather_than_refusing_the_screen():
     assert counts[417] == 6, counts
     assert counts[135] < counts[321], counts
     assert all(c == 0 or c >= 2 for c in counts.values()), counts
+
+
+def test_a_component_that_does_not_exist_cannot_be_drawn():
+    # `surfaces()` swallows the KeyError and answers `()`, which reads as
+    # "declares nothing, so anywhere" -- so a typo in a stored record came
+    # back as a component that fits every screen.
+    assert scenes.variant_for("nosuchcomponent", CELL) is None
+    assert scenes.supports("nosuchcomponent", CELL)[0] is False
+
+
+def test_a_device_that_has_not_said_what_it_is_still_gets_a_shape():
+    # The branch the previous version of this test never reached: both its
+    # cases declared geometry, so the undeclared path was never taken and
+    # reverting the fix passed.
+    for caps in ({}, {"w": 0, "h": 0}, None, {"depth": 1}):
+        for name in scenes.names():
+            got = scenes.variant_for(name, caps)
+            declared = {s.get("variant") for s in scenes.surfaces(name)
+                        if s.get("variant")}
+            assert got in declared, (name, caps, got)
+
+
+def test_the_shape_for_an_unmeasured_device_does_not_depend_on_writing_order():
+    # It was `declared[0]`, so reordering entries -- legal, since they are
+    # disjoint -- silently changed what a device with no capabilities was
+    # drawn as.
+    from homescreen.scenes import weather
+    original = weather.SURFACES
+    try:
+        before = scenes.variant_for("weather", {})
+        weather.SURFACES = tuple(reversed(original))
+        assert scenes.variant_for("weather", {}) == before
+    finally:
+        weather.SURFACES = original
