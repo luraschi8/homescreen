@@ -30,7 +30,8 @@ HERO_PX = 56
 #: there would BE the line, so it is sized as body text. None is the old
 #: behaviour, unchanged, for every caller that does not name a shape.
 _HERO_SHARE = {"panel": 0.115, "card": 0.30, "badge": 0.42, "strip": 0.0}
-def metrics(width: int, height: int, shape: str | None = None) -> dict:
+def metrics(width: int, height: int, shape: str | None = None,
+            hero_share: float | None = None) -> dict:
     """The type ladder and spacing for a region of this size, in WHOLE pixels.
 
     Computed here rather than expressed in CSS because `compose` puts every
@@ -66,7 +67,13 @@ def metrics(width: int, height: int, shape: str | None = None) -> dict:
     #
     # An unnamed shape keeps the old arithmetic exactly, because eight
     # components still call it that way and this must not redesign them.
-    hero = max(fs, min(HERO_PX, round(inner * _HERO_SHARE.get(shape, 0.55))))
+    # The COMPONENT may override the share, because how much of a region the
+    # headline may take is a property of what sits under it, not of the shape.
+    # A weather panel stacks three blocks below its number; a clock has one
+    # small label. One share for both gave the clock a 21px time in a block
+    # the design draws at 48, and left half the width empty.
+    share = hero_share if hero_share is not None else _HERO_SHARE.get(shape, 0.55)
+    hero = max(fs, min(HERO_PX, round(inner * share)))
     return {
         "pad": pad,
         "pad_sm": max(1, round(pad * 0.4)),
@@ -134,8 +141,8 @@ def rows(width: int, height: int, shape: str | None = None) -> int:
 
 
 def page(width: int, height: int, body: str, extra_css: str = "",
-         shape: str | None = None) -> str:
-    m = metrics(width, height, shape=shape)
+         shape: str | None = None, hero_share: float | None = None) -> str:
+    m = metrics(width, height, shape=shape, hero_share=hero_share)
     # On `html,body` rather than `:root`: `compose.scope_css` rewrites both to
     # the placement's wrapper, so the properties stay inside their own region
     # and two fragments on one page cannot overwrite each other's scale.

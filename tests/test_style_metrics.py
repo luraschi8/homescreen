@@ -224,3 +224,21 @@ def test_the_declared_tiers_still_fit_the_region():
             got = _style.metrics(w, h, shape=shape)
             assert got["pad"] * 2 + got["hero"] <= h, (shape, w, h, got)
             assert got["fs"] >= 10, (shape, w, h, got)
+
+
+def test_a_component_can_ask_for_more_of_its_block_than_the_shape_allows():
+    # How much of a region the headline may take is a property of what sits
+    # UNDER it, not of the shape. A weather panel stacks three blocks below
+    # its number; a clock has one small label. One share for both gave the
+    # clock a 21px time in a block the design draws at 48.
+    shared = _style.metrics(417, 90, shape="card")
+    asked = _style.metrics(417, 90, shape="card", hero_share=0.62)
+    assert asked["hero"] > shared["hero"] * 1.5, (shared, asked)
+    assert asked["pad"] * 2 + asked["hero"] <= 90, asked
+
+
+def test_an_override_still_respects_the_ceiling_and_the_floor():
+    huge = _style.metrics(417, 400, shape="card", hero_share=0.95)
+    assert huge["hero"] <= _style.HERO_PX
+    tiny = _style.metrics(417, 40, shape="card", hero_share=0.01)
+    assert tiny["hero"] >= tiny["fs"]

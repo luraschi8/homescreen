@@ -367,3 +367,24 @@ def test_the_masthead_clock_stays_on_one_line():
         options=scenes.clean_options("clock", {"timezone": "Europe/Madrid"}))
     body = (scenes.build("clock", ctx).html or "").split("</style>")[-1]
     assert 'class="wrap row"' in body
+
+
+def test_the_clock_block_spreads_across_its_region():
+    # It collapsed to the left and left roughly half the width empty. The
+    # groups take their share so the block fills what it was given.
+    import pathlib
+    import tempfile
+    from homescreen import scenes
+    ctx = scenes.SceneContext(
+        cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+        cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 417, "h": 90, "depth": 1}, now=1_788_290_000.0, device={},
+        options=scenes.clean_options("clock", {
+            "timezone": "Europe/Madrid", "second_label": "BS AS",
+            "second_timezone": "America/Argentina/Buenos_Aires"}))
+    html = scenes.build("clock", ctx).html
+    css = html.split("<style>")[-1].split("</style>")[0].replace(" ", "")
+    assert "justify-content:space-between" in css
+    import re
+    hero = int(re.search(r"--hero:(\d+)px", html).group(1))
+    assert hero >= 40, f"the time is {hero}px in a 90px block"

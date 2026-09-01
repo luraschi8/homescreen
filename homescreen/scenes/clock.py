@@ -75,7 +75,12 @@ CSS = """
 .wrap.row .lab{align-self:center}
 
 /* Side by side: time over city, sun times, a rule, the second city. */
-.wrap.block{flex-direction:row;align-items:flex-end;gap:.7em}
+.wrap.block{flex-direction:row;align-items:flex-end;gap:.7em;
+  justify-content:space-between}
+/* Each group takes its share of the width so the block fills the region
+   instead of collapsing to the left and leaving half of it blank. */
+.wrap.block > *{flex:0 1 auto}
+.wrap.block .c{flex:1 1 auto}
 .wrap.block .c{min-width:0}
 .wrap.block .big{line-height:1}
 .wrap.block .sub{margin-top:0}
@@ -117,6 +122,11 @@ def _clocks(cfg: dict, now: float, options: dict) -> list[tuple[str, str]]:
             continue
         out.append((label, stamp.strftime(fmt)))
     return out
+
+
+#: How much of the block the time may take, by shape. Generous, because a
+#: clock has nothing under it but its own city name.
+_HERO_SHARE = {"card": 0.62, "panel": 0.42, "badge": 0.44}
 
 
 def _sun(ctx) -> str:
@@ -217,4 +227,8 @@ def build(ctx: SceneContext) -> Scene:
 
     return Scene(layout="fill", components=components,
                  poll_s=poll_s, poll_max_s=1 if seconds else 60,
-                 html=page(w, h, body, CSS, shape=ctx.variant))
+                 # A clock is one number with a small label under it, so it may take
+                 # most of its block -- unlike a weather panel, which stacks
+                 # three things beneath its headline.
+                 html=page(w, h, body, CSS, shape=ctx.variant,
+                           hero_share=_HERO_SHARE.get(ctx.variant)))
