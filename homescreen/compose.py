@@ -95,7 +95,13 @@ def _placed(view, regions):
     counts = {}
     for _, placement in valid:
         counts[placement["region"]] = counts.get(placement["region"], 0) + 1
-    cut = {name: layout.slots(regions[name], n) for name, n in counts.items()}
+    # The view's own proportions, in the order its placements appear.
+    asked = {}
+    for _, placement in valid:
+        asked.setdefault(placement["region"], []).append(
+            placement.get("weight"))
+    cut = {name: layout.slots(regions[name], n, asked.get(name))
+           for name, n in counts.items()}
     taken = {}
     for index, placement in valid:
         name = placement["region"]
@@ -123,10 +129,28 @@ def compose(view: dict, caps: dict, build_scene) -> str:
         except Exception:                               # noqa: BLE001
             continue                                    # one region, not the page
         css, body = fragment(html, wrapper)
+        # The heading is drawn by the COMPOSER, not the component: a component
+        # asked to render its own title would need to know it had one, and the
+        # same calendar is "agenda" in one column and "cumpleanos" in another.
+        # It takes its height from the top of the slot, so the component gets
+        # what is left rather than overlapping it.
+        heading = str(placement.get("label") or "")
+        if heading:
+            body = (f'<div class="rg-label">{_escape(heading)}</div>'
+                    f'<div class="rg-body">{body}</div>')
         # Absolute placement, because the regions are measured rectangles and
         # a flow layout would let one component's content move another's.
         styles.append(f"#{wrapper}{{position:absolute;left:{x}px;top:{y}px;"
                       f"width:{w}px;height:{h}px;overflow:hidden}}")
+        if heading:
+            # SPEC SS9's section label: 10px, 500, .14em tracking, over a rule.
+            styles.append(
+                f"#{wrapper} .rg-label{{font-size:10px;font-weight:500;"
+                f"letter-spacing:.14em;text-transform:uppercase;"
+                f"border-top:1px solid #000;padding-top:3px;margin-bottom:2px;"
+                f"font-family:Inter,'DejaVu Sans',sans-serif}}"
+                f"#{wrapper} .rg-body{{height:calc(100% - 17px);"
+                f"overflow:hidden}}")
         styles.append(css)
         bodies.append(f'<div id="{wrapper}">{body}</div>')
     if not bodies:
@@ -137,6 +161,11 @@ def compose(view: dict, caps: dict, build_scene) -> str:
             f'html,body{{width:{width}px;height:{height}px;'
             f'position:relative;margin:0}}'
             f'{"".join(styles)}</style>{"".join(bodies)}')
+
+
+def _escape(value: str) -> str:
+    return (str(value).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;"))
 
 
 def _safe(value) -> str:

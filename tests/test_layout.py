@@ -310,3 +310,50 @@ def test_the_dashboard_markets_band_matches_the_original_sketch():
     assert abs(widths[0] - 181) <= 3, widths
     for ticker in widths[1:]:
         assert abs(ticker - 117) <= 3, widths
+
+
+# --- a view sets its own proportions ------------------------------------------
+#
+# The template's weights describe the markets band because SPEC §9 fixes it.
+# A column is different: what goes in it is the operator's choice, so how the
+# height is shared has to be theirs too. The original dashboard's left column
+# is five blocks -- clock, sun times, agenda, deliveries, sport -- of visibly
+# different heights, and equal fifths cannot express it.
+
+def test_a_placement_can_ask_for_more_of_the_column_than_its_neighbours():
+    region = layout.regions(EPD, "dashboard")["main_left"]
+    got = layout.slots(region, 3, weights=(2, 1, 1))
+    heights = [r[3] for r in got]
+    assert sum(heights) == region["rect"][3]
+    assert abs(heights[0] / heights[1] - 2) < 0.05, heights
+
+
+def test_a_views_weights_beat_the_templates():
+    # markets carries template weights; a view that says otherwise wins.
+    region = layout.regions(EPD, "dashboard")["markets"]
+    even = layout.slots(region, 2, weights=(1, 1))
+    assert even[0][2] == even[1][2] or abs(even[0][2] - even[1][2]) <= 1, even
+
+
+def test_weights_are_optional_per_slot():
+    # A column where only one block was given a weight: the rest share what
+    # is left evenly rather than collapsing.
+    region = {"rect": (0, 0, 100, 300), "stack": "v", "holds": 3}
+    got = layout.slots(region, 3, weights=(3, None, None))
+    heights = [r[3] for r in got]
+    assert sum(heights) == 300
+    assert heights[0] > heights[1]
+    assert heights[1] == heights[2]
+
+
+def test_a_nonsense_weight_does_not_collapse_the_column():
+    region = {"rect": (0, 0, 100, 300), "stack": "v", "holds": 3}
+    for bad in ((0, 0, 0), (-1, -1, -1), ("x", None, None), (1e9, 1, 1)):
+        got = layout.slots(region, 3, weights=bad)
+        assert sum(r[3] for r in got) == 300, (bad, got)
+        assert all(r[3] >= 0 for r in got), (bad, got)
+
+
+def test_the_left_column_can_hold_the_five_blocks_the_design_has():
+    # clock, sun times, agenda, deliveries, sport.
+    assert layout.regions(EPD, "dashboard")["main_left"]["holds"] >= 5

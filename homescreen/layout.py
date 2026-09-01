@@ -59,8 +59,10 @@ TEMPLATES = {
         "regions": {
             "masthead":   {"rect": (0.0,    0.0,   1.0,   0.110),
                            "holds": 1, "stack": None},
+            # Five, because the original design stacks clock, sun times,
+            # agenda, deliveries and sport here.
             "main_left":  {"rect": (0.0225, 0.131, 0.521, 0.698),
-                           "holds": 4, "stack": "v"},
+                           "holds": 5, "stack": "v"},
             "main_right": {"rect": (0.576,  0.131, 0.401, 0.698),
                            "holds": 3, "stack": "v"},
             # SPEC SS9: an FX box at flex 1.55 and five tickers at 1 each,
@@ -74,6 +76,10 @@ TEMPLATES = {
 }
 
 DEFAULT_TEMPLATE = "single"
+
+#: A slot may ask for more of its region than its neighbours, but not for a
+#: multiple so large that everything else rounds to nothing.
+MAX_WEIGHT = 20.0
 
 
 def _resolve(rect, screen) -> tuple[int, int, int, int]:
@@ -115,7 +121,7 @@ def regions(caps, template: str = DEFAULT_TEMPLATE) -> dict:
             for name, region in spec["regions"].items()}
 
 
-def slots(region: dict, count: int) -> list:
+def slots(region: dict, count: int, weights=None) -> list:
     """`count` sub-rects tiling a region, laid out along its stack axis.
 
     `holds` and `stack` have described every region since the templates were
@@ -127,6 +133,12 @@ def slots(region: dict, count: int) -> list:
     region that can hold four and carries two splits in half. A region with no
     stack axis still divides if it is somehow asked to carry more than one,
     because overlapping is the one answer that is never what was meant.
+
+    `weights` from the VIEW override the template's. The template fixes the
+    markets band because SPEC SS9 does; a column is different, because what goes
+    in it is the operator's choice and so how the height is shared has to be
+    theirs. The original design's left column is five blocks of visibly
+    different heights and equal fifths cannot express it.
     """
     x, y, w, h = region["rect"]
     count = max(1, int(count))
@@ -134,7 +146,7 @@ def slots(region: dict, count: int) -> list:
         return [(x, y, w, h)]
     horizontal = region.get("stack") == "h"
     span = w if horizontal else h
-    sizes = _shares(span, count, region.get("weights"))
+    sizes = _shares(span, count, weights, region.get("weights"))
     out, offset = [], 0
     for size in sizes:
         out.append((x + offset, y, size, h) if horizontal
@@ -143,7 +155,43 @@ def slots(region: dict, count: int) -> list:
     return out
 
 
-def _shares(span: int, count: int, weights=None) -> list:
+def _weights(asked, fallback, count: int) -> list:
+    """`count` positive finite weights. Never raises, never collapses a region.
+
+    Per SLOT, not per list: a view that sets a share on its first block and
+    leaves the rest blank must not thereby discard the template's own
+    proportions for the others. Passing a list of blanks used to do exactly
+    that, and it flattened SPEC SS9's markets band to six equal cells.
+
+    A weight arrives from a stored file or a form field, so every kind of
+    nonsense reaches here -- a string, a zero, a negative, a phone number.
+    Anything unusable falls through to the template's, then to 1: an even
+    share is always legible, and a region of zero-height slots is not.
+    """
+    def _at(source, index):
+        if source is None:
+            return None
+        try:
+            return list(source)[index]
+        except (IndexError, TypeError):
+            return None
+
+    out = []
+    for index in range(count):
+        for candidate in (_at(asked, index), _at(fallback, index), 1.0):
+            try:
+                number = float(candidate)
+            except (TypeError, ValueError):
+                continue
+            if number == number and 0 < number <= MAX_WEIGHT:
+                out.append(number)
+                break
+        else:
+            out.append(1.0)
+    return out
+
+
+def _shares(span: int, count: int, weights=None, fallback=None) -> list:
     """`count` whole-pixel shares of `span`, tiling it exactly.
 
     Weights are optional and proportional: SPEC SS9's markets band is an FX box
@@ -156,11 +204,7 @@ def _shares(span: int, count: int, weights=None) -> list:
     seat apportionment uses -- so the widest cell does not systematically lose
     the rounding to the narrowest.
     """
-    if weights:
-        share = [float(x) for x in list(weights)[:count]]
-        share += [1.0] * (count - len(share))
-    else:
-        share = [1.0] * count
+    share = _weights(weights, fallback, count)
     total = sum(share) or float(count)
     exact = [span * part / total for part in share]
     sizes = [int(value) for value in exact]
@@ -189,7 +233,26 @@ def clean_placement(raw, caps, known_components, template=DEFAULT_TEMPLATE):
     options = raw.get("options")
     return {"id": str(raw.get("id") or f"{region}-{component}"),
             "region": str(region), "component": str(component),
+            # How much of its region this block asks for, against its
+            # neighbours. Absent means an even share, which is what every
+            # stored view written before this said by saying nothing.
+            "weight": _weight_of(raw.get("weight")),
+            # The section heading, as the original design has over AGENDA and
+            # ENTREGAS. A property of the PLACEMENT rather than the component:
+            # the same calendar is "agenda" in one column and "cumpleanos" in
+            # another, and only the person arranging them knows which.
+            "label": str(raw.get("label") or "")[:24],
             "options": options if isinstance(options, dict) else {}}
+
+
+def _weight_of(raw):
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    if not (value == value) or value <= 0 or value > MAX_WEIGHT:
+        return 1.0
+    return round(value, 2)
 
 
 def clean_view(raw, caps, known_components) -> dict:

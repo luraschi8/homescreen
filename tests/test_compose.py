@@ -200,3 +200,47 @@ def test_a_placement_that_fails_does_not_shift_the_others_off_their_slots():
     whole = _rects(compose.compose(STACKED, EPAPER, _build))
     assert "b" not in got
     assert got["a"] == whole["a"] and got["c"] == whole["c"]
+
+
+# --- a view's own proportions and headings ------------------------------------
+
+LABELLED = {"template": "dashboard", "placements": [
+    {"id": "a", "region": "main_left", "component": "clock",
+     "weight": 2, "label": "RELOJ", "options": {}},
+    {"id": "b", "region": "main_left", "component": "calendar",
+     "weight": 1, "label": "AGENDA", "options": {}},
+    {"id": "c", "region": "main_left", "component": "sport",
+     "weight": 1, "label": "DEPORTES", "options": {}}]}
+
+
+def test_a_block_that_asks_for_more_of_the_column_gets_it():
+    got = _rects(compose.compose(LABELLED, EPAPER, _build))
+    heights = [got["a"][3], got["b"][3], got["c"][3]]
+    _, _, _, column = layout.regions(EPAPER, "dashboard")["main_left"]["rect"]
+    assert sum(heights) == column
+    assert abs(heights[0] / heights[1] - 2) < 0.06, heights
+
+
+def test_a_placements_heading_reaches_the_page():
+    html = compose.compose(LABELLED, EPAPER, _build)
+    for heading in ("RELOJ", "AGENDA", "DEPORTES"):
+        assert heading in html, heading
+
+
+def test_a_heading_belongs_to_the_placement_not_the_component():
+    # The same component twice, headed differently. This is what makes two
+    # calendars "agenda" and "cumpleaños" rather than two identical blocks.
+    view = {"template": "dashboard", "placements": [
+        {"id": "x", "region": "main_left", "component": "calendar",
+         "label": "AGENDA", "options": {}},
+        {"id": "y", "region": "main_left", "component": "calendar",
+         "label": "CUMPLEAÑOS", "options": {}}]}
+    html = compose.compose(view, EPAPER, _build)
+    assert "AGENDA" in html and "CUMPLEAÑOS" in html
+
+
+def test_a_block_with_no_heading_spends_none_of_its_height_on_one():
+    plain = {"template": "dashboard", "placements": [
+        {"id": "a", "region": "main_left", "component": "clock", "options": {}}]}
+    html = compose.compose(plain, EPAPER, _build)
+    assert 'class="rg-label"' not in html

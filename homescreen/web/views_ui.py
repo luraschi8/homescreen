@@ -120,7 +120,8 @@ def _for_slot(offered, slot_caps: dict, fits):
 
 
 def _region_row(view_name: str, region: str, spec: dict, chosen: list,
-                offered, schemas=None, options=None, fits=None) -> str:
+                offered, schemas=None, options=None, fits=None,
+                extras=None) -> str:
     """One region, and what is in it.
 
     A region that holds several gets several selects, because "add another" and
@@ -143,8 +144,21 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
             f'{"" if ok else " disabled"}>{e(name)}'
             f'{"" if ok else " — " + e(why)}</option>'
             for name, ok, why in _for_slot(offered, slot_caps, fits))
+        held = (extras or {}).get((region, index)) or {}
+        # Heading and share sit WITH the select, because all three describe the
+        # slot rather than the component in it: moving a block moves them.
+        trim = (f'<div class="slot-extra">'
+                f'<input type="text" name="l.{e(view_name)}.{e(region)}.{index}"'
+                f' maxlength="24" placeholder="titulo (opcional)"'
+                f' value="{e(held.get("label") or "")}">'
+                f'<input type="number" name="wt.{e(view_name)}.{e(region)}.'
+                f'{index}" min="0.25" max="20" step="0.25" placeholder="1"'
+                f' title="Cuanto de la region ocupa, frente a sus vecinos"'
+                f' value="{e(held.get("weight") or "")}"></div>'
+                if spec["holds"] > 1 else "")
         rows.append(
             f'<select name="v.{e(view_name)}.{e(region)}.{index}">{picks}</select>'
+            + trim
             + _placement_options(view_name, region, index, current, schemas,
                                  (options or {}).get((region, index)) or {}))
     return (f'<div class="slot-row"><span class="rg">{e(region)}'
@@ -182,7 +196,7 @@ document.querySelectorAll('.view').forEach(function (view) {
 </script>"""
 
 
-def _map(view_name: str, regions: dict, by_region: dict,
+def _map(view_name: str, regions: dict, by_region: dict, weights: dict,
          panel_w: int, panel_h: int) -> str:
     """The panel, to scale, with a box for every slot.
 
@@ -200,8 +214,13 @@ def _map(view_name: str, regions: dict, by_region: dict,
     boxes = []
     for region, spec in regions.items():
         held = by_region.get(region) or []
+        # Drawn with the shares the view actually asked for, padded out to
+        # the region's capacity so the empty slots are still visible targets.
+        asked = list(weights.get(region) or [])
+        asked += [None] * (spec["holds"] - len(asked))
+        cut = layout.slots(spec, spec["holds"], asked)
         for index in range(spec["holds"]):
-            x, y, w, h = layout.slots(spec, spec["holds"])[index]
+            x, y, w, h = cut[index]
             current = held[index] if index < len(held) else ""
             field = f"v.{e(view_name)}.{e(region)}.{index}"
             # The region names itself ONCE. Repeating it in all six cells of
@@ -234,16 +253,22 @@ def editor(hw: str, views: dict, regions: dict, offered, template: str,
         placements = (views[view_name] or {}).get("placements") or []
         by_region: dict = {}
         values: dict = {}
+        extras: dict = {}
+        weights: dict = {}
         for placement in placements:
             region = placement.get("region")
             slot = len(by_region.setdefault(region, []))
             by_region[region].append(placement.get("component"))
             values[(region, slot)] = placement.get("options") or {}
+            extras[(region, slot)] = {
+                "label": placement.get("label") or "",
+                "weight": placement.get("weight") or ""}
+            weights.setdefault(region, []).append(placement.get("weight"))
         rows = "".join(
             _region_row(view_name, region, spec, by_region.get(region, []),
-                        offered, schemas, values, fits)
+                        offered, schemas, values, fits, extras)
             for region, spec in regions.items())
-        panel = _map(view_name, regions, by_region,
+        panel = _map(view_name, regions, by_region, weights,
                      int((caps or {}).get("w") or 0),
                      int((caps or {}).get("h") or 0))
         blocks.append(f'<div class="view"><h3>{e(view_name)}</h3>'
@@ -290,6 +315,12 @@ def parse(form, regions: dict, view_names, schemas=None) -> dict:
                 placements.append({
                     "id": f"{view_name}-{region}-{index}",
                     "region": region, "component": component,
+                    # Blank means "no opinion", which `clean_placement` reads
+                    # as an even share -- not as zero.
+                    "label": (form.get(f"l.{view_name}.{region}.{index}")
+                              or "").strip()[:24],
+                    "weight": (form.get(f"wt.{view_name}.{region}.{index}")
+                               or "").strip() or None,
                     # None when this slot posted no fields at all, so a
                     # component with no options keeps whatever it had rather
                     # than being reset to empty.

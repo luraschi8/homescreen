@@ -342,8 +342,10 @@ def test_the_builder_draws_one_box_per_slot(ctx):
     _dashboard(client, cache)
     html = client.get(f"/device/{EPD}").get_data(as_text=True)
     got = _map_slots(html)
-    # dashboard: masthead 1 + main_left 4 + main_right 3 + markets 6
-    assert len(got) == 14, [g[0] for g in got]
+    # dashboard: masthead 1 + main_left 5 + main_right 3 + markets 6.
+    # main_left holds five because the original design stacks clock, sun
+    # times, agenda, deliveries and sport in it.
+    assert len(got) == 15, [g[0] for g in got]
 
 
 def test_every_box_points_at_the_control_that_fills_it(ctx):
@@ -437,3 +439,62 @@ def test_the_first_panels_heading_describes_what_is_actually_in_it(ctx):
     simple = client.get(f"/device/{ROUND}").get_data(as_text=True)
     assert "Esta pantalla" in arranged and "Qué muestra" not in arranged
     assert "Qué muestra" in simple
+
+
+# --- proportions and headings in the builder ----------------------------------
+
+def test_each_slot_offers_a_heading_and_a_share(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert 'name="l.panel.main_left.0"' in html, "a heading field"
+    assert 'name="wt.panel.main_left.0"' in html, "a share field"
+
+
+def test_a_heading_and_a_share_survive_the_round_trip(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.main_left.0": "clock",
+        "l.panel.main_left.0": "RELOJ",
+        "wt.panel.main_left.0": "2.5",
+        "v.panel.main_left.1": "calendar",
+        "l.panel.main_left.1": "AGENDA",
+        "wt.panel.main_left.1": "1"})
+    from homescreen import registry
+    placements = registry.load(cache)[EPD]["views"]["panel"]["placements"]
+    by_id = {p["component"]: p for p in placements}
+    assert by_id["clock"]["label"] == "RELOJ"
+    assert by_id["clock"]["weight"] == 2.5
+    assert by_id["calendar"]["label"] == "AGENDA"
+
+
+def test_the_map_draws_the_share_that_was_asked_for(ctx):
+    # The picture has to show the proportions, or it is a picture of a
+    # different layout than the one being saved.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.main_left.0": "clock", "wt.panel.main_left.0": "3",
+        "v.panel.main_left.1": "calendar", "wt.panel.main_left.1": "1"})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    heights = {}
+    for name, css, _ in _map_slots(html):
+        if ".main_left." in name:
+            found = re.search(r"height:([\d.]+)%", css.replace(" ", ""))
+            if found:
+                heights[name] = float(found.group(1))
+    first = heights["v.panel.main_left.0"]
+    second = heights["v.panel.main_left.1"]
+    assert first > second * 2, heights
+
+
+def test_a_share_left_blank_is_an_even_one(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "v.panel.main_left.0": "clock", "wt.panel.main_left.0": "",
+        "v.panel.main_left.1": "calendar", "wt.panel.main_left.1": ""})
+    from homescreen import registry
+    for p in registry.load(cache)[EPD]["views"]["panel"]["placements"]:
+        assert p["weight"] == 1.0
