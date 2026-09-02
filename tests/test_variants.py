@@ -342,3 +342,21 @@ def test_the_shape_for_an_unmeasured_device_does_not_depend_on_writing_order():
         assert scenes.variant_for("weather", {}) == before
     finally:
         weather.SURFACES = original
+
+def test_no_wide_block_falls_between_the_surfaces():
+    # `min_h: 81` and `min_short: 90` contradicted each other: a wide region 81
+    # to 89 pixels tall satisfied the first and failed the second, so it
+    # matched NO surface and silently took the default shape. The design's own
+    # clock row is 417x85, and it had been rendering as a `panel` -- with a
+    # panel's headline share, which is why the times were half the size the
+    # design draws them.
+    for name in ("clock", "calendar", "sport", "quotes", "weather", "claude"):
+        for h in range(81, 96):
+            got = scenes.variant_for(name, {"w": 417, "h": h, "depth": 1})
+            assert got == "card", f"{name} at 417x{h} is {got}"
+
+
+def test_a_block_too_short_is_still_refused():
+    # Closing the hole must not make everything fit everywhere.
+    ok, why = scenes.supports("clock", {"w": 417, "h": 80, "depth": 1})
+    assert ok is False and why

@@ -44,14 +44,14 @@ SURFACES = (
     # A block: several rows. v6's AGENDA is 417x104 and DEPORTES 417x50
     # after their headings.
     {"variant": "card", "at": (417, 150),
-     "min_short": 90, "min_h": 81, "max_h": 239},
+     "min_w": 90, "min_h": 81, "max_h": 239},
     # A column. No `min_w`: requiring 200 to protect the six-cell hourly
     # strip made weather the only component that refuses a tall narrow screen
     # -- 26,510 geometries, including every portrait board anyone might hang
     # this on. The SHAPE is a column; how many hours fit in it is the strip's
     # business, and it now counts them.
     {"variant": "panel", "at": (321, 335),
-     "min_short": 90, "min_h": 240},
+     "min_w": 90, "min_h": 240},
 )
 
 #: OpenWeather's icon codes, reduced to the shapes we can draw.

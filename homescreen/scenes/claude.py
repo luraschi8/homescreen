@@ -24,9 +24,9 @@ SURFACES = (
     # A block: several rows. v6's AGENDA is 417x104 and DEPORTES 417x50
     # after their headings.
     {"variant": "card", "at": (417, 150),
-     "min_short": 90, "min_h": 81, "max_h": 239},
+     "min_w": 90, "min_h": 81, "max_h": 239},
     {"variant": "panel", "at": (417, 335),
-     "min_short": 90, "min_h": 240},
+     "min_w": 90, "min_h": 240},
 )
 
 OPTIONS = (

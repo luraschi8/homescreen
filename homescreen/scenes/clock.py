@@ -38,10 +38,16 @@ SURFACES = (
      "min_w": 90, "max_w": 199, "min_h": 40, "max_h": 80},
     # A block: several rows. v6's AGENDA is 417x104 and DEPORTES 417x50
     # after their headings.
+    #
+    # `min_w`, not `min_short`: height is already governed by `min_h`/`max_h`,
+    # and re-guarding it with the SHORT side contradicted them. A wide region
+    # 81 to 89 pixels tall satisfied `min_h: 81` and failed `min_short: 90`, so
+    # it matched no surface at all and took the default shape silently -- and
+    # the design's own clock row is 417x85, which is exactly that band.
     {"variant": "card", "at": (417, 150),
-     "min_short": 90, "min_h": 81, "max_h": 239},
+     "min_w": 90, "min_h": 81, "max_h": 239},
     {"variant": "panel", "at": (417, 335),
-     "min_short": 90, "min_h": 240},
+     "min_w": 90, "min_h": 240},
 )
 
 OPTIONS = (
