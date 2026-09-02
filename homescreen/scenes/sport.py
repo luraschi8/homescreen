@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
-from homescreen.scenes._style import EMPTY_CSS, empty, page
+from homescreen.scenes._style import EMPTY_CSS, empty, esc, page
 SURFACES = (
     # A genuine band: shallow AND long. The real ones are 800x53 (aspect 15)
     # and 764x62 (12.3); at aspect 4.0 and 110px tall this was swallowing
@@ -385,13 +385,14 @@ def build(ctx: SceneContext) -> Scene:
         upcoming = _upcoming(matches, ctx.now, max(1, ctx.dense_rows))
         show_source = len({src for _k, _h, _a, src in upcoming if src}) > 1
         inner = '<div class="list">' + "".join(
-            f'<div class="row"><div class="t">{home} — {away}</div>'
-            + (f'<div class="src">{src}</div>' if show_source and src else "")
+            f'<div class="row"><div class="t">{esc(home)} — {esc(away)}</div>'
+            + (f'<div class="src">{esc(src)}</div>'
+               if show_source and src else "")
             + f'<div class="k">{kick}</div></div>'
             for kick, home, away, src in upcoming) + "</div>"
     else:
-        inner = (f'<div class="big">{match.get("home", "")} — '
-                 f'{match.get("away", "")}</div>')
+        inner = (f'<div class="big">{esc(match.get("home"))} — '
+                 f'{esc(match.get("away"))}</div>')
     body = f'<div class="wrap">{inner}</div>' 
     return Scene(layout="fill",
                  components=({"c": "sport", "draw": instructions},),

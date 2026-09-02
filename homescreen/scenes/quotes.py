@@ -19,7 +19,7 @@ from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes import _icons
-from homescreen.scenes._style import EMPTY_CSS, empty, page
+from homescreen.scenes._style import EMPTY_CSS, empty, esc, page
 
 #: The Finnhub key is NOT an option here. Credentials come from the provider's
 #: own SECRETS declaration, which the dashboard renders per screen and
@@ -223,7 +223,7 @@ def _body(variant: str, symbols, readings) -> str:
         return f'<div class="wrap strip">{inner}</div>'
 
     rows = "".join(
-        f'<div class="row"><div class="sym">{s}</div>'
+        f'<div class="row"><div class="sym">{esc(shown(s))}</div>'
         f'<div class="px">{_fmt_price(readings[s].get("price"))}</div>'
         f'<div class="ch">{_fmt_change(readings[s].get("change_pct"))[0]}</div>'
         f'</div>' for s in symbols)

@@ -367,3 +367,52 @@ def test_the_heading_reserves_what_it_actually_measures():
     # Measured in a real render: the label box is 16px and the body starts at
     # 18. This was 17, which under-reserved by a pixel on every labelled block.
     assert compose.HEADING_PX == 18
+
+
+def test_feed_text_cannot_break_out_of_its_row():
+    # An .ics SUMMARY is remote text nobody in this repo controls, and it
+    # reaches a document Chromium rasterises. `scope_css` isolates CSS, not
+    # the DOM: one "<" in an event title parsed as a tag, swallowed the row's
+    # closing divs and collapsed the whole AGENDA block onto one line.
+    # "Cena <con> Ana" rendered as "Cena Ana" -- a wrong title, silently.
+    import datetime
+    import pathlib
+    import tempfile
+    from homescreen import scenes
+    from homescreen.reading import Reading
+
+    now = datetime.datetime(2026, 9, 2, 12, 0, tzinfo=datetime.timezone.utc)
+    nasty = 'Cena <con> Ana</div><div style="height:480px">boom'
+    events = [{"when": (now + datetime.timedelta(hours=3)).isoformat(),
+               "summary": nasty}]
+    ctx = scenes.SceneContext(
+        cfg={}, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 417, "h": 128, "depth": 1}, now=now.timestamp(), device={},
+        options=scenes.clean_options("calendar", {"url": "https://x/a.ics"}),
+        data=lambda _r: Reading(data={"events": events}, ok=True, age_s=5.0))
+    html = scenes.build("calendar", ctx).html
+    assert "</div><div style=" not in html, "feed text opened its own element"
+    assert "&lt;con&gt;" in html, "the title is not shown as written"
+    # The row structure survives: one row in, one row out.
+    assert html.count('class="row"') == 1
+
+
+def test_fixture_names_are_escaped_too():
+    # Same exposure, different feed: football-data.org supplies these.
+    import datetime
+    import pathlib
+    import tempfile
+    from homescreen import scenes
+    from homescreen.reading import Reading
+    now = datetime.datetime(2026, 9, 2, 12, 0, tzinfo=datetime.timezone.utc)
+    match = {"when": (now + datetime.timedelta(days=1)).isoformat(),
+             "home": "A<b>C", "away": "D&E", "status": "TIMED",
+             "competition": "La Liga"}
+    ctx = scenes.SceneContext(
+        cfg={}, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 417, "h": 120, "depth": 1}, now=now.timestamp(), device={},
+        options=scenes.clean_options("sport", {"teams": "X = futbol:86"}),
+        data=lambda _r: Reading(data={"matches": [match]}, ok=True, age_s=5.0))
+    html = scenes.build("sport", ctx).html
+    assert "<b>" not in html and "&lt;b&gt;" in html
+    assert "&amp;E" in html

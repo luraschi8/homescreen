@@ -12,7 +12,7 @@ from datetime import datetime
 from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
-from homescreen.scenes._style import EMPTY_CSS, empty, page
+from homescreen.scenes._style import EMPTY_CSS, empty, esc, page
 
 #: DISJOINT; see `weather.SURFACES` for why the maximums are what make that
 #: true rather than the order.
@@ -192,8 +192,8 @@ def build(ctx: SceneContext) -> Scene:
         else events[:1]
     body = "".join(
         f'<div class="row"><div class="w">{_when(e.get("when"), ctx.now)}</div>'
-        f'<div class="s">{str(e.get("summary") or "")}</div>'
-        + (f'<div class="src">{str(e.get("source") or "")}</div>'
+        f'<div class="s">{esc(e.get("summary"))}</div>'
+        + (f'<div class="src">{esc(e.get("source"))}</div>'
            if show_source and e.get("source") else "")
         + '</div>'
         for e in shown)

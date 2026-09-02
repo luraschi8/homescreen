@@ -30,6 +30,22 @@ HERO_PX = 56
 #: there would BE the line, so it is sized as body text. None is the old
 #: behaviour, unchanged, for every caller that does not name a shape.
 _HERO_SHARE = {"panel": 0.115, "card": 0.30, "badge": 0.42, "strip": 0.0}
+def esc(value) -> str:
+    """Feed text, safe to interpolate into a rendered page.
+
+    Everything a component draws from a feed is remote text nobody in this
+    repo controls: a calendar SUMMARY comes from whoever shares the calendar,
+    fixture names come from football-data.org. It reaches a document Chromium
+    rasterises, and `compose.scope_css` isolates only CSS -- not the DOM -- so
+    a single "<" in an event title parses as a tag, swallows the row's closing
+    divs and collapses the whole block. `<div style=...>` in a summary escapes
+    its region and can black out the panel.
+    """
+    return (str("" if value is None else value)
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
 def metrics(width: int, height: int, shape: str | None = None,
             hero_share: float | None = None) -> dict:
     """The type ladder and spacing for a region of this size, in WHOLE pixels.

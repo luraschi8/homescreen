@@ -17,7 +17,7 @@ from homescreen.config import home_location, mapping
 from homescreen.scenes import Scene, SceneContext
 from homescreen.reading import Reading
 from homescreen.scenes import _icons
-from homescreen.scenes._style import page
+from homescreen.scenes._style import esc, page
 
 
 def _nothing() -> Reading:
@@ -230,12 +230,12 @@ def _body(variant: str, reading, place: str, temp: str, unit: str,
         # like a separate reading.
         return (f'<div class="wrap badge">'
                 f'<div class="big">{temp}{unit}</div>'
-                f'<div class="wx-place">{place}</div></div>')
+                f'<div class="wx-place">{esc(place)}</div></div>')
 
     if variant == "card":
         return (f'<div class="wrap card">'
                 f'<div class="now">{icon}<div class="big">{temp}{unit}</div></div>'
-                f'<div class="sub">{description}</div>'
+                f'<div class="sub">{esc(description)}</div>'
                 f'<div class="wx-range">{span}</div></div>')
 
     # `panel`: room to lay it out. Current conditions, the hours ahead, then
@@ -244,7 +244,7 @@ def _body(variant: str, reading, place: str, temp: str, unit: str,
     days = _daily(reading, offset, rows, zone)
     return (f'<div class="wrap panel">'
             f'<div class="now">{icon}<div class="big">{temp}{unit}</div>'
-            f'<div class="cond"><div>{description}</div>'
+            f'<div class="cond"><div>{esc(description)}</div>'
             f'<div class="wx-range">{span}</div></div></div>'
             f'{hours}{days}</div>')
 

@@ -41,7 +41,22 @@ char s_etag[64] = {0};
 char s_message[96] = {0};
 bool s_assigned = false;
 bool s_ever_reached = false;
-unsigned long s_poll_ms = 300000UL;   // five minutes until told otherwise
+//: Until the server tells us otherwise -- which it does on every response.
+//: CLAUDE.md makes `config.yaml` the source of truth for cadence and
+//: `X-Poll-Seconds` its projection, "so cadence changes without reflashing".
+//: This client never read the header, so the number below WAS the cadence and
+//: no schedule change could reach this panel without a flash.
+unsigned long s_poll_ms = 300000UL;
+
+//: The panel is a slow device driving slower glass: a full refresh is 3.68s,
+//: Chromium renders 800x480 behind every frame, and e-paper has a finite
+//: number of refreshes in it. The clock on this panel shows HH:MM, so nothing
+//: it displays can change faster than once a minute -- and the composed page
+//: asks to be woken at the next minute BOUNDARY, which is as little as one
+//: second away. Refuse to be driven faster than the glass can say anything
+//: new, however eager the server is.
+constexpr unsigned long kPollMinMs = 60000UL;
+constexpr unsigned long kPollMaxMs = 3600000UL;
 unsigned long s_next_at = 0;
 
 /** Measured on this panel: full 3.68s, partial 1.58s. */
@@ -102,6 +117,29 @@ void epaperSay(const char* headline, const char* detail) {
 namespace {
 
 /** Declare geometry and learn whether we are in the fleet. */
+/** Take the server's cadence, or keep ours if the header is not a number. */
+void applyPollHeader(const String& value) {
+  if (value.length() == 0) {
+    return;
+  }
+  char* end = nullptr;
+  const long seconds = strtol(value.c_str(), &end, 10);
+  if (end == value.c_str() || *end != '\0' || seconds <= 0) {
+    return;
+  }
+  // Clamp BEFORE multiplying: a large number times 1000 overflows unsigned
+  // long on this 32-bit target.
+  long clamped = seconds;
+  if (clamped > static_cast<long>(kPollMaxMs / 1000)) {
+    clamped = static_cast<long>(kPollMaxMs / 1000);
+  }
+  unsigned long ms = static_cast<unsigned long>(clamped) * 1000UL;
+  if (ms < kPollMinMs) {
+    ms = kPollMinMs;
+  }
+  s_poll_ms = ms;
+}
+
 bool poll() {
   HTTPClient http;
   char url[256];
@@ -112,11 +150,14 @@ bool poll() {
     return false;
   }
   http.setTimeout(8000);
+  const char* kPollKeys[] = {"X-Poll-Seconds"};
+  http.collectHeaders(kPollKeys, 1);
   const int code = http.GET();
   if (code != 200) {
     http.end();
     return false;
   }
+  applyPollHeader(http.header("X-Poll-Seconds"));
   JsonDocument doc;
   const DeserializationError err = deserializeJson(doc, http.getStream());
   http.end();
@@ -144,12 +185,13 @@ bool drawFrame() {
   // The server answers 304 when the pixels have not changed, which costs one
   // round trip instead of 48 KB and, more to the point, saves a refresh: this
   // panel takes 3.7 seconds and a visible flash to redraw the same image.
-  const char* keys[] = {"ETag"};
-  http.collectHeaders(keys, 1);
+  const char* keys[] = {"ETag", "X-Poll-Seconds"};
+  http.collectHeaders(keys, 2);
   if (s_etag[0]) {
     http.addHeader("If-None-Match", s_etag);
   }
   const int code = http.GET();
+  applyPollHeader(http.header("X-Poll-Seconds"));
   if (code == 304) {
     http.end();
     return false;

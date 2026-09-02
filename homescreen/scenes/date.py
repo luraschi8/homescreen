@@ -64,7 +64,13 @@ _HERO_SHARE = {"strip": 0.38, "badge": 0.40, "card": 0.26, "panel": 0.18}
 def _zone(ctx: SceneContext):
     name = str((ctx.options or {}).get("timezone") or "").strip()
     if not name:
-        name = str(home_location(ctx.cfg or {}).get("tz") or "").strip()
+        # `timezone`, not `tz`: that is the key `location:` actually carries
+        # and the one `clock.py` reads. `.get("tz")` was always None, so the
+        # masthead silently fell back to the SERVER PROCESS's local time --
+        # invisible only because this Pi happens to run in Europe/Madrid. Under
+        # TZ=UTC it puts the wrong day on the glass for two hours every night.
+        loc = home_location(ctx.cfg or {})
+        name = str(loc.get("timezone") or loc.get("tz") or "").strip()
     if name:
         try:
             return zoneinfo.ZoneInfo(name)
