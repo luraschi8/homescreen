@@ -48,6 +48,8 @@ def _gap_units(px: int) -> float:
 
 @pytest.mark.parametrize("px", SIZES)
 def test_a_stroke_never_closes_the_gap_it_sits_in(px):
+    if px < _icons.SIMPLIFY_BELOW_PX:
+        pytest.skip("the small set is filled; it has no strokes to close a gap")
     # THE constraint, and the one both previous attempts missed. A stroke eats
     # half its width from each side of a gap, so a stroke as wide as the gap
     # closes it -- and a closed sun is a black blob, not a sun.
@@ -59,6 +61,8 @@ def test_a_stroke_never_closes_the_gap_it_sits_in(px):
 
 @pytest.mark.parametrize("px", SIZES)
 def test_a_stroke_is_as_close_to_a_whole_device_pixel_as_the_drawing_allows(px):
+    if px < _icons.SIMPLIFY_BELOW_PX:
+        pytest.skip("the small set is filled; a fill has no stroke width")
     # Not a hard floor: where the geometry and the glass disagree, a readable
     # shape at 0.9 device px beats an unreadable one at 1.25.
     # Measured at the size DRAWN, not the size requested: below the floor the
@@ -86,17 +90,25 @@ def test_both_drawings_exist_for_every_sky():
 def test_rain_and_snow_differ_by_more_than_mark_count(px):
     rain, snow = _svg("rain", px), _svg("snow", px)
     assert rain != snow
-    # Snow's marks are FILLED, rain's are strokes. A filled shape either
-    # covers a pixel or does not; a thin cross lands half-covered along its
-    # whole length and thresholds away.
-    assert 'fill="#000"' in snow and 'fill="#000"' not in rain
+    # Both are FILLED below the simplify threshold now, which is the point: a
+    # filled shape either covers a pixel or does not, where a thin stroke
+    # lands half-covered along its whole length and thresholds away. Rain's
+    # marks are bars and snow's are discs, so they differ in shape and not
+    # only in how many there are.
+    if px < _icons.SIMPLIFY_BELOW_PX:
+        assert 'fill="#000"' in rain and 'fill="#000"' in snow
+        assert "<rect" in rain and "<circle" in snow
+    else:
+        assert 'fill="#000"' in snow
 
 
 def test_fog_keeps_every_band_it_draws():
-    # It drew three and rendered two. A picture that silently loses a stroke
-    # is a different picture.
+    # It drew three and rendered two, so it was cut to two deliberately. That
+    # was a workaround for STROKES closing up at this size; filled bars of a
+    # definite height do not, so fog has its third band back.
     small = _svg("fog", 13)
-    assert small.count("h30") == 2, "the small fog is two bands, deliberately"
+    assert small.count("<rect") == 3, "the small fog is three filled bands"
+    assert "stroke" not in small
 
 
 def test_an_unknown_sky_has_no_picture_at_any_size():
@@ -149,3 +161,21 @@ def test_the_two_sun_events_differ_where_it_matters():
     assert _icons._HORIZON in rise and _icons._HORIZON in set_
     assert _icons._SUN_EVENT["sunrise"] in rise
     assert _icons._SUN_EVENT["sunset"] in set_
+
+
+def test_the_small_set_is_filled_because_strokes_do_not_survive_the_threshold():
+    # The hourly strip drew `-[]-` six times: a stroked ring one pixel thick
+    # thresholds to a hollow box, and none of the six was a sun. Rendered
+    # through the real 160 threshold at 12, 13, 15 and 20px and looked at.
+    for sky in SKIES:
+        small = _svg(sky, 13)
+        assert "stroke" not in small, sky
+        assert 'fill="#000"' in small, sky
+    # ...and the large set still strokes, which is right: at 28px the detailed
+    # drawing has room for its gaps.
+    assert "stroke=" in _svg("clear", 28)
+
+
+def test_the_small_skies_are_all_different_pictures():
+    seen = {sky: _svg(sky, 13) for sky in SKIES}
+    assert len(set(seen.values())) == len(SKIES)

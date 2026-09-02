@@ -54,31 +54,37 @@ SIMPLIFY_BELOW_PX = 17
 #: The same floor CLAUDE.md sets for type. Smaller than this is not a picture.
 MIN_PX = 10
 
-#: Fewer marks, wider apart. Rain and snow were the same picture at 13 and
-#: 15px -- a cloud with three small marks under it, and neither the 6-unit
-#: slants nor the 4-unit crosses resolved. Two long strokes and three FILLED
-#: dots do: a filled shape either covers a pixel or does not, where a thin
-#: cross lands half-covered along its whole length.
+#: FILLED, not stroked. This is the same lesson the market arrows and the
+#: sunrise glyphs already record: a solid shape either covers a pixel or does
+#: not, where a thin stroke lands half-covered along its whole length and a
+#: hard threshold turns it into noise or nothing. Rendered through the real
+#: 160 threshold at 12, 13, 15 and 20px and looked at, against the stroked set
+#: they replace.
+_SMALL_CLOUD = ("M11 28h18a7.5 7.5 0 0 0 0-15 10 10 0 0 0-19-2.5"
+                "A7 7 0 0 0 11 28z")
 _SMALL = {
-    "clear": ('<circle cx="20" cy="20" r="7"/>'
-              '<path d="M20 1v5M20 34v5M1 20h5M34 20h5"/>'),
-    "cloud": ('<path d="M11 30h18a7.5 7.5 0 0 0 0-15 10 10 0 0 0-19-2.5'
-              'A7 7 0 0 0 11 30z"/>'),
-    "rain": ('<path d="M11 24h18a7.5 7.5 0 0 0 0-15 10 10 0 0 0-19-2.5'
-             'A7 7 0 0 0 11 24z"/>'
-             '<path d="M15 30v8M27 30v8"/>'),
-    "snow": ('<path d="M11 24h18a7.5 7.5 0 0 0 0-15 10 10 0 0 0-19-2.5'
-             'A7 7 0 0 0 11 24z"/>'
-             '<circle cx="14" cy="34" r="2.6" fill="#000" stroke="none"/>'
-             '<circle cx="21" cy="34" r="2.6" fill="#000" stroke="none"/>'
-             '<circle cx="28" cy="34" r="2.6" fill="#000" stroke="none"/>'),
-    "storm": ('<path d="M11 23h18a7.5 7.5 0 0 0 0-15 10 10 0 0 0-19-2.5'
-              'A7 7 0 0 0 11 23z"/>'
-              '<path d="M23 27l-9 8h7l-3 5z" fill="#000" stroke="none"/>'),
-    # Two bands, not three: at 13px the three-band version rendered as two
-    # anyway, and a picture that silently loses a stroke is a different
-    # picture.
-    "fog": '<path d="M5 15h30M5 27h30"/>',
+    # A filled disc with four filled rays. Stroked, this was a ring one pixel
+    # thick that thresholded to a hollow box: the hourly strip drew `-[]-` six
+    # times and none of them was a sun.
+    "clear": ('<circle cx="20" cy="20" r="9"/>'
+              '<rect x="17" y="1" width="6" height="7"/>'
+              '<rect x="17" y="32" width="6" height="7"/>'
+              '<rect x="1" y="17" width="7" height="6"/>'
+              '<rect x="32" y="17" width="7" height="6"/>'),
+    "cloud": f'<path d="{_SMALL_CLOUD}"/>',
+    "rain": (f'<path d="{_SMALL_CLOUD}"/>'
+             '<rect x="13" y="31" width="5" height="8"/>'
+             '<rect x="22" y="31" width="5" height="8"/>'),
+    "snow": (f'<path d="{_SMALL_CLOUD}"/>'
+             '<circle cx="14" cy="35" r="3"/><circle cx="21" cy="35" r="3"/>'
+             '<circle cx="28" cy="35" r="3"/>'),
+    "storm": (f'<path d="{_SMALL_CLOUD}"/>'
+              '<path d="M23 30l-10 9h7l-3 6 11-10h-7z"/>'),
+    # Three bands again. The two-band version was a workaround for STROKES
+    # closing up at this size; filled bars of a definite height do not.
+    "fog": ('<rect x="4" y="10" width="32" height="5"/>'
+            '<rect x="4" y="21" width="32" height="5"/>'
+            '<rect x="4" y="32" width="32" height="5"/>'),
 }
 
 
@@ -208,6 +214,11 @@ def sky(name: str, px: int) -> str:
     path = (_SMALL if small else _PATHS).get(str(name or ""))
     if not path:
         return ""
+    if small:
+        # Solid: no stroke to close up, nothing to half-cover.
+        return (f'<svg class="ic" viewBox="0 0 {VIEWBOX} {VIEWBOX}" '
+                f'width="{px}" height="{px}" aria-hidden="true" '
+                f'fill="#000">{path}</svg>')
     return (f'<svg class="ic" viewBox="0 0 {VIEWBOX} {VIEWBOX}" '
             f'width="{px}" height="{px}" aria-hidden="true" fill="none" '
             f'stroke="#000" '
