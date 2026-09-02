@@ -786,14 +786,22 @@ def _assign_locked(cache_dir, hw_id, name, scene, poll_seconds,
                 rec["options"] = dict(remembered.get(scene) or {})
         rec["scene"] = scene
     if poll_seconds is not None:
-        try:
-            n = float(poll_seconds)
-        except (TypeError, ValueError):
-            raise ValueError(f"poll_seconds must be a number, "
-                             f"got {poll_seconds!r}") from None
-        if not 1.0 <= n <= 3600.0:
-            raise ValueError(f"poll_seconds must be 1 to 3600, got {n}")
-        rec["poll_seconds"] = n
+        # Three states, not two. Absent means "this caller is not setting it";
+        # a number sets it; and EMPTY clears it, which is how a form field a
+        # person blanked says "stop overriding, let the component decide". A
+        # form cannot express `None`, so without this an override could be set
+        # from the web UI and never taken off again.
+        if isinstance(poll_seconds, str) and not poll_seconds.strip():
+            rec["poll_seconds"] = None
+        else:
+            try:
+                n = float(poll_seconds)
+            except (TypeError, ValueError):
+                raise ValueError(f"poll_seconds must be a number, "
+                                 f"got {poll_seconds!r}") from None
+            if not 1.0 <= n <= 3600.0:
+                raise ValueError(f"poll_seconds must be 1 to 3600, got {n}")
+            rec["poll_seconds"] = n
 
     if options is not None:
         if not isinstance(options, dict):

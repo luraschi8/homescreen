@@ -158,6 +158,19 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
             f'<figcaption>{e(scene_label(name))}</figcaption></figure>'
             for name, ok, _ in options if ok)
 
+    # What the screen would do if this box is left blank, and what the panel's
+    # own firmware will do with a number that is too small for its glass.
+    depth = int((dev.get("caps") or {}).get("depth") or 16)
+    poll_hint = str(dev.get("poll_seconds") or "automático")
+    poll_help = (
+        "En blanco lo decide el componente. Cada actualización de esta pantalla "
+        "es un refresco completo (~3,7 s y un parpadeo), y eso es lo que "
+        "desgasta el panel: cada 3 minutos son unos 480 al día. Su firmware no "
+        "baja de 180 s aunque se le pida menos."
+        if depth == 1 else
+        "En blanco lo decide el componente: un reloj cambia cada minuto, un "
+        "radar cada pocos segundos.")
+
     unknown_scene = ("" if current in known else
                      f'<div class="notice">Esta pantalla tiene asignada '
                      f'<strong>{e(current)}</strong>, que este servidor ya no '
@@ -204,6 +217,10 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     <label class="field">Nombre
       <input type="text" name="name" value="{e(dev.get("name") or "")}"
         maxlength="{name_max}" placeholder="sin nombre"></label>
+    <label class="field">Cada cuánto se actualiza (segundos)
+      <input type="number" name="poll_seconds" min="1" max="3600" step="1"
+        value="{e(dev.get("poll_seconds") or "")}" placeholder="{poll_hint}">
+      <span class="hint">{poll_help}</span></label>
     {picker}
     <div class="actions"><button type="submit">Guardar</button></div>
   </form>

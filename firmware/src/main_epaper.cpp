@@ -49,16 +49,26 @@ bool s_ever_reached = false;
 //: no schedule change could reach this panel without a flash.
 unsigned long s_poll_ms = 300000UL;
 
-//: Every draw is a full refresh, which means 3.68s of visible flashing. Once
-//: a minute that is a strobe on a desk; once every five minutes it is
-//: something you notice occasionally and the panel is sharp the rest of the
-//: time. The clock pays for it by being up to five minutes behind, which is
-//: the trade this hardware actually offers: partial refresh is what buys a
-//: ticking clock, and this panel does not have one worth using.
+//: Every draw is a full refresh, so this is the panel's WEAR RATE, and that is
+//: the only real reason it is not one minute.
 //:
-//: Chromium also renders 800x480 behind every frame, and e-paper has a finite
-//: number of refreshes in it.
-constexpr unsigned long kPollMinMs = 300000UL;
+//: The obvious objections were measured and are not reasons. The flash is
+//: quick. The Pi renders a frame in ~3.2s -- about 5% duty at one a minute,
+//: on a machine idling at 38C. And `/tmp` is tmpfs, so renders never touch the
+//: SD card that CLAUDE.md flags for wear.
+//:
+//: What is left is the glass. SPEC 12 already worked this out for the design
+//: where partials carry the minute ticks: "Partials are cheap, but the hourly
+//: full refresh is the wearing operation at ~24/day. This is sustainable; a
+//: full refresh every minute would not be." This panel has no partial worth
+//: using, so every draw is the wearing operation, and against the ~1,000,000
+//: refresh rule of thumb for e-paper: 1,440/day is ~1.9 years, 480/day is
+//: ~5.7, 288/day is ~9.5.
+//:
+//: Three minutes, chosen by the person who owns the panel. It is also the
+//: minimum refresh interval Waveshare commonly advises for these. Nothing on
+//: the glass but the clock's minute digit changes faster than this.
+constexpr unsigned long kPollMinMs = 180000UL;
 constexpr unsigned long kPollMaxMs = 3600000UL;
 
 //: What the server says actually changed. Ghosting is what a partial waveform

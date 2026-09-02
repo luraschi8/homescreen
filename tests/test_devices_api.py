@@ -915,3 +915,45 @@ def test_the_dashboard_does_not_thumbnail_a_scene_the_device_cannot_draw(ctx):
     html = _home(client)
     assert f'src="/api/devices/{HW}/preview.svg?view=planes"' not in html, \
         "planes needs a radar component this device did not declare"
+
+
+def test_the_refresh_interval_is_settable_from_the_device_page(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
+    # It existed in the registry and won over everything, and had no control
+    # anywhere: the one number that decides how hard a panel is driven -- and
+    # on 1-bit glass, how fast it wears -- was reachable only by PUTting JSON.
+    registry.set_approval(cache, HW, True)
+    client.post(f"/device/{HW}", data={"name": "Panel", "poll_seconds": "180"})
+    assert registry.load(cache)[HW]["poll_seconds"] == 180.0
+    resp = client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
+    assert resp.headers["X-Poll-Seconds"] == "180"
+
+
+def test_blanking_the_interval_hands_it_back_to_the_component(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
+    # A form cannot express `None`. Without an empty string meaning "clear",
+    # an override set from the web UI could never be taken off again.
+    registry.set_approval(cache, HW, True)
+    client.post(f"/device/{HW}", data={"name": "Panel", "poll_seconds": "600"})
+    assert registry.load(cache)[HW]["poll_seconds"] == 600.0
+    client.post(f"/device/{HW}", data={"name": "Panel", "poll_seconds": ""})
+    assert registry.load(cache)[HW]["poll_seconds"] is None
+
+
+def test_a_rename_that_carries_no_interval_field_leaves_it_alone(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
+    registry.set_approval(cache, HW, True)
+    client.post(f"/device/{HW}", data={"name": "Panel", "poll_seconds": "240"})
+    client.post(f"/device/{HW}", data={"name": "Otro"})
+    assert registry.load(cache)[HW]["poll_seconds"] == 240.0
+
+
+def test_an_absurd_interval_is_refused_not_stored(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
+    registry.set_approval(cache, HW, True)
+    client.post(f"/device/{HW}", data={"name": "Panel", "poll_seconds": "0"})
+    assert registry.load(cache)[HW].get("poll_seconds") in (None, )

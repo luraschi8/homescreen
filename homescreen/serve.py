@@ -1222,6 +1222,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         if hw not in known:
             return f"no existe ninguna pantalla {hw}"
         target = scene or (known.get(hw, {}).get("scene") or "")
+        # Absent means "not this form"; present-and-empty means "clear it, go
+        # back to letting the component decide".
+        raw_poll = form.get("poll_seconds")
+        poll = None
+        if raw_poll is not None:
+            poll = raw_poll.strip() or ""
         raw_options = {k[4:]: v for k, v in form.items() if k.startswith("opt.")}
         # A form that carried ANY option field carried them all -- a text input
         # always submits, and a checkbox that is off submits nothing. So an
@@ -1232,7 +1238,8 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                    if raw_options else None)
         try:
             rec = registry.assign(cache_dir, hw, name=name,
-                                  scene=scene or None, options=options)
+                                  scene=scene or None, poll_seconds=poll,
+                                  options=options)
         except ValueError as exc:
             return str(exc)
         except OSError as exc:
