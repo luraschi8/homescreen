@@ -506,3 +506,31 @@ def test_a_stacked_column_gets_no_cell_rules():
         {"id": "a", "region": "main_left", "component": "clock", "options": {}},
         {"id": "b", "region": "main_left", "component": "clock", "options": {}}]}
     assert "rg-cell-rule" not in compose.compose(view, EPAPER, _build)
+
+
+def test_an_empty_cell_leaves_a_band_rather_than_becoming_a_splinter():
+    # A band divides ACROSS, so collapsing a cell to a fixed width leaves a
+    # 20px splinter that still tries to set type in it: "sin uso" came out one
+    # letter per line.
+    view = {"template": "dashboard", "placements": [
+        {"id": "k0", "region": "markets", "component": "quotes",
+         "options": {"symbols": "AAPL"}},
+        {"id": "k1", "region": "markets", "component": "quotes",
+         "options": {"symbols": "MSFT"}},
+        {"id": "k2", "region": "markets", "component": "calendar",
+         "options": {}}]}
+    got = _rects(compose.compose(view, EPAPER, _build))
+    assert "k2" not in got, "the empty cell is still drawn"
+    assert {"k0", "k1"} <= set(got)
+    band = layout.regions(EPAPER, "dashboard")["markets"]["rect"]
+    assert got["k0"][2] + got["k1"][2] == band[2], "its width went to the rest"
+
+
+def test_a_band_where_everything_is_empty_still_says_so():
+    # A row of nothing says less than a row saying why it is empty.
+    view = {"template": "dashboard", "placements": [
+        {"id": "k0", "region": "markets", "component": "calendar",
+         "options": {}},
+        {"id": "k1", "region": "markets", "component": "sport", "options": {}}]}
+    got = _rects(compose.compose(view, EPAPER, _build))
+    assert {"k0", "k1"} <= set(got)

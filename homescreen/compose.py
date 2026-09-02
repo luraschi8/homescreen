@@ -138,7 +138,7 @@ def _collapsible(html: str) -> bool:
     return EMPTY_CLASS in (html or "")
 
 
-def _placed(view, regions, collapsed=None):
+def _placed(view, regions, collapsed=None, dropped=None):
     """(index, placement, rect) for each placement that has somewhere to go.
 
     `collapsed` maps a placement's index to the exact size it should take
@@ -150,8 +150,10 @@ def _placed(view, regions, collapsed=None):
     the column upward -- a panel refreshing every 30s must not reflow itself
     every time an upstream blips.
     """
+    dropped = dropped or set()
     valid = [(i, p) for i, p in enumerate(view.get("placements") or ())
-             if isinstance(p, dict) and p.get("region") in regions]
+             if isinstance(p, dict) and p.get("region") in regions
+             and i not in dropped]
     counts = {}
     for _, placement in valid:
         counts[placement["region"]] = counts.get(placement["region"], 0) + 1
@@ -190,7 +192,7 @@ def compose(view: dict, caps: dict, build_scene) -> str:
     # with those collapsed. A component is asked what it would draw at its
     # provisional size; whether it has DATA does not depend on that size, and
     # building a scene is arithmetic, not rendering.
-    collapsed, probes = {}, {}
+    collapsed, dropped, probes = {}, set(), {}
     for index, placement, rect in _placed(view, regions):
         heading = str(placement.get("label") or "")
         inner = max(1, rect[3] - HEADING_PX) if heading else rect[3]
@@ -205,14 +207,31 @@ def compose(view: dict, caps: dict, build_scene) -> str:
         # -- every placement is built exactly once.
         probes[index] = (rect, probe)
         if _collapsible(probe):
-            collapsed[index] = COLLAPSED_PX + (HEADING_PX if heading else 0)
+            region = regions.get(placement.get("region")) or {}
+            if region.get("stack") == "h":
+                # A band divides ACROSS, so a collapsed cell is a 20px-wide
+                # splinter that still tries to set type in it -- "sin uso"
+                # came out as one letter per line. Across, an empty cell goes
+                # away entirely and its width joins its neighbours.
+                dropped.add(index)
+            else:
+                collapsed[index] = COLLAPSED_PX + (HEADING_PX if heading else 0)
 
     # One number for every region, from the panel rather than from each
     # region's own geometry.
     pad = max(2, round(min(int(caps.get("w") or 800),
                            int(caps.get("h") or 480)) * PAD_SHARE))
+    # Unless it would empty a band completely: a row of nothing says less
+    # than a row saying why it is empty.
+    by_region = {}
+    for index, placement, _rect in _placed(view, regions):
+        by_region.setdefault(placement.get("region"), []).append(index)
+    for members in by_region.values():
+        if members and all(i in dropped for i in members):
+            dropped.difference_update(members)
+
     styles, bodies = [], []
-    for index, placement, rect in _placed(view, regions, collapsed):
+    for index, placement, rect in _placed(view, regions, collapsed, dropped):
         wrapper = f"rg-{_safe(placement.get('id') or index)}"
         x, y, w, h = rect
         heading = str(placement.get("label") or "")
@@ -263,7 +282,7 @@ def compose(view: dict, caps: dict, build_scene) -> str:
         styles.append(f"#{wrapper} .{FRAGMENT_CLASS}{{--pad:{pad}px;"
                       f"--pad-sm:{max(1, round(pad * 0.4))}px}}")
         bodies.append(f'<div id="{wrapper}">{body}</div>')
-    bodies.extend(_cell_rules(view, regions, collapsed, pad))
+    bodies.extend(_cell_rules(view, regions, collapsed, pad, dropped))
     if not bodies:
         return ""
     bodies.extend(_rules(layout.TEMPLATES.get(template) or {}, caps))
@@ -275,7 +294,7 @@ def compose(view: dict, caps: dict, build_scene) -> str:
             f'{"".join(styles)}</style>{"".join(bodies)}')
 
 
-def _cell_rules(view, regions, collapsed, pad) -> list:
+def _cell_rules(view, regions, collapsed, pad, dropped=None) -> list:
     """A hairline between neighbouring cells of a horizontal region.
 
     v6 gives every ticker cell a `border-left`; in 1-bit they were dropped
@@ -289,7 +308,7 @@ def _cell_rules(view, regions, collapsed, pad) -> list:
         if region.get("stack") != "h":
             continue
         seats = [(i, p, r) for i, p, r in _placed(view, {name: region},
-                                                  collapsed)]
+                                                  collapsed, dropped)]
         if len(seats) < 2:
             continue
         _, _, (_, top, _, height) = seats[0]
