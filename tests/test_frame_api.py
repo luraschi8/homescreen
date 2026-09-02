@@ -361,3 +361,52 @@ def test_a_composed_page_reports_the_view_it_is_showing(client, needs_chromium,
     _compose_a_dashboard(client, tmp_path)
     resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480")
     assert resp.headers["X-Scene"] == "panel"
+
+
+def test_the_first_frame_asks_for_a_full_refresh(client, needs_chromium,
+                                                 tmp_path):
+    # No previous frame to diff against: refreshing everything is always
+    # correct, only slower.
+    _compose_a_dashboard(client, tmp_path)
+    resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    assert "X-Dirty" not in resp.headers
+
+
+def test_an_unchanged_frame_reports_nothing_dirty(client, needs_chromium,
+                                                  tmp_path):
+    _compose_a_dashboard(client, tmp_path)
+    client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    assert resp.headers.get("X-Dirty") == ""
+
+
+def test_a_geometry_change_asks_for_a_full_refresh(client, needs_chromium,
+                                                   tmp_path):
+    _compose_a_dashboard(client, tmp_path)
+    client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    resp = client.get(f"/api/devices/{HW}/frame?w=400&h=240")
+    assert "X-Dirty" not in resp.headers
+
+
+def test_the_dirty_header_is_parseable_and_bounded(client, needs_chromium,
+                                                   tmp_path):
+    from homescreen import render as _render
+    _compose_a_dashboard(client, tmp_path)
+    client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    # Change what is on the glass, then look at what the device is told.
+    client.put(f"/api/devices/{HW}/schedule", json={
+        "views": {"panel": {"template": "dashboard", "placements": [
+            {"id": "m", "region": "masthead", "component": "date",
+             "options": {}},
+            {"id": "c", "region": "main_left", "component": "blank",
+             "options": {}}]}},
+        "schedule": {"tz": "Europe/Madrid", "default": "panel", "slots": []}})
+    resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    header = resp.headers.get("X-Dirty")
+    assert header, "nothing reported dirty after the view changed"
+    rects = [tuple(int(n) for n in part.split(","))
+             for part in header.split(";")]
+    assert len(rects) <= _render.MAX_DIRTY_RECTS
+    for x, y, w, h in rects:
+        assert x % 8 == 0 and w % 8 == 0
+        assert 0 <= x and 0 <= y and x + w <= 800 and y + h <= 480

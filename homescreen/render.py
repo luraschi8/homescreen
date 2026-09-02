@@ -220,3 +220,77 @@ def render_frame(html: str, width: int, height: int,
         while len(_cache) > _CACHE_MAX:
             _cache.popitem(last=False)
     return packed
+
+
+#: A 1bpp row is packed eight pixels to a byte, and this panel's partial-refresh
+#: x-bounds must be multiples of 8 (CLAUDE.md §6). Both facts point the same
+#: way, so dirty rectangles are computed in BYTE columns and come out aligned by
+#: construction rather than by rounding afterwards.
+
+#: How many rectangles are worth sending. Each one costs the device its own
+#: refresh cycle, so past a handful the cycles cost more than the pixels saved.
+MAX_DIRTY_RECTS = 4
+
+#: Bands closer together than this are merged. A gap of a few rows between two
+#: changed bands is not worth a second refresh cycle and its fixed overhead.
+_MERGE_GAP_ROWS = 24
+
+
+def dirty_rects(previous: bytes, current: bytes, width: int, height: int):
+    """8-aligned rectangles covering every changed pixel, top to bottom.
+
+    Empty when nothing changed. None when the inputs are not two frames of
+    this geometry -- the caller then refreshes everything, which is always
+    correct and never wrong, only slower.
+
+    This exists because of what ghosting IS. A partial waveform is shorter and
+    weaker than a full one, so the pigment does not quite arrive; and it is not
+    charge-balanced, so residue accumulates in the capsule and each update
+    moves the particles a little less than the last. Refreshing the FULL window
+    in partial mode -- which is what the panel did -- applies that waveform to
+    all 384,000 pixels every minute, including the ~95% that did not change.
+    Only the clock digits are moving; every pixel was paying for it, which is
+    why the whole screen fogged rather than just the parts that change.
+
+    Measured on two consecutive live frames: one bounding box round every
+    change is 45.8% of the panel, because it unions the clock with the markets
+    band. The same changes as separate row bands are 4.6%.
+    """
+    stride = width // 8
+    if width % 8 or stride <= 0 or height <= 0:
+        return None
+    if len(previous) != stride * height or len(current) != stride * height:
+        return None
+    if previous == current:
+        return []
+
+    bands = []
+    for row in range(height):
+        start = row * stride
+        end = start + stride
+        if previous[start:end] == current[start:end]:
+            continue
+        lo, hi = stride, -1
+        for col in range(stride):
+            if previous[start + col] != current[start + col]:
+                if col < lo:
+                    lo = col
+                hi = col
+        if bands and row - bands[-1][3] <= _MERGE_GAP_ROWS:
+            band = bands[-1]
+            band[0] = min(band[0], lo)
+            band[1] = max(band[1], hi)
+            band[3] = row
+        else:
+            bands.append([lo, hi, row, row])
+
+    # Still too many: merge whichever neighbours are closest, repeatedly. The
+    # union of two bands is cheaper than a second refresh cycle.
+    while len(bands) > MAX_DIRTY_RECTS:
+        gaps = [bands[i + 1][2] - bands[i][3] for i in range(len(bands) - 1)]
+        i = gaps.index(min(gaps))
+        a, b = bands[i], bands[i + 1]
+        bands[i:i + 2] = [[min(a[0], b[0]), max(a[1], b[1]), a[2], b[3]]]
+
+    return [(lo * 8, y0, (hi - lo + 1) * 8, y1 - y0 + 1)
+            for lo, hi, y0, y1 in bands]

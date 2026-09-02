@@ -303,3 +303,74 @@ def test_the_cache_holds_exactly_the_stated_number_of_frames(monkeypatch):
     for i in range(render._CACHE_MAX + 5):
         render.render_frame(f"<p>{i}</p>", 800, 480)
     assert render.cache_stats()["size"] == 16, "a literal, not the constant"
+
+
+# --- dirty rectangles: why the whole panel used to fog ------------------------
+
+W, H = 800, 480
+STRIDE = W // 8
+
+
+def _blank():
+    return bytes(STRIDE * H)
+
+
+def _with(*cells):
+    """A frame with the given (row, byte_column) bytes set."""
+    buf = bytearray(STRIDE * H)
+    for row, col in cells:
+        buf[row * STRIDE + col] = 0xFF
+    return bytes(buf)
+
+
+def test_nothing_changed_is_no_rectangles_not_the_whole_screen():
+    assert render.dirty_rects(_blank(), _blank(), W, H) == []
+
+
+def test_a_geometry_mismatch_asks_for_everything_rather_than_guessing():
+    assert render.dirty_rects(_blank(), _blank()[:-1], W, H) is None
+    assert render.dirty_rects(_blank(), _blank(), 801, H) is None
+
+
+def test_a_rectangle_is_eight_aligned_by_construction():
+    # The panel's partial-refresh x-bounds must be multiples of 8 (CLAUDE.md
+    # §6), and a 1bpp row packs eight pixels to a byte. Computing in byte
+    # columns satisfies both without rounding afterwards.
+    for x, _y, w, _h in render.dirty_rects(_blank(), _with((10, 3)), W, H):
+        assert x % 8 == 0 and w % 8 == 0
+
+
+def test_one_changed_byte_is_one_small_rectangle():
+    assert render.dirty_rects(_blank(), _with((10, 3)), W, H) == [(24, 10, 8, 1)]
+
+
+def test_two_distant_changes_stay_two_rectangles():
+    # The clock and the markets band are 350 rows apart. Unioning them into one
+    # bounding box put 45.8% of the panel under a partial waveform; kept
+    # separate the same changes are 4.6%.
+    rects = render.dirty_rects(_blank(), _with((80, 3), (450, 60)), W, H)
+    assert len(rects) == 2
+    assert sum(w * h for _x, _y, w, h in rects) < 0.01 * W * H
+
+
+def test_bands_a_few_rows_apart_are_merged_rather_than_refreshed_twice():
+    rects = render.dirty_rects(_blank(), _with((80, 3), (84, 3)), W, H)
+    assert len(rects) == 1
+
+
+def test_the_rectangle_count_is_bounded():
+    scattered = _with(*[(row, 3) for row in range(0, 400, 50)])
+    rects = render.dirty_rects(_blank(), scattered, W, H)
+    assert 0 < len(rects) <= render.MAX_DIRTY_RECTS
+
+
+def test_every_changed_pixel_is_inside_some_rectangle():
+    changed = _with((5, 0), (200, 55), (300, 99), (479, 12))
+    rects = render.dirty_rects(_blank(), changed, W, H)
+    for row in range(H):
+        for col in range(STRIDE):
+            if changed[row * STRIDE + col] == 0:
+                continue
+            x = col * 8
+            assert any(rx <= x and x < rx + rw and ry <= row < ry + rh
+                       for rx, ry, rw, rh in rects), (row, col)

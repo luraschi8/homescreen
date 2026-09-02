@@ -1556,6 +1556,28 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                     rec, scene_max_s=getattr(scene, "poll_max_s", None)))
         return resp
 
+    #: The last frame each device was served, for diffing the next one
+    #: against. Bounded by the fleet, one framebuffer each -- 48 KB for the
+    #: 800x480 panel -- and deliberately in memory: it is an optimisation, and
+    #: losing it on restart costs one full refresh, not correctness.
+    _last_frame: dict = {}
+
+    def _dirty_header(hw: str, packed: bytes, w: int, h: int):
+        """`x,y,w,h;...` of what changed, or None to mean "refresh everything".
+
+        None on the first frame after a restart, on a geometry change, and
+        whenever the diff cannot be trusted -- refreshing the whole panel is
+        always correct, only slower and foggier.
+        """
+        previous = _last_frame.get(hw)
+        _last_frame[hw] = (w, h, packed)
+        if not previous or previous[0] != w or previous[1] != h:
+            return None
+        rects = render.dirty_rects(previous[2], packed, w, h)
+        if rects is None:
+            return None
+        return ";".join(f"{x},{y},{rw},{rh}" for x, y, rw, rh in rects)
+
     _scene_data = datasource.reader(cache_dir, clock)
 
     def _scene_for(hw: str, rec: dict, caps: dict | None = None):
@@ -1767,6 +1789,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         resp.headers["ETag"] = etag
         resp.headers["X-Frame-Bytes"] = str(len(packed))
         resp.headers["X-Scene"] = name
+        # What actually MOVED since this device's last frame. The Pi has both
+        # frames and the CPU to diff them; the device has neither to spare,
+        # which is the same division of labour as every other decision here.
+        dirty = _dirty_header(hw, packed, w, h)
+        if dirty is not None:
+            resp.headers["X-Dirty"] = dirty
         return _poll_header(resp, rec, scene, hw)
 
     @app.get("/api/status")

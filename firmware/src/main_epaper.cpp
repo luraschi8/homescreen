@@ -18,6 +18,7 @@
 
 #include "config.h"
 #include "config_epaper.h"
+#include "epaper_dirty.h"
 #include "epaper_ui.h"
 #include "services/device_id.h"
 #include "services/server_config.h"
@@ -57,6 +58,18 @@ unsigned long s_poll_ms = 300000UL;
 //: new, however eager the server is.
 constexpr unsigned long kPollMinMs = 60000UL;
 constexpr unsigned long kPollMaxMs = 3600000UL;
+
+//: What the server says actually changed. Ghosting is what a partial waveform
+//: LEAVES: it is shorter and weaker than a full one so the pigment does not
+//: quite arrive, and it is not charge-balanced so residue builds in the
+//: capsule and each update moves the particles a little less than the last.
+//: Refreshing the full window in partial mode applied that waveform to all
+//: 384,000 pixels every minute, including the ~95% that had not changed --
+//: which is why the WHOLE screen fogged when only the clock was moving.
+//:
+//: Parsing lives in `epaper_dirty.cpp` because it reads untrusted input into
+//: coordinates handed straight to GxEPD2, and that is worth a test.
+epaper::DirtyPlan s_dirty;
 unsigned long s_next_at = 0;
 
 /** Measured on this panel: full 3.68s, partial 1.58s. */
@@ -68,20 +81,14 @@ constexpr unsigned long kRefreshBudgetMs = 8000;
 //: accumulates until thin type stops being legible. A full refresh drives
 //: every pixel to both extremes and clears it.
 //:
-//: Four, not twelve. Twelve was chosen against an assumed five-minute poll;
-//: the server actually sends `X-Poll-Seconds: 600`, and because the panel
-//: carries a clock the pixels differ at every poll, so the ETag never spares
-//: a draw. Twelve partials at ten minutes apart is a full refresh every TWO
-//: HOURS, and the residue of eleven of them is the fog this was reported as.
-constexpr uint32_t kPartialsBeforeFull = 4;
-
-//: ...and partial is only worth its residue when the flash would actually be
-//: a tic. The 3.68s full refresh costs the same whether draws are a minute or
-//: ten minutes apart, but the ANNOYANCE of it is per draw: at ten minutes it
-//: is unnoticeable, and buying a permanently clean panel with it is free.
-//: Below this gap, updates come fast enough that flashing every time would be
-//: a strobe, and partial earns its keep.
-constexpr uint32_t kPartialOnlyWithinMs = 120000UL;   // two minutes
+//: How many partial refreshes before a full one clears the residue.
+//:
+//: This used to be the only defence against fogging, and it had to be small
+//: because every partial drove the whole panel. Now a partial drives only the
+//: rectangles that changed -- typically the clock, about 5% of the glass -- so
+//: the residue is confined to that small area and builds far more slowly
+//: everywhere else. Fifteen minutes between flashes rather than four.
+constexpr uint32_t kPartialsBeforeFull = 15;
 
 uint32_t s_partials = 0;
 uint32_t s_last_draw_ms = 0;
@@ -185,8 +192,8 @@ bool drawFrame() {
   // The server answers 304 when the pixels have not changed, which costs one
   // round trip instead of 48 KB and, more to the point, saves a refresh: this
   // panel takes 3.7 seconds and a visible flash to redraw the same image.
-  const char* keys[] = {"ETag", "X-Poll-Seconds"};
-  http.collectHeaders(keys, 2);
+  const char* keys[] = {"ETag", "X-Poll-Seconds", "X-Dirty"};
+  http.collectHeaders(keys, 3);
   if (s_etag[0]) {
     http.addHeader("If-None-Match", s_etag);
   }
@@ -218,6 +225,9 @@ bool drawFrame() {
   }
   const size_t got = http.getStream().readBytes(frame, kFrameBytes);
   snprintf(s_etag, sizeof(s_etag), "%s", http.header("ETag").c_str());
+  const String dirty = http.header("X-Dirty");
+  s_dirty = epaper::parseDirty(
+      http.hasHeader("X-Dirty") ? dirty.c_str() : nullptr, kWidth, kHeight);
   http.end();
   if (got != kFrameBytes) {
     Serial.printf("[epaper] short read: %u of %u\n", (unsigned)got,
@@ -232,23 +242,37 @@ bool drawFrame() {
   // convention is the opposite of ours, and `invert` is where that is
   // reconciled -- once, here, rather than by XORing 48000 bytes.
   const uint32_t started = millis();
-  display.setFullWindow();
-  display.writeImage(frame, 0, 0, kWidth, kHeight, true, false, false);
-  free(frame);
 
-  // The first draw after a boot is always full: whatever was on the glass
-  // came from a previous life of this panel and none of it is ours to keep.
-  //
-  // After that, partial only while draws are coming fast enough that the
-  // flash would be a strobe. At the ten-minute cadence the server asks for,
-  // every draw is full and the glass never fogs.
+  // The first draw after a boot is always full: whatever was on the glass came
+  // from a previous life of this panel and none of it is ours to keep. After
+  // that a full refresh every so often, to clear the residue the partials in
+  // between have left behind.
   const uint32_t at = millis();
-  const bool rapid = s_last_draw_ms != 0 &&
-                     (at - s_last_draw_ms) < kPartialOnlyWithinMs;
   const bool full = (s_partials == 0) || (s_partials >= kPartialsBeforeFull) ||
-                    !rapid;
-  display.refresh(!full);
-  s_partials = full ? 1 : s_partials + 1;
+                    !s_dirty.known;
+  if (full) {
+    display.setFullWindow();
+    display.writeImage(frame, 0, 0, kWidth, kHeight, true, false, false);
+    display.refresh(false);
+    s_partials = 1;
+  } else if (s_dirty.count == 0) {
+    // The server diffed the frames and nothing moved. Drawing would spend a
+    // waveform, and a little more ghosting, to reach the picture already on
+    // the glass.
+  } else {
+    // Only what changed. Each rectangle is its own window, so the pixels
+    // between them are never driven and never accumulate residue -- which is
+    // the whole reason the screen used to fog everywhere at once.
+    for (size_t i = 0; i < s_dirty.count; ++i) {
+      const epaper::Rect& r = s_dirty.rects[i];
+      display.setPartialWindow(r.x, r.y, r.w, r.h);
+      display.writeImagePart(frame, r.x, r.y, kWidth, kHeight,
+                             r.x, r.y, r.w, r.h, true, false, false);
+      display.refresh(true);
+    }
+    s_partials = s_partials + 1;
+  }
+  free(frame);
   s_last_draw_ms = at;
 
   sleepPanel();
