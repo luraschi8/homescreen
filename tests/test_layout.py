@@ -28,7 +28,11 @@ def test_the_dashboard_template_reproduces_the_geometry_the_spec_measured():
     # stop resolving to the measured pixels on that panel, the design drawn
     # for it has been quietly redrawn.
     r = layout.regions(EPD, "dashboard")
-    assert r["masthead"]["rect"] == (0, 0, 800, 53)
+    # SPEC §9 opens with "Outer padding: 18px left/right" -- a PANEL rule, and
+    # the masthead is on the panel. It used to be full-bleed, which is why the
+    # date sat 14px outside the clock beneath it. The masthead RULE still spans
+    # the full width; the rules belong to the template, not to this region.
+    assert r["masthead"]["rect"] == (18, 0, 764, 53)
     assert r["main_left"]["rect"] == (18, 63, 417, 335)
     assert r["main_right"]["rect"] == (461, 63, 321, 335)
     assert r["markets"]["rect"] == (18, 406, 764, 62)
@@ -40,7 +44,7 @@ def test_the_same_template_resolves_on_a_screen_nobody_has_bought():
     big = {"w": 1024, "h": 600, "depth": 16}
     assert "dashboard" in layout.templates_for(big)
     r = layout.regions(big, "dashboard")
-    assert r["masthead"]["rect"] == (0, 0, 1024, 66)
+    assert r["masthead"]["rect"] == (23, 0, 978, 66)
     assert r["markets"]["rect"][2] > 900, "it scaled, it did not clip"
 
 

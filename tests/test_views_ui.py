@@ -377,7 +377,10 @@ def test_every_box_points_at_the_control_that_fills_it(ctx):
 
 
 def test_the_boxes_are_positioned_in_the_panels_own_proportions(ctx):
-    # The masthead is the full width and the top ninth of SPEC §9's design.
+    # The masthead spans the panel's inner width -- SPEC §9's "Outer padding:
+    # 18px left/right" is a panel rule and the masthead is on the panel -- and
+    # the top ninth of its height. The wireframe shows what the panel does, so
+    # it moved when the region did.
     client, cache = ctx
     _dashboard(client, cache)
     html = client.get(f"/device/{EPD}").get_data(as_text=True)
@@ -387,8 +390,10 @@ def test_the_boxes_are_positioned_in_the_panels_own_proportions(ctx):
         if name == "v.panel.masthead.0":
             style = css
     assert style, "the masthead is drawn"
-    assert "left:0" in style.replace(" ", "")
-    assert "width:100" in style.replace(" ", "")
+    flat = style.replace(" ", "")
+    assert "left:2.25" in flat, flat
+    assert "width:95.5" in flat, flat
+    assert "top:0" in flat, flat
 
 
 def test_the_markets_band_is_drawn_in_the_sketchs_proportions(ctx):

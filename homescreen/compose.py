@@ -56,6 +56,22 @@ FRAGMENT_CLASS = "rg-frag"
 #: something to put in it.
 COLLAPSED_PX = 20
 
+#: Interior padding for every region on a composed page, as a fraction of the
+#: panel's short side.
+#:
+#: The panel margin belongs to the TEMPLATE -- the region rects already carry
+#: it -- so a component's own padding is breathing room inside a box that is
+#: already inset. Left to each region it was derived from that region's short
+#: side, which gave the 53px masthead 3px and the 335px column 18px, so the
+#: date sat 14px outside the clock beneath it. Measured on the live panel:
+#: five different left edges (4, 18, 22, 25) and three right ones.
+#:
+#: Set by the composer, after each fragment's own stylesheet, because the
+#: composer is what knows there is a panel margin at all. A scene rendered on
+#: its own -- the round display, a preview -- keeps its region-derived padding,
+#: which is right, because there no template has inset anything.
+PAD_SHARE = 0.025
+
 
 def scope_css(css: str, wrapper: str, root: str | None = None) -> str:
     """Prefix every selector so a fragment's styles cannot leave its region.
@@ -191,6 +207,10 @@ def compose(view: dict, caps: dict, build_scene) -> str:
         if _collapsible(probe):
             collapsed[index] = COLLAPSED_PX + (HEADING_PX if heading else 0)
 
+    # One number for every region, from the panel rather than from each
+    # region's own geometry.
+    pad = max(2, round(min(int(caps.get("w") or 800),
+                           int(caps.get("h") or 480)) * PAD_SHARE))
     styles, bodies = [], []
     for index, placement, rect in _placed(view, regions, collapsed):
         wrapper = f"rg-{_safe(placement.get('id') or index)}"
@@ -236,6 +256,9 @@ def compose(view: dict, caps: dict, build_scene) -> str:
                 f"border-top:1px solid #000;padding-top:3px;margin-bottom:2px;"
                 f"font-family:Inter,'DejaVu Sans',sans-serif}}")
         styles.append(css)
+        # AFTER the fragment's own rule, at equal specificity, so this wins.
+        styles.append(f"#{wrapper} .{FRAGMENT_CLASS}{{--pad:{pad}px;"
+                      f"--pad-sm:{max(1, round(pad * 0.4))}px}}")
         bodies.append(f'<div id="{wrapper}">{body}</div>')
     if not bodies:
         return ""

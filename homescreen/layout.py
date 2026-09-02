@@ -68,7 +68,10 @@ TEMPLATES = {
         "requires": {"shape": "rect", "min_w": 600, "min_h": 380,
                      "min_aspect": 1.2},
         "regions": {
-            "masthead":   {"rect": (0.0,    0.0,   1.0,   0.110),
+            # Inset like every other region. It was full-bleed, so its
+            # content sat 14px outside the columns' -- one of the five
+            # different left edges the panel used to have.
+            "masthead":   {"rect": (0.0225, 0.0,   0.955, 0.110),
                            "holds": 1, "stack": None},
             # Five, because the original design stacks clock, sun times,
             # agenda, deliveries and sport here.
