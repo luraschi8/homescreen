@@ -123,7 +123,10 @@ def build(ctx: SceneContext) -> Scene:
 CSS = """
 .wrap{padding:var(--pad);height:100%;display:flex;flex-direction:column;
   justify-content:center}
-.wrap.row{flex-direction:row;align-items:center;gap:var(--pad-sm)}
+/* Relative to the date, not to the band's padding: `--pad-sm` is 1px in a
+   band this shallow, which put the glyph hard against the "m". */
+.wrap.row{flex-direction:row;align-items:center;gap:.45em;
+  font-size:var(--hero)}
 .ic{flex:none;display:block}
 .d{font-size:var(--hero);font-weight:500;letter-spacing:.02em;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.1}
