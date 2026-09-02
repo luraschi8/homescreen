@@ -243,18 +243,29 @@ def dirty_rects(previous: bytes, current: bytes, width: int, height: int):
     this geometry -- the caller then refreshes everything, which is always
     correct and never wrong, only slower.
 
-    This exists because of what ghosting IS. A partial waveform is shorter and
-    weaker than a full one, so the pigment does not quite arrive; and it is not
-    charge-balanced, so residue accumulates in the capsule and each update
-    moves the particles a little less than the last. Refreshing the FULL window
-    in partial mode -- which is what the panel did -- applies that waveform to
-    all 384,000 pixels every minute, including the ~95% that did not change.
-    Only the clock digits are moving; every pixel was paying for it, which is
-    why the whole screen fogged rather than just the parts that change.
+    What the 7.5" V2 actually does with this: nothing. Its driver disables
+    windowed partial refresh outright --
 
-    Measured on two consecutive live frames: one bounding box round every
-    change is 45.8% of the panel, because it unions the clock with the markets
-    band. The same changes as separate row bands are 4.6%.
+        static const bool usePartialUpdateWindow = false; // set false for
+                                                          // better image
+
+    -- so `refresh(x, y, w, h)` sets a RAM window and then drives the WHOLE
+    screen anyway, measured at a constant 1.578s per call whatever the
+    rectangle. Confining the window saves nothing there, and asking for two
+    rectangles spends two full-screen partial waveforms where one would have
+    done. That panel takes a full refresh every time instead.
+
+    What survives, and is worth keeping: the difference between "no rectangles"
+    and "no header". An empty list means the server diffed the two frames and
+    they are identical, so the device can skip the draw entirely -- 3.68s of
+    flashing and a little more residue, saved. A missing header means it could
+    not tell, and the device refreshes everything.
+
+    The rectangles themselves are correct and cheap, and are the right thing to
+    send to any display whose controller can honour them. Measured on two
+    consecutive live frames: one bounding box round every change is 45.8% of
+    the panel because it unions the clock with the markets band; the same
+    changes as separate row bands are 4.6%.
     """
     stride = width // 8
     if width % 8 or stride <= 0 or height <= 0:

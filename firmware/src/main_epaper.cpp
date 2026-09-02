@@ -49,14 +49,16 @@ bool s_ever_reached = false;
 //: no schedule change could reach this panel without a flash.
 unsigned long s_poll_ms = 300000UL;
 
-//: The panel is a slow device driving slower glass: a full refresh is 3.68s,
-//: Chromium renders 800x480 behind every frame, and e-paper has a finite
-//: number of refreshes in it. The clock on this panel shows HH:MM, so nothing
-//: it displays can change faster than once a minute -- and the composed page
-//: asks to be woken at the next minute BOUNDARY, which is as little as one
-//: second away. Refuse to be driven faster than the glass can say anything
-//: new, however eager the server is.
-constexpr unsigned long kPollMinMs = 60000UL;
+//: Every draw is a full refresh, which means 3.68s of visible flashing. Once
+//: a minute that is a strobe on a desk; once every five minutes it is
+//: something you notice occasionally and the panel is sharp the rest of the
+//: time. The clock pays for it by being up to five minutes behind, which is
+//: the trade this hardware actually offers: partial refresh is what buys a
+//: ticking clock, and this panel does not have one worth using.
+//:
+//: Chromium also renders 800x480 behind every frame, and e-paper has a finite
+//: number of refreshes in it.
+constexpr unsigned long kPollMinMs = 300000UL;
 constexpr unsigned long kPollMaxMs = 3600000UL;
 
 //: What the server says actually changed. Ghosting is what a partial waveform
@@ -81,16 +83,27 @@ constexpr unsigned long kRefreshBudgetMs = 8000;
 //: accumulates until thin type stops being legible. A full refresh drives
 //: every pixel to both extremes and clears it.
 //:
-//: How many partial refreshes before a full one clears the residue.
+//: THIS PANEL HAS NO USABLE PARTIAL REFRESH. Every draw is full.
 //:
-//: This used to be the only defence against fogging, and it had to be small
-//: because every partial drove the whole panel. Now a partial drives only the
-//: rectangles that changed -- typically the clock, about 5% of the glass -- so
-//: the residue is confined to that small area and builds far more slowly
-//: everywhere else. Fifteen minutes between flashes rather than four.
-constexpr uint32_t kPartialsBeforeFull = 15;
+//: The plan was to refresh only the rectangles the server says changed, so the
+//: untouched 95% would never take a partial waveform and never accumulate its
+//: residue. The 7.5" V2 cannot do it. Its driver says so directly:
+//:
+//:     static const bool usePartialUpdateWindow = false; // set false for
+//:                                                       // better image
+//:
+//: With that flag off, `refresh(x, y, w, h)` sets a RAM window and then calls
+//: `_Update_Part()`, which drives the WHOLE screen regardless -- measured, at
+//: a constant 1.578s per call whatever the rectangle. So confining the window
+//: saved nothing, and asking for two rectangles spent two full-screen partial
+//: waveforms per cycle where one had been spent before. It made the fogging
+//: worse, which is exactly how it was reported.
+//:
+//: A full refresh drives every pixel through complete black-white inversions,
+//: which re-disperses the pigment and cancels the accumulated bias. It costs
+//: 3.68s and a visible flash. That is the whole price of a panel that is
+//: always sharp, and on this hardware there is no cheaper way to be sharp.
 
-uint32_t s_partials = 0;
 uint32_t s_last_draw_ms = 0;
 
 void sleepPanel() {
@@ -248,37 +261,31 @@ bool drawFrame() {
   // that a full refresh every so often, to clear the residue the partials in
   // between have left behind.
   const uint32_t at = millis();
-  const bool full = (s_partials == 0) || (s_partials >= kPartialsBeforeFull) ||
-                    !s_dirty.known;
-  if (full) {
-    display.setFullWindow();
-    display.writeImage(frame, 0, 0, kWidth, kHeight, true, false, false);
-    display.refresh(false);
-    s_partials = 1;
-  } else if (s_dirty.count == 0) {
-    // The server diffed the frames and nothing moved. Drawing would spend a
-    // waveform, and a little more ghosting, to reach the picture already on
-    // the glass.
-  } else {
-    // Only what changed. Each rectangle is its own window, so the pixels
-    // between them are never driven and never accumulate residue -- which is
-    // the whole reason the screen used to fog everywhere at once.
-    for (size_t i = 0; i < s_dirty.count; ++i) {
-      const epaper::Rect& r = s_dirty.rects[i];
-      display.setPartialWindow(r.x, r.y, r.w, r.h);
-      display.writeImagePart(frame, r.x, r.y, kWidth, kHeight,
-                             r.x, r.y, r.w, r.h, true, false, false);
-      display.refresh(true);
-    }
-    s_partials = s_partials + 1;
+  // Nothing moved: the server diffed this frame against the last one it sent
+  // us and they are identical. This is the one thing the dirty-rectangle
+  // header is still good for on this panel, and it is worth keeping -- a
+  // refresh that reaches the picture already on the glass is 3.68s of flashing
+  // and a little more residue, bought for nothing.
+  if (s_dirty.known && s_dirty.count == 0) {
+    free(frame);
+    Serial.println("[epaper] nothing changed, not refreshing");
+    sleepPanel();
+    return true;
   }
+
+  // The WHOLE image, then a full refresh. `sleepPanel()` hibernates the
+  // controller after each draw and that loses its RAM, so the complete
+  // framebuffer has to be written every cycle regardless.
+  display.setFullWindow();
+  display.writeImage(frame, 0, 0, kWidth, kHeight, true, false, false);
   free(frame);
+  display.refresh(false);
   s_last_draw_ms = at;
 
   sleepPanel();
-  Serial.printf("[epaper] drew a frame in %lu ms (%s), heap %u B\n",
+  Serial.printf("[epaper] drew a frame in %lu ms (full), heap %u B\n",
                 (unsigned long)(millis() - started),
-                full ? "full" : "partial", (unsigned)ESP.getFreeHeap());
+                (unsigned)ESP.getFreeHeap());
   return true;
 }
 
