@@ -254,6 +254,9 @@ def compose(view: dict, caps: dict, build_scene) -> str:
                 f"#{wrapper} .rg-label{{font-size:10px;font-weight:500;"
                 f"letter-spacing:.14em;text-transform:uppercase;"
                 f"border-top:1px solid #000;padding-top:3px;margin-bottom:2px;"
+                # Indented to the same edge as the block beneath it. The rule
+                # spans the region, the words line up with the content.
+                f"padding-left:{pad}px;"
                 f"font-family:Inter,'DejaVu Sans',sans-serif}}")
         styles.append(css)
         # AFTER the fragment's own rule, at equal specificity, so this wins.
