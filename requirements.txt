@@ -8,3 +8,12 @@ pytest>=8.0
 pytest-timeout>=2.3
 # Thresholds the rendered PNG to the panel's 1-bit wire format.
 pillow>=10.0
+# CLAUDE.md, Dependencies: "`recurring-ical-events` is required -- plain
+# `icalendar` does not expand RRULEs." SPEC §5's install line has listed both
+# since the beginning; this file never did, and `ics.py` hand-rolled a parser
+# that reads DTSTART and ignores RRULE. A real family calendar came back with
+# ZERO events for the next fortnight while carrying 118 recurrence rules,
+# because every recurring series is only ever seen at its original start --
+# often years in the past -- and then filtered out by the window.
+icalendar>=6.0
+recurring-ical-events>=3.0

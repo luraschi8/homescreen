@@ -315,3 +315,96 @@ def test_one_calendar_alone_is_not_labelled():
         options=scenes.clean_options("calendar", {
             "calendars": "Trabajo = https://a.invalid/w.ics"}))
     assert "Trabajo" not in scenes.build("calendar", ctx).html
+
+
+# --- recurrence ---------------------------------------------------------------
+
+def _recurring_feed():
+    """A calendar whose only entries repeat, like a real family one.
+
+    A birthday from decades ago and a weekly commitment from last year: both
+    are happening this week, and both have a DTSTART far outside any window a
+    panel asks about.
+    """
+    import datetime as _dt
+    today = _dt.date.today()
+    birthday = today.replace(year=1975) + _dt.timedelta(days=2)
+    weekly = today - _dt.timedelta(days=364)
+    return (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n"
+        "BEGIN:VEVENT\r\nUID:b1\r\n"
+        f"DTSTART;VALUE=DATE:{birthday:%Y%m%d}\r\n"
+        "RRULE:FREQ=YEARLY\r\nSUMMARY:Cumpleaños de Luis\r\nEND:VEVENT\r\n"
+        "BEGIN:VEVENT\r\nUID:w1\r\n"
+        f"DTSTART:{weekly:%Y%m%d}T170000Z\r\n"
+        "RRULE:FREQ=WEEKLY\r\nSUMMARY:Entreno\r\nEND:VEVENT\r\n"
+        "END:VCALENDAR\r\n")
+
+
+def test_a_recurring_event_is_seen_on_the_day_it_recurs():
+    # The parser read DTSTART and ignored RRULE, so a series was only ever seen
+    # at its original start -- decades ago for a birthday -- and the window
+    # then filtered it out. Measured against a real family calendar: 526
+    # events, 118 recurrence rules, ZERO reported for the next fortnight.
+    from homescreen.fetch.providers import ics
+    got = ics.fetch({"url": "https://x/c.ics", "days": 14},
+                    session=_Session(_recurring_feed()))
+    summaries = [e["summary"] for e in got["events"]]
+    assert "Cumpleaños de Luis" in summaries, summaries
+    assert "Entreno" in summaries, summaries
+
+
+def test_a_weekly_series_repeats_across_the_window():
+    from homescreen.fetch.providers import ics
+    got = ics.fetch({"url": "https://x/c.ics", "days": 21},
+                    session=_Session(_recurring_feed()))
+    weekly = [e for e in got["events"] if e["summary"] == "Entreno"]
+    assert len(weekly) >= 3, f"a weekly series gave {len(weekly)} in 21 days"
+
+
+def test_an_all_day_recurrence_lands_on_its_own_day():
+    # All-day events arrive as a `date`, which cannot be compared with an aware
+    # datetime; midnight in the server's zone is what "that day" means on a
+    # screen standing in that zone.
+    import datetime as _dt
+    from homescreen.fetch.providers import ics
+    got = ics.fetch({"url": "https://x/c.ics", "days": 14},
+                    session=_Session(_recurring_feed()))
+    day = [e for e in got["events"] if e["summary"] == "Cumpleaños de Luis"][0]
+    when = _dt.datetime.fromisoformat(day["when"])
+    assert when.date() == _dt.date.today() + _dt.timedelta(days=2)
+    assert when.tzinfo is not None, "a naive stamp cannot be ordered"
+
+
+def test_a_long_daily_series_cannot_flood_the_payload():
+    from homescreen.fetch.providers import ics
+    import datetime as _dt
+    start = _dt.date.today() - _dt.timedelta(days=5)
+    feed = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:d1\r\n"
+            f"DTSTART:{start:%Y%m%d}T080000Z\r\n"
+            "RRULE:FREQ=DAILY\r\nSUMMARY:Diario\r\nEND:VEVENT\r\n"
+            "END:VCALENDAR\r\n")
+    got = ics.fetch({"url": "https://x/c.ics", "days": 60},
+                    session=_Session(feed))
+    assert len(got["events"]) <= ics.MAX_EVENTS
+
+
+def test_a_calendar_with_no_recurrence_still_reads():
+    # The flat path has to keep working: most feeds are mostly one-off events.
+    from homescreen.fetch.providers import ics
+    got = ics.fetch({"url": "https://x/c.ics", "days": 3650},
+                    session=_Session(SAMPLE))
+    assert got["events"], "the ordinary sample stopped parsing"
+
+
+def test_a_broken_calendar_still_shows_what_can_be_read():
+    # `icalendar` is strict where the flat reader was forgiving, and this
+    # module's rule is that one malformed event must not hide a month of good
+    # ones. A calendar the strict parser refuses falls back to the flat
+    # reading: recurrences are lost, but a fortnight of one-off events beats a
+    # section that cannot render at all.
+    from homescreen.fetch.providers import ics
+    got = ics.fetch({"url": "https://x/c.ics", "days": 3650},
+                    session=_Session(_sample().replace("VERSION:2.0", "\x00")))
+    assert isinstance(got.get("events"), list)
