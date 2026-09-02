@@ -188,7 +188,7 @@ def build(ctx: SceneContext) -> Scene:
     # while `build` computed a fit for the DRAW list and used neither -- so a
     # 318px block was handed eight rows and clipped the last one through its
     # x-height, which is worse than dropping it.
-    shown = events[:max(1, ctx.rows)] if ctx.variant in ("card", "panel") \
+    shown = events[:max(1, ctx.dense_rows)] if ctx.variant in ("card", "panel") \
         else events[:1]
     body = "".join(
         f'<div class="row"><div class="w">{_when(e.get("when"), ctx.now)}</div>'
@@ -221,9 +221,18 @@ CSS = """
    separators are #ececec, which thresholds to nothing at 1-bit, so a solid
    black rule under every line is not a translation of it -- it is a ledger. */
 .list{display:flex;flex-direction:column;justify-content:center;height:100%}
+/* List leading, and a fixed height so the row count and the rendered row
+   agree. Padding on top of the line box made the real row half again taller
+   than `--row`, so `ctx.rows` promised space that did not exist and the last
+   row was emitted and then clipped by `overflow:hidden`. */
 .row{display:flex;gap:var(--pad-sm);align-items:baseline;
-  padding:var(--pad-sm) 0;font-size:var(--fs)}
-.row .w{width:3.2em;flex:none;font-weight:500;font-size:var(--sm)}
+  height:var(--row-tight);font-size:var(--fs)}
+/* Wide enough for the longest thing `_when` produces -- "mañana 11:00" and
+   "22 sep 20:00" are twelve characters. At 3.2em it was 35px for 72px of
+   text, so every row wrapped its time onto a second line and the overflow
+   ran into the summary: the panel read "mañanaComida con Ana". */
+.row .w{width:6.6em;flex:none;font-weight:500;font-size:var(--sm);
+  white-space:nowrap}
 .row .s{min-width:0;flex:1;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
 /* Which calendar this came from. Small and last: it answers a question you
