@@ -53,12 +53,23 @@ constexpr unsigned long kRefreshBudgetMs = 8000;
 //: accumulates until thin type stops being legible. A full refresh drives
 //: every pixel to both extremes and clears it.
 //:
-//: Twelve, which at the five-minute poll is about hourly. Chosen so the flash
-//: is rare enough not to be a tic and often enough that ghosting never builds
-//: to where you notice it before the cure arrives.
-constexpr uint32_t kPartialsBeforeFull = 12;
+//: Four, not twelve. Twelve was chosen against an assumed five-minute poll;
+//: the server actually sends `X-Poll-Seconds: 600`, and because the panel
+//: carries a clock the pixels differ at every poll, so the ETag never spares
+//: a draw. Twelve partials at ten minutes apart is a full refresh every TWO
+//: HOURS, and the residue of eleven of them is the fog this was reported as.
+constexpr uint32_t kPartialsBeforeFull = 4;
+
+//: ...and partial is only worth its residue when the flash would actually be
+//: a tic. The 3.68s full refresh costs the same whether draws are a minute or
+//: ten minutes apart, but the ANNOYANCE of it is per draw: at ten minutes it
+//: is unnoticeable, and buying a permanently clean panel with it is free.
+//: Below this gap, updates come fast enough that flashing every time would be
+//: a strobe, and partial earns its keep.
+constexpr uint32_t kPartialOnlyWithinMs = 120000UL;   // two minutes
 
 uint32_t s_partials = 0;
+uint32_t s_last_draw_ms = 0;
 
 void sleepPanel() {
   // On every path, including the ones that go wrong. Omitting this is the
@@ -185,9 +196,18 @@ bool drawFrame() {
 
   // The first draw after a boot is always full: whatever was on the glass
   // came from a previous life of this panel and none of it is ours to keep.
-  const bool full = (s_partials == 0) || (s_partials >= kPartialsBeforeFull);
+  //
+  // After that, partial only while draws are coming fast enough that the
+  // flash would be a strobe. At the ten-minute cadence the server asks for,
+  // every draw is full and the glass never fogs.
+  const uint32_t at = millis();
+  const bool rapid = s_last_draw_ms != 0 &&
+                     (at - s_last_draw_ms) < kPartialOnlyWithinMs;
+  const bool full = (s_partials == 0) || (s_partials >= kPartialsBeforeFull) ||
+                    !rapid;
   display.refresh(!full);
   s_partials = full ? 1 : s_partials + 1;
+  s_last_draw_ms = at;
 
   sleepPanel();
   Serial.printf("[epaper] drew a frame in %lu ms (%s), heap %u B\n",
