@@ -32,10 +32,22 @@ _ROOT_SELECTORS = ("html,body", "html", "body", ":root", "*")
 #: What a section heading costs the block under it: SPEC SS9's 10px label, its
 #: 1px rule, and the gaps. Deducted BEFORE the component is measured -- it is
 #: told the height it will actually be rendered into, not the slot's.
-HEADING_PX = 17
+#:
+#: Measured, not estimated: the label box renders 16px and the body starts at
+#: 18. The 17 this used to be was a guess that under-reserved by a pixel.
+HEADING_PX = 18
+
+#: The fragment's own box inside the region. A component's page is NOT the
+#: region: the region may also carry a heading, and `scope_css` rewrites a
+#: fragment's `html,body` rule to whatever this maps to. Pointing it at the
+#: wrapper let a fragment set the WRAPPER's height -- and since the composer
+#: emits its positioning rule first, the fragment's `height:105px` beat the
+#: region's `height:122px` at equal specificity and clipped the last row off
+#: every labelled block.
+FRAGMENT_CLASS = "rg-frag"
 
 
-def scope_css(css: str, wrapper: str) -> str:
+def scope_css(css: str, wrapper: str, root: str | None = None) -> str:
     """Prefix every selector so a fragment's styles cannot leave its region.
 
     A small, testable string transform rather than a CSS parser: the input is
@@ -43,6 +55,7 @@ def scope_css(css: str, wrapper: str) -> str:
     component to prefix its own classes -- is a convention that fails silently
     the first time somebody forgets.
     """
+    root = root or f"#{wrapper}"
     out = []
     for block in _split_blocks(css):
         selector, _, rest = block.partition("{")
@@ -52,10 +65,10 @@ def scope_css(css: str, wrapper: str) -> str:
         if selector.startswith("@"):
             # A media or font rule: keep the wrapper, scope what is inside it.
             inner = rest.rsplit("}", 1)[0]
-            out.append(f"{selector}{{{scope_css(inner, wrapper)}}}")
+            out.append(f"{selector}{{{scope_css(inner, wrapper, root)}}}")
             continue
         scoped = ", ".join(
-            f"#{wrapper}" if part.strip() in _ROOT_SELECTORS
+            root if part.strip() in _ROOT_SELECTORS
             else f"#{wrapper} {part.strip()}"
             for part in selector.split(",") if part.strip())
         out.append(f"{scoped}{{{rest}")
@@ -83,7 +96,8 @@ def fragment(html: str, wrapper: str) -> tuple:
     match = _STYLE.search(html or "")
     if not match:
         return "", str(html or "")
-    return (scope_css(match.group("css"), wrapper),
+    return (scope_css(match.group("css"), wrapper,
+                      f"#{wrapper} .{FRAGMENT_CLASS}"),
             match.group("body"))
 
 
@@ -142,21 +156,27 @@ def compose(view: dict, caps: dict, build_scene) -> str:
         # The heading is drawn by the COMPOSER, not the component: a component
         # asked to render its own title would need to know it had one, and the
         # same calendar is "agenda" in one column and "cumpleanos" in another.
+        # The fragment ALWAYS gets its own box, heading or not, because its
+        # own stylesheet sizes that box and must never size the region.
+        body = f'<div class="{FRAGMENT_CLASS}">{body}</div>'
         if heading:
-            body = (f'<div class="rg-label">{_escape(heading)}</div>'
-                    f'<div class="rg-body">{body}</div>')
+            body = f'<div class="rg-label">{_escape(heading)}</div>{body}'
         # Absolute placement, because the regions are measured rectangles and
         # a flow layout would let one component's content move another's.
         styles.append(f"#{wrapper}{{position:absolute;left:{x}px;top:{y}px;"
                       f"width:{w}px;height:{h}px;overflow:hidden}}")
+        # Before the fragment's own rules: a component that sizes its root
+        # agrees with this (it was measured for `inner`), and one that does
+        # not still gets the right box.
+        styles.append(f"#{wrapper} .{FRAGMENT_CLASS}{{height:{inner}px;"
+                      f"overflow:hidden}}")
         if heading:
             # SPEC SS9's section label: 10px, 500, .14em tracking, over a rule.
             styles.append(
                 f"#{wrapper} .rg-label{{font-size:10px;font-weight:500;"
                 f"letter-spacing:.14em;text-transform:uppercase;"
                 f"border-top:1px solid #000;padding-top:3px;margin-bottom:2px;"
-                f"font-family:Inter,'DejaVu Sans',sans-serif}}"
-                f"#{wrapper} .rg-body{{height:{inner}px;overflow:hidden}}")
+                f"font-family:Inter,'DejaVu Sans',sans-serif}}")
         styles.append(css)
         bodies.append(f'<div id="{wrapper}">{body}</div>')
     if not bodies:

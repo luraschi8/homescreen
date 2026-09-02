@@ -336,3 +336,34 @@ def test_a_single_region_template_draws_no_rules():
     single = {"template": "single", "placements": [
         {"id": "a", "region": "full", "component": "clock", "options": {}}]}
     assert 'class="rg-rule"' not in compose.compose(single, EPAPER, _build)
+
+
+def test_a_fragment_cannot_resize_the_region_it_sits_in():
+    # `scope_css` rewrites a component's `html,body` rule, and pointing that
+    # at the wrapper let the FRAGMENT set the REGION's height. The composer
+    # emits its positioning rule first, so at equal specificity the fragment
+    # won: a labelled block shrank from 122px to its 104px inner height and
+    # clipped the last row off every list on the panel.
+    view = {"template": "dashboard", "placements": [
+        {"id": "s", "region": "main_left", "component": "x", "label": "DEPORTES"}]}
+
+    def build(_component, _options, caps):
+        return (f'<!doctype html><style>html,body{{width:{caps["w"]}px;'
+                f'height:{caps["h"]}px}}</style><div class="row">x</div>')
+
+    page = compose.compose(view, {"w": 800, "h": 480, "depth": 1}, build)
+    # The region keeps the height the layout gave it...
+    assert "#rg-s{position:absolute" in page
+    region_h = int(page.split("#rg-s{position:absolute")[1]
+                   .split("height:")[1].split("px")[0])
+    # ...and the fragment's own sizing lands on its own box instead.
+    assert f"#rg-s .{compose.FRAGMENT_CLASS}" in page
+    assert f"#rg-s{{height:" not in page, "the fragment resized the region"
+    inner = region_h - compose.HEADING_PX
+    assert f"#rg-s .{compose.FRAGMENT_CLASS}{{height:{inner}px" in page
+
+
+def test_the_heading_reserves_what_it_actually_measures():
+    # Measured in a real render: the label box is 16px and the body starts at
+    # 18. This was 17, which under-reserved by a pixel on every labelled block.
+    assert compose.HEADING_PX == 18
