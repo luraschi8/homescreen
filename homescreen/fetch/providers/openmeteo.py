@@ -42,8 +42,20 @@ SECRETS = ()
 #: WMO 4677 present-weather codes, folded onto the six skies this panel can
 #: draw. The vendor's distinctions between "light" and "moderate" drizzle
 #: cannot survive a 1-bit line drawing, so they are not preserved.
+#: WMO 2 is "partly cloudy" and 3 is "overcast", and only 3 is a cloudy day.
+#: Folding 2 onto `cloud` drew a cloud on four of five forecast days through a
+#: cloudless Madrid heatwave -- every hourly entry "clear" up to 37.4C, the
+#: daily entry "cloud", because Open-Meteo's daily code takes the most
+#: significant weather of the day and two evening hours reached code 2. An
+#: icon that says "cloudy" on a cloudless day teaches you to ignore it.
+#:
+#: A seventh sky was the obvious answer and does not survive the glass: three
+#: sun-behind-cloud drawings rendered through the real 160 threshold at 12,
+#: 13, 15, 20 and 28px are indistinguishable from a plain cloud below 20px,
+#: and the hourly strip draws at 13. With six skies the mapping has to choose,
+#: and scattered cloud is nearer clear than it is to overcast.
 _WMO = {
-    0: "clear", 1: "clear", 2: "cloud", 3: "cloud",
+    0: "clear", 1: "clear", 2: "clear", 3: "cloud",
     45: "fog", 48: "fog",
     51: "rain", 53: "rain", 55: "rain", 56: "rain", 57: "rain",
     61: "rain", 63: "rain", 65: "rain", 66: "rain", 67: "rain",

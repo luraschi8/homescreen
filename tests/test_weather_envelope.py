@@ -132,3 +132,21 @@ def test_sunrise_and_sunset_arrive_as_epochs_from_either_source():
         assert isinstance(got["sunrise"], int), vendor
         assert isinstance(got["sunset"], int), vendor
         assert got["sunset"] > got["sunrise"], vendor
+
+
+def test_partly_cloudy_is_not_drawn_as_a_cloudy_day():
+    # WMO 2 is "partly cloudy" and 3 is "overcast"; only 3 is a cloudy day.
+    # Folding 2 onto `cloud` drew a cloud on four of five forecast days through
+    # a cloudless Madrid heatwave -- every hourly entry "clear" up to 37.4C,
+    # the daily entry "cloud", because Open-Meteo's daily code takes the most
+    # significant weather of the day and two evening hours reached 2.
+    #
+    # A seventh sky was the obvious answer and does not survive the glass:
+    # sun-behind-cloud is indistinguishable from a plain cloud below 20px
+    # through the real threshold, and the hourly strip draws at 13.
+    from homescreen.fetch.providers import openmeteo
+    assert openmeteo.sky_of(2) == "clear"
+    assert openmeteo.sky_of(3) == "cloud", "overcast really is cloudy"
+    for code, sky in ((0, "clear"), (45, "fog"), (61, "rain"),
+                      (71, "snow"), (95, "storm")):
+        assert openmeteo.sky_of(code) == sky, code
