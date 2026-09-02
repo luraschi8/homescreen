@@ -827,3 +827,32 @@ def test_a_heading_on_a_single_slot_region_survives_a_save(ctx):
         "v.panel.masthead.0": "clock", "l.panel.masthead.0": "CABECERA"})
     again = registry.load(cache)[EPD]["views"]["panel"]["placements"]
     assert again[0]["label"] == "CABECERA"
+
+
+def test_the_share_control_says_what_it_is(ctx):
+    # It was a bare number box explained only by a `title` tooltip, under an
+    # equally bare title box. The one control that decides how a column is
+    # divided looked like an unexplained "1" or "2,1" -- a reviewer read it as
+    # a row/column coordinate.
+    client, cache = ctx
+    _dashboard(client, cache)
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert "Tamaño" in html
+    assert "Título" in html
+    assert "Cuánto ocupa frente a sus vecinos" in html
+
+
+def test_a_multi_line_option_is_editable(ctx):
+    # Rendered as a single-line input, a `lines` value came back as one
+    # run-on string with the newlines collapsed -- unreadable, and with no way
+    # to fix a sports list from the page that configures it.
+    client, cache = ctx
+    client.put(f"/api/devices/{EPD}/schedule", json={
+        "views": {"panel": {"template": "dashboard", "placements": [
+            {"id": "a", "region": "main_left", "component": "sport",
+             "options": {"teams": "Madrid = futbol:86\nF1 = f1"}}]}},
+        "schedule": {"default": "panel", "slots": []}})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert "<textarea" in html, "no multi-line control on the page"
+    # ...carrying the value on separate lines, not fused into one string.
+    assert "Madrid = futbol:86\nF1 = f1" in html

@@ -27,6 +27,12 @@ CSS = """
 .view{border:1px solid var(--line);border-radius:9px;padding:.9rem 1rem;
   margin-bottom:.8rem}
 .view h3{margin:0 0 .7rem;font-size:.9rem;font-weight:650}
+/* Side by side, and each with its own label. */
+.slot-extra{display:flex;gap:.6rem;margin:.35rem 0 .1rem}
+.slot-extra .field{flex:1;margin:0}
+.slot-extra .field span:first-child{font-size:.72rem;font-weight:600;
+  display:block;margin-bottom:.15rem}
+.slot-extra .field:last-child{flex:0 0 11rem}
 .slot-row{display:grid;grid-template-columns:9rem 1fr;gap:.6rem;
   align-items:center;margin-bottom:.5rem}
 .slot-row .rg{font-size:.8rem;color:var(--dim);font-family:var(--mono)}
@@ -165,14 +171,23 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
         # They used to appear only when `holds > 1` while `parse` read them
         # unconditionally, so a masthead heading was erased by re-posting the
         # form with no edits at all.
+        # Both LABELLED. The share was a bare number box whose only
+        # explanation was a `title` tooltip, sitting under an equally bare
+        # title box -- so the one control that decides how the column is
+        # divided looked like an unexplained "1" or "2,1", and a reviewer read
+        # it as a row/column coordinate.
         trim = (f'<div class="slot-extra">'
+                f'<label class="field"><span>Título</span>'
                 f'<input type="text" name="l.{e(view_name)}.{e(region)}.{index}"'
-                f' maxlength="24" placeholder="titulo (opcional)"'
-                f' value="{e(held.get("label") or "")}">'
+                f' maxlength="24" placeholder="opcional"'
+                f' value="{e(held.get("label") or "")}"></label>'
+                f'<label class="field"><span>Tamaño</span>'
                 f'<input type="number" name="wt.{e(view_name)}.{e(region)}.'
                 f'{index}" min="0.25" max="20" step="0.25" placeholder="1"'
-                f' title="Cuanto de la region ocupa, frente a sus vecinos"'
-                f' value="{e(held.get("weight") or "")}"></div>')
+                f' value="{e(held.get("weight") or "")}">'
+                f'<span class="hint">Cuánto ocupa frente a sus vecinos: 2 es '
+                f'el doble que 1. En blanco, a partes iguales.</span>'
+                f'</label></div>')
         rows.append(
             f'<select name="v.{e(view_name)}.{e(region)}.{index}">{picks}</select>'
             + trim

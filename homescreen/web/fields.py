@@ -42,6 +42,18 @@ def datalist_markup(schema) -> str:
     return "".join(out)
 
 
+def shown_lines(value) -> str:
+    """A `lines` value as text, however it was stored.
+
+    Stored as a string it round-trips; stored as a list -- which older records
+    and the API both allow -- it must not render as "['a', 'b']" in the box a
+    person is about to edit.
+    """
+    if isinstance(value, (list, tuple)):
+        return "\n".join(str(item) for item in value)
+    return "" if value is None else str(value)
+
+
 def field(spec: dict, value) -> str:
     """One labelled control for one option."""
     key = spec.get("key")
@@ -62,6 +74,17 @@ def field(spec: dict, value) -> str:
             f'{e(o)}</option>' for o in spec.get("choices", ()))
         return (f'<label class="field">{e(label)}'
                 f'<select name="{name}">{picks}</select>{hint}</label>')
+
+    if kind == "lines":
+        # A `lines` option is one entry per line -- calendars, teams. Rendered
+        # as a single-line input it came back as one run-on string with the
+        # newlines collapsed ("Madrid = futbol:86Madrid = euroliga:MAD"),
+        # which is unreadable and, worse, uneditable: there was no way to fix
+        # a sports list from the page that configures it.
+        rows = max(3, min(8, str(shown_lines(value)).count("\n") + 2))
+        return (f'<label class="field">{e(label)}'
+                f'<textarea name="{name}" rows="{rows}" spellcheck="false">'
+                f'{e(shown_lines(value))}</textarea>{hint}</label>')
 
     listing = (f' list="dl-{e(spec["datalist"])}"'
                if spec.get("datalist") in DATALISTS else "")
