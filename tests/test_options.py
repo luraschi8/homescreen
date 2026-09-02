@@ -411,3 +411,23 @@ def test_the_clock_block_stands_the_obelisk_between_the_cities():
     # Stretching the columns put the slack inside them: the block ended 100px
     # short of its right edge with the gaps sitting after each number.
     assert "flex:11auto" not in css, "the columns stretch again"
+
+
+def test_the_masthead_date_is_not_rendered_at_the_type_floor():
+    # It came out at 10px -- the size CLAUDE.md reserves for the SMALLEST
+    # legible thing on the panel -- in a band 53 pixels tall, because the
+    # shared body size is `inner * 0.22` and that factor assumes a region
+    # stacking four or five rows. A masthead holds one line.
+    import pathlib
+    import re
+    import tempfile
+    from homescreen import scenes
+    ctx = scenes.SceneContext(
+        cfg={}, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 800, "h": 53, "depth": 1}, now=1_788_290_000.0, device={},
+        options=scenes.clean_options("date", {}))
+    scene = scenes.build("date", ctx)
+    hero = int(re.search(r"--hero:(\d+)px", scene.html).group(1))
+    assert hero >= 16, f"the date is {hero}px in a 53px band"
+    # ...and the freshness stamp stays a footnote rather than growing with it.
+    assert "var(--xs)" in scene.html

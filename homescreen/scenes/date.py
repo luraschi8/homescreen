@@ -51,6 +51,15 @@ _MONTHS = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
 #: showing yesterday until lunchtime. The stamp moves, so this follows it.
 POLL_S = 600
 
+#: How much of the band the date may take, by shape.
+#:
+#: It rendered at 10px -- the floor CLAUDE.md sets for the SMALLEST legible
+#: thing on the panel -- in a band 53 pixels tall, because the shared body
+#: size is `inner * 0.22` and that factor assumes a region stacking four or
+#: five rows. A masthead holds one line, so it can afford far more of its
+#: height, and only the component knows that.
+_HERO_SHARE = {"strip": 0.38, "badge": 0.40, "card": 0.26, "panel": 0.18}
+
 
 def _zone(ctx: SceneContext):
     name = str((ctx.options or {}).get("timezone") or "").strip()
@@ -97,7 +106,7 @@ def build(ctx: SceneContext) -> Scene:
         body = (f'<div class="wrap row">{icon}'
                 f'<div class="d">{text}</div>{tail}</div>')
     else:
-        body = (f'<div class="wrap"><div class="d big">{long_form}</div>'
+        body = (f'<div class="wrap"><div class="d">{long_form}</div>'
                 f'<div class="upd">{stamp}</div></div>')
 
     instructions = [draw.text("center", short_form, "md"),
@@ -107,7 +116,8 @@ def build(ctx: SceneContext) -> Scene:
     return Scene(layout="fill",
                  components=({"c": "date", "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,
-                 html=page(w, h, body, CSS, shape=ctx.variant))
+                 html=page(w, h, body, CSS, shape=ctx.variant,
+                           hero_share=_HERO_SHARE.get(ctx.variant)))
 
 
 CSS = """
@@ -115,9 +125,8 @@ CSS = """
   justify-content:center}
 .wrap.row{flex-direction:row;align-items:center;gap:var(--pad-sm)}
 .ic{flex:none;display:block}
-.d{font-size:var(--fs);font-weight:500;letter-spacing:.02em;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.d.big{font-size:var(--lg)}
+.d{font-size:var(--hero);font-weight:500;letter-spacing:.02em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.1}
 /* Pushed to the far end, as the design has it: the date is the headline and
    the freshness is a footnote you only read when something looks wrong. */
 .upd{margin-left:auto;font-size:var(--xs);letter-spacing:.06em;flex:none}
