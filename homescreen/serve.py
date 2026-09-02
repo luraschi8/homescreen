@@ -507,8 +507,16 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                     reading = _scene_data(requirement)
                 except Exception:                       # noqa: BLE001
                     continue                            # one feed, not the page
-                stamp = getattr(reading, "fetched_at", None) if reading else None
-                when = _epoch(stamp)
+                # Only feeds with something ON THE GLASS. The stamp says how
+                # old what you are LOOKING AT is, so a source that has never
+                # succeeded -- an unconfigured API key, say -- has no age to
+                # contribute and must not pin the whole panel to the moment it
+                # first failed. A source that succeeded once and then died
+                # keeps its last good payload AND its last good timestamp,
+                # which is exactly the case this has to catch.
+                if not reading or not getattr(reading, "data", None):
+                    continue
+                when = _epoch(getattr(reading, "fetched_at", None))
                 if when is not None and (oldest is None or when < oldest):
                     oldest = when
         return oldest
