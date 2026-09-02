@@ -9,7 +9,7 @@ from __future__ import annotations
 from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
-from homescreen.scenes._style import page
+from homescreen.scenes._style import EMPTY_CSS, empty, page
 SURFACES = (
     # A genuine band: shallow AND long. The real ones are 800x53 (aspect 15)
     # and 764x62 (12.3); at aspect 4.0 and 110px tall this was swallowing
@@ -79,14 +79,20 @@ def build(ctx: SceneContext) -> Scene:
                       f"in {_short(reading.get('input_tokens'))} · "
                       f"out {_short(reading.get('output_tokens'))}", "xs", "dim"),
         ]
-    body = (f'<div class="wrap"><div class="big">'
-            f'{_short(reading.get("total_tokens"))}</div>'
-            # A cell is 116px wide. "tokens · 30 días" wrapped to two lines
-            # and pushed itself out of a 62px band; the unit is what matters
-            # there and the period is a detail for a block.
-            f'<div class="cu-label">'
-            f'{"tokens" if ctx.variant == "badge" else f"tokens · {days} días"}'
-            f'</div></div>')
+    if reading.missing:
+        # An em dash over the word "tokens" is not information, and it held a
+        # sixth of the markets band open to say it. Declared empty like every
+        # other block, so the composer can give the space back.
+        body = f'<div class="wrap">{empty("sin uso", "falta la clave", ctx.variant)}</div>'
+    else:
+        body = (f'<div class="wrap"><div class="big">'
+                f'{_short(reading.get("total_tokens"))}</div>'
+                # A cell is 116px wide. "tokens · 30 días" wrapped to two lines
+                # and pushed itself out of a 62px band; the unit is what
+                # matters there and the period is a detail for a block.
+                f'<div class="cu-label">'
+                f'{"tokens" if ctx.variant == "badge" else f"tokens · {days} días"}'
+                f'</div></div>')
     return Scene(layout="fill",
                  components=({"c": "claude", "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,
@@ -99,4 +105,4 @@ CSS = """
 .big{font-size:var(--hero);font-weight:600;line-height:1}
 .cu-label{font-size:var(--xs);margin-top:2px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
-"""
+""" + EMPTY_CSS

@@ -477,3 +477,32 @@ def test_a_section_with_data_is_never_collapsed():
          "label": "OTRO", "options": {}}]}
     heights = _heights(compose.compose(view, EPAPER, _build))
     assert all(h > compose.COLLAPSED_PX * 2 for h in heights.values())
+
+
+def test_neighbouring_cells_in_a_band_are_separated():
+    # v6 gives every ticker cell a border-left; translating to 1-bit dropped
+    # them rather than re-expressing them, so six values floated in the
+    # markets band with no boundaries at all.
+    view = {"template": "dashboard", "placements": [
+        {"id": f"k{i}", "region": "markets", "component": "quotes",
+         "options": {"symbols": sym}}
+        for i, sym in enumerate(("AAPL", "MSFT", "NVDA"))]}
+    html = compose.compose(view, EPAPER, _build)
+    # One fewer rule than cells: the first has nothing to its left.
+    assert html.count("rg-cell-rule") == 2
+
+
+def test_a_band_of_one_cell_has_no_separators():
+    view = {"template": "dashboard", "placements": [
+        {"id": "k0", "region": "markets", "component": "quotes",
+         "options": {"symbols": "AAPL"}}]}
+    assert "rg-cell-rule" not in compose.compose(view, EPAPER, _build)
+
+
+def test_a_stacked_column_gets_no_cell_rules():
+    # Vertical regions are separated by their headings and by whitespace; a
+    # hairline under every block reads as a ledger.
+    view = {"template": "dashboard", "placements": [
+        {"id": "a", "region": "main_left", "component": "clock", "options": {}},
+        {"id": "b", "region": "main_left", "component": "clock", "options": {}}]}
+    assert "rg-cell-rule" not in compose.compose(view, EPAPER, _build)

@@ -82,6 +82,13 @@ TEMPLATES = {
             # SPEC SS9: an FX box at flex 1.55 and five tickers at 1 each,
             # across an inner width of 764. Five tickers is the hard ceiling
             # there -- a sixth starts truncating symbols.
+            #
+            # This is the SPEC's design, so it stays. It presumes an FX box in
+            # the first slot, and a view that puts a ticker there instead gets
+            # a 182px cell against everyone else's 117 -- which is what the
+            # panel was showing. The remedy is a weight on that PLACEMENT,
+            # because what is in a slot is the view's knowledge, not the
+            # template's.
             "markets":    {"rect": (0.0225, 0.846, 0.955, 0.129),
                            "holds": 6, "stack": "h",
                            "weights": (1.55, 1, 1, 1, 1, 1)},

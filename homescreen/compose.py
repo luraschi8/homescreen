@@ -263,6 +263,7 @@ def compose(view: dict, caps: dict, build_scene) -> str:
         styles.append(f"#{wrapper} .{FRAGMENT_CLASS}{{--pad:{pad}px;"
                       f"--pad-sm:{max(1, round(pad * 0.4))}px}}")
         bodies.append(f'<div id="{wrapper}">{body}</div>')
+    bodies.extend(_cell_rules(view, regions, collapsed, pad))
     if not bodies:
         return ""
     bodies.extend(_rules(layout.TEMPLATES.get(template) or {}, caps))
@@ -272,6 +273,35 @@ def compose(view: dict, caps: dict, build_scene) -> str:
             f'html,body{{width:{width}px;height:{height}px;'
             f'position:relative;margin:0}}'
             f'{"".join(styles)}</style>{"".join(bodies)}')
+
+
+def _cell_rules(view, regions, collapsed, pad) -> list:
+    """A hairline between neighbouring cells of a horizontal region.
+
+    v6 gives every ticker cell a `border-left`; in 1-bit they were dropped
+    rather than translated, so six values floated in the markets band with no
+    boundaries at all. Drawn by the COMPOSER for the same reason the section
+    headings are: a line between two placements is not either one's decoration,
+    and a component drawing its own would not know it was the first.
+    """
+    out = []
+    for name, region in regions.items():
+        if region.get("stack") != "h":
+            continue
+        seats = [(i, p, r) for i, p, r in _placed(view, {name: region},
+                                                  collapsed)]
+        if len(seats) < 2:
+            continue
+        _, _, (_, top, _, height) = seats[0]
+        # Short of the full band, so the rules read as separators rather than
+        # as a second grid crossing the one the template already draws.
+        inset = max(2, round(height * 0.12))
+        for _index, _placement, (x, _y, _w, _h) in seats[1:]:
+            out.append(f'<div class="rg-cell-rule" style="position:absolute;'
+                       f'left:{x - pad // 2}px;top:{top + inset}px;width:1px;'
+                       f'height:{max(1, height - 2 * inset)}px;'
+                       f'background:#000"></div>')
+    return out
 
 
 def _rules(spec: dict, caps: dict) -> list:
