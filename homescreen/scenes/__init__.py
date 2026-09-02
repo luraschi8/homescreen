@@ -52,6 +52,16 @@ class SceneContext:
     #: `weather.wide_band`, `quotes.stacked` and `calendar`'s row loop came to
     #: be three private rules that only the round panel ever saw.
     variant: str = DEFAULT_VARIANT
+    #: Epoch seconds of the OLDEST successful fetch behind anything on this
+    #: page, or None when nothing on it is fed.
+    #:
+    #: CLAUDE.md makes this the panel's one safeguard against confident stale
+    #: data: a fetcher that quietly died has to be visible ON THE GLASS. The
+    #: masthead read it through `getattr(ctx, "oldest_fetch", None)` against a
+    #: context that never had the field, so the default won every time and the
+    #: stamp was always the current clock -- the exact failure the rule exists
+    #: to catch, wearing a badge that said it was fine.
+    oldest_fetch: float | None = None
 
     @property
     def rows(self) -> int:

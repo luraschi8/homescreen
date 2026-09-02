@@ -327,3 +327,37 @@ def test_the_frame_cache_drops_the_least_recently_used_entry(monkeypatch,
     assert render.is_cached("<p>0</p>", 800, 480), "the touched entry survives"
     assert not render.is_cached("<p>1</p>", 800, 480), "the next-oldest goes"
     assert render.is_cached("<p>new</p>", 800, 480)
+
+
+def _compose_a_dashboard(client, tmp_path):
+    """A device showing a clock and a masthead together -- a composed page."""
+    client.get(f"/api/devices/{HW}/scene{EPAPER_Q}")
+    registry.set_approval(tmp_path, HW, True)
+    client.put(f"/api/devices/{HW}/schedule", json={
+        "views": {"panel": {"template": "dashboard", "placements": [
+            {"id": "m", "region": "masthead", "component": "date",
+             "options": {}},
+            {"id": "c", "region": "main_left", "component": "clock",
+             "options": {}}]}},
+        "schedule": {"tz": "Europe/Madrid", "default": "panel", "slots": []}})
+
+
+def test_a_composed_page_polls_at_its_fastest_component(client, needs_chromium,
+                                                        tmp_path):
+    # The frame route kept the cadence of the LEGACY per-device scene, so a
+    # panel carrying a clock -- which asks to be woken at the next minute
+    # boundary -- was told to come back in ten minutes. That is the whole
+    # ticking-clock premise of CLAUDE.md disabled by one assignment.
+    _compose_a_dashboard(client, tmp_path)
+    resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    assert resp.status_code == 200
+    assert int(resp.headers["X-Poll-Seconds"]) <= 60, resp.headers
+
+
+def test_a_composed_page_reports_the_view_it_is_showing(client, needs_chromium,
+                                                        tmp_path):
+    # X-Scene said "date" -- the legacy per-device field -- while the glass
+    # held the whole dashboard.
+    _compose_a_dashboard(client, tmp_path)
+    resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    assert resp.headers["X-Scene"] == "panel"

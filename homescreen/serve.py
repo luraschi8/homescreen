@@ -59,6 +59,16 @@ def _cache_epoch(env: dict) -> float:
     return datetime.fromisoformat(env["fetched_at"]).timestamp()
 
 
+def _epoch(stamp) -> float | None:
+    """Epoch seconds from an ISO stamp, or None if it is not one."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except ValueError:
+        return None
+
+
 def _feed_state(env: dict | None, now: float) -> tuple[bool, float]:
     """(ok, age_s). Degrades to (False, 0.0) on anything unreadable."""
     if env is None:
@@ -467,15 +477,51 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         caps = registry.clean_caps(rec.get("caps") or {})
         w = int(caps.get("w") or 800)
         h = int(caps.get("h") or 480)
-        page = _composed_html(hw, rec, w, h)
+        composed = _composed_html(hw, rec, w, h)
+        page = composed[0] if composed else None
         if page is None:
             return jsonify({"error": "not a composed view"}), 404
         resp = Response(page, mimetype="text/html")
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    def _oldest_fetch(view: dict):
+        """Epoch seconds of the oldest successful fetch behind this page.
+
+        CLAUDE.md's rule, and the reason it is the OLDEST: a panel whose
+        weather died an hour ago must not print the current time next to the
+        word "actualizado". A feed that failed keeps its previous payload AND
+        its previous `fetched_at`, so what this reads is genuinely the last
+        time each source was actually reached.
+        """
+        cfg = _live()
+        oldest = None
+        for placement in view.get("placements") or ():
+            if not isinstance(placement, dict):
+                continue
+            component = placement.get("component")
+            options = scenes.clean_options(component,
+                                           placement.get("options") or {})
+            for requirement in scenes.needs(component, options, cfg):
+                try:
+                    reading = _scene_data(requirement)
+                except Exception:                       # noqa: BLE001
+                    continue                            # one feed, not the page
+                stamp = getattr(reading, "fetched_at", None) if reading else None
+                when = _epoch(stamp)
+                if when is not None and (oldest is None or when < oldest):
+                    oldest = when
+        return oldest
+
     def _composed_html(hw: str, rec: dict, w: int, h: int):
-        """The showing view as one page, or None if it is a single component.
+        """`(html, poll_s, poll_max_s, view_name)` for the showing view, or None.
+
+        The cadence comes out with the page because a composed page changes as
+        soon as ANY component on it does, so its cadence is the shortest of
+        them. Without this the frame route kept the cadence of the legacy
+        per-device scene: a panel carrying a clock that asks to be woken at the
+        next minute boundary was told to come back in ten minutes, which is
+        the whole ticking-clock premise disabled by one assignment.
 
         Returns None rather than a page for the one-placement case so the
         existing path stays exactly as it is: composing one component into a
@@ -490,17 +536,30 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         if len(placements) < 2:
             return None
         caps = {**registry.clean_caps(rec.get("caps") or {}), "w": w, "h": h}
+        # Computed for the WHOLE page before anything is built, not accumulated
+        # as components are built: the masthead may be composed before the
+        # weather it is reporting the freshness of.
+        oldest = _oldest_fetch(view)
+        built = []
 
         def build_scene(component, options, region_caps):
-            return scenes.safe_build(component, scenes.SceneContext(
+            scene = scenes.safe_build(component, scenes.SceneContext(
                 cfg=_live(), cache_dir=cache_dir, caps=region_caps,
-                now=clock(), data=_scene_data,
+                now=clock(), data=_scene_data, oldest_fetch=oldest,
                 options=scenes.clean_options(component, options),
                 device={"hw": hw, "id": rec.get("name") or hw,
                         "name": rec.get("name"), "feed": "adsb",
-                        "max_items": caps.get("max_items")})).html
+                        "max_items": caps.get("max_items")}))
+            built.append(scene)
+            return scene.html
 
-        return compose.compose(view, caps, build_scene) or None
+        page = compose.compose(view, caps, build_scene) or None
+        if page is None:
+            return None
+        polls = [s.poll_s for s in built if getattr(s, "poll_s", None)]
+        ceilings = [s.poll_max_s for s in built if getattr(s, "poll_max_s", None)]
+        return (page, min(polls) if polls else None,
+                min(ceilings) if ceilings else None, showing or None)
 
     def _screen_credentials(hw: str, rec: dict) -> list:
         """Which credentials THIS screen could hold its own copy of.
@@ -1661,10 +1720,20 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # each drawn into its region. A single placement is the degenerate
         # case and goes through unchanged -- there is no second path, only
         # more of the same one.
-        html = _composed_html(hw, rec, w, h) or scene.html
+        composed = _composed_html(hw, rec, w, h)
+        html = (composed[0] if composed else None) or scene.html
         if not html:
             return jsonify({"error": f"scene {name!r} has no pixel rendering"}), 409
-        scene = dataclasses.replace(scene, html=html)
+        if composed:
+            _page, _poll, _ceiling, _view = composed
+            scene = dataclasses.replace(
+                scene, html=html, poll_s=_poll or scene.poll_s,
+                poll_max_s=_ceiling or scene.poll_max_s)
+            # What the screen is SHOWING, not the legacy per-device field. The
+            # header said "date" while the glass held the whole dashboard.
+            name = _view or name
+        else:
+            scene = dataclasses.replace(scene, html=html)
         if not render.is_cached(scene.html, w, h) \
                 and not _cold_render_allowed(hw, rec,
                                              request.remote_addr or "?"):
