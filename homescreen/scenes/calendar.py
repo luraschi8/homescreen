@@ -45,7 +45,35 @@ OPTIONS = (
     {"key": "days", "label": "Días por delante", "type": "int", "default": 14},
     {"key": "max_events", "label": "Cuántos mostrar", "type": "int",
      "default": 4, "help": "En pantallas pequeñas siempre se muestra uno."},
+    {"key": "columns", "label": "Columnas", "type": "choice",
+     "choices": ("auto", "1", "2"), "default": "auto",
+     "help": "Dos columnas caben el doble de eventos en la mitad de alto, y "
+             "dejan sitio al bloque de abajo. «auto» usa dos cuando el ancho "
+             "da para leerlas."},
 )
+
+#: Below this a second column cannot hold a row: the time alone is about 72px
+#: at this type size, and what is left has to fit a summary worth reading.
+#: Measured against the panel's own left column, which is 417 wide.
+MIN_COLUMN_PX = 190
+
+
+def columns_for(options: dict, width: int, variant: str) -> int:
+    """How many columns of events this block should run.
+
+    An option rather than a rule, because whether the agenda should be short
+    and wide or tall and narrow depends on what is UNDER it -- which the
+    calendar cannot see. `auto` is the sensible default; the operator overrides
+    it when they want the block below to have the room.
+    """
+    if variant not in ("card", "panel"):
+        return 1                        # a strip or a badge shows one event
+    asked = str((options or {}).get("columns") or "auto").strip()
+    if asked == "1":
+        return 1
+    if asked == "2":
+        return 2 if int(width or 0) >= MIN_COLUMN_PX else 1
+    return 2 if int(width or 0) >= MIN_COLUMN_PX * 2 else 1
 
 #: A calendar changes on human time. Five minutes is well inside the cadence a
 #: person notices, and every poll is a 304 unless something moved.
@@ -188,7 +216,8 @@ def build(ctx: SceneContext) -> Scene:
     # while `build` computed a fit for the DRAW list and used neither -- so a
     # 318px block was handed eight rows and clipped the last one through its
     # x-height, which is worse than dropping it.
-    shown = events[:max(1, ctx.dense_rows)] if ctx.variant in ("card", "panel") \
+    cols = columns_for(ctx.options, ctx.caps.get("w"), ctx.variant)
+    shown = events[:max(1, ctx.dense_rows) * cols] if ctx.variant in ("card", "panel") \
         else events[:1]
     body = "".join(
         f'<div class="row"><div class="w">{_when(e.get("when"), ctx.now)}</div>'
@@ -197,6 +226,8 @@ def build(ctx: SceneContext) -> Scene:
            if show_source and e.get("source") else "")
         + '</div>'
         for e in shown)
+    listing = f'<div class="list cols{cols}">{body}</div>'
+
     # The same thing the draw list says. An empty table is a 417x335 hole in
     # the dashboard with nothing to explain it, while the identical component
     # on the round panel said "sin calendario" -- one component cannot be
@@ -207,7 +238,11 @@ def build(ctx: SceneContext) -> Scene:
                 else f"pr\u00f3ximos {options.get('days', 14)} d\u00edas")
         body_html = empty(note, hint, ctx.variant)
     else:
-        body_html = f'<table>{body}</table>'
+        # A leftover <table> from the tabular layout this replaced. The
+        # rows are divs, so the parser foster-parented them OUT of it and
+        # the `.list` rules never matched anything -- which is why there
+        # was no vertical centring and no way to ask for columns.
+        body_html = listing
     return Scene(layout="fill",
                  components=({"c": "calendar", "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,
@@ -221,6 +256,18 @@ CSS = """
    separators are #ececec, which thresholds to nothing at 1-bit, so a solid
    black rule under every line is not a translation of it -- it is a ledger. */
 .list{display:flex;flex-direction:column;justify-content:center;height:100%}
+/* Two columns read like a newspaper: earliest at the top left, down, then the
+   top right. `column-count` balances them and `break-inside` keeps a row from
+   being split across the gap. Not flex-wrap, which would order them across
+   the page and put the second event beside the first. */
+.list.cols2{display:block;column-count:2;column-gap:var(--pad);
+  column-fill:balance}
+.list.cols2 .row{break-inside:avoid}
+/* The time column keeps its width. It holds the same twelve characters
+   ("mañana 07:00") whatever the column is, and narrowing it to buy the
+   summary a few pixels put the two back on top of each other -- the panel
+   read "mañana 07:00Matias Entrenamiento". The summary takes what is left and
+   ellipsises, which is visible and honest where a collision is neither. */
 /* List leading, and a fixed height so the row count and the rendered row
    agree. Padding on top of the line box made the real row half again taller
    than `--row`, so `ctx.rows` promised space that did not exist and the last

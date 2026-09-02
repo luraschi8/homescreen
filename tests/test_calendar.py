@@ -408,3 +408,74 @@ def test_a_broken_calendar_still_shows_what_can_be_read():
     got = ics.fetch({"url": "https://x/c.ics", "days": 3650},
                     session=_Session(_sample().replace("VERSION:2.0", "\x00")))
     assert isinstance(got.get("events"), list)
+
+
+# --- two columns --------------------------------------------------------------
+
+def _cal_ctx(width, height, options, events):
+    import datetime as _dt
+    now = _dt.datetime(2026, 9, 2, 17, 0, tzinfo=_dt.timezone.utc)
+    return scenes.SceneContext(
+        cfg={}, cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": width, "h": height, "depth": 1}, now=now.timestamp(),
+        device={}, options=scenes.clean_options("calendar", options),
+        data=lambda _r: Reading(data={"events": events}, ok=True, age_s=5.0))
+
+
+def _some_events(n):
+    import datetime as _dt
+    now = _dt.datetime(2026, 9, 2, 17, 0, tzinfo=_dt.timezone.utc)
+    return [{"when": (now + _dt.timedelta(hours=3 + i * 11)).isoformat(),
+             "summary": f"Evento {i}"} for i in range(n)]
+
+
+def test_two_columns_show_twice_as_many_events_in_the_same_height():
+    from homescreen.scenes import calendar
+    events = _some_events(20)
+    one = scenes.build("calendar", _cal_ctx(
+        417, 110, {"url": "https://x/a.ics", "columns": "1"}, events)).html
+    two = scenes.build("calendar", _cal_ctx(
+        417, 110, {"url": "https://x/a.ics", "columns": "2"}, events)).html
+    assert two.count('class="row"') == 2 * one.count('class="row"')
+    assert "cols2" in two and "cols1" in one
+
+
+def test_a_column_too_narrow_to_read_stays_one_column():
+    # The time alone is about 72px at this type size; what is left has to hold
+    # a summary worth reading.
+    from homescreen.scenes import calendar
+    assert calendar.columns_for({"columns": "2"}, 417, "card") == 2
+    assert calendar.columns_for({"columns": "2"}, 120, "card") == 1
+    assert calendar.columns_for({"columns": "auto"}, 417, "card") == 2
+    assert calendar.columns_for({"columns": "auto"}, 300, "card") == 1
+
+
+def test_a_strip_or_a_badge_never_splits_into_columns():
+    from homescreen.scenes import calendar
+    for variant in ("strip", "badge"):
+        assert calendar.columns_for({"columns": "2"}, 800, variant) == 1
+
+
+def test_the_time_column_is_the_same_width_in_both_layouts():
+    # Narrowing it to buy the summary a few pixels put the two on top of each
+    # other: the panel read "mañana 07:00Matias Entrenamiento".
+    html = scenes.build("calendar", _cal_ctx(
+        417, 110, {"url": "https://x/a.ics", "columns": "2"},
+        _some_events(12))).html
+    css = html.split("<style>")[-1].split("</style>")[0].replace(" ", "")
+    assert ".list.cols2.row.w{width:" not in css, "the time column was narrowed"
+
+
+def test_two_columns_read_in_date_order_down_then_across():
+    # Newspaper order: earliest at the top left, down, then the top right.
+    # `flex-wrap` would order them across and put the second event beside the
+    # first, which is not how a list of dates is read.
+    html = scenes.build("calendar", _cal_ctx(
+        417, 110, {"url": "https://x/a.ics", "columns": "2"},
+        _some_events(12))).html
+    css = html.split("<style>")[-1].split("</style>")[0].replace(" ", "")
+    assert "column-count:2" in css
+    import re
+    order = [int(n) for n in re.findall(r"Evento (\d+)", html)]
+    assert order, "no events rendered"
+    assert order == sorted(order), order
