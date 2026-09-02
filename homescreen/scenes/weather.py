@@ -67,6 +67,34 @@ _PICTURE = {"clear": "sun", "cloud": "cloud", "rain": "rain",
             "snow": "snow", "storm": "storm", "fog": "cloud"}
 
 
+#: Past this, how old the reading is goes on the glass.
+#:
+#: CLAUDE.md: "Stale data is SHOWN, not hidden; mark with a tertiary marker
+#: past 1 hour." The 800x480 panel carries `actualizado HH:MM` in its masthead
+#: for exactly this; the round face carried nothing at all, so a weather source
+#: that died would leave 32 degrees on the glass indefinitely with no way to
+#: tell. It has an unused `rim_top` slot and this is what it is for.
+STALE_AFTER_S = 3600
+
+
+def age_note(age_s) -> str:
+    """"hace 2 h" for a reading old enough to say so, else "".
+
+    Silent while the data is current: a face that always says how old it is
+    trains you to stop reading the line, and then it cannot warn you.
+    """
+    try:
+        age = float(age_s)
+    except (TypeError, ValueError):
+        return ""
+    if age != age or age < STALE_AFTER_S:
+        return ""
+    hours = int(age // 3600)
+    if hours < 24:
+        return f"hace {hours} h"
+    return f"hace {hours // 24} d"
+
+
 def _sky_icon(sky: str) -> str:
     """The drawing for a sky, or none if we have no picture for it."""
     return _PICTURE.get(str(sky or ""), "")
@@ -395,6 +423,11 @@ def build(ctx: SceneContext) -> Scene:
         elif description:
             instructions.append(draw.text("rim_bottom", description, "xs",
                                           "dim"))
+        # How old it is, when that is worth knowing. Above the picture, in the
+        # slot nothing else uses.
+        stale = age_note(getattr(reading, "age_s", None))
+        if stale:
+            instructions.append(draw.text("rim_top", stale, "xs", "dim"))
 
     if reading.missing:
         # Say why, on the glass. A blank panel and a broken key look identical

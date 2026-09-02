@@ -856,3 +856,22 @@ def test_a_multi_line_option_is_editable(ctx):
     assert "<textarea" in html, "no multi-line control on the page"
     # ...carrying the value on separate lines, not fused into one string.
     assert "Madrid = futbol:86\nF1 = f1" in html
+
+
+def test_a_screen_with_several_views_can_edit_them_whatever_its_geometry(ctx):
+    # The round panel has one region and one template, so the editor returned
+    # "" -- while that same panel carries `tiempo` and `noche` and a
+    # 23:00-07:00 schedule switching between them. The schedule editor offered
+    # views this page could not create, rename or delete.
+    client, _ = ctx
+    client.put(f"/api/devices/{ROUND}/schedule", json={
+        "views": {"tiempo": {"template": "single", "placements": [
+                      {"id": "t", "region": "full", "component": "weather"}]},
+                  "noche": {"template": "single", "placements": [
+                      {"id": "n", "region": "full", "component": "blank"}]}},
+        "schedule": {"default": "tiempo", "tz": "Europe/Madrid", "slots": [
+            {"days": [1, 2, 3, 4, 5, 6, 7], "from": "23:00", "to": "07:00",
+             "view": "noche"}]}})
+    html = client.get(f"/device/{ROUND}").get_data(as_text=True)
+    assert "Qué contiene cada vista" in html
+    assert "tiempo" in html and "noche" in html

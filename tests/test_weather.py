@@ -680,3 +680,44 @@ def test_a_missing_number_reads_as_missing_not_as_zero():
         assert weather._round(absent) == "--", absent
     assert weather._round(0) == "0"
     assert weather._round(33.6) == "34"
+
+
+# --- the round face and staleness --------------------------------------------
+
+def test_a_fresh_round_face_says_nothing_about_its_age():
+    # A face that always says how old it is trains you to stop reading the
+    # line, and then it cannot warn you.
+    assert scenes.weather.age_note(0) == ""
+    assert scenes.weather.age_note(900) == ""
+    assert scenes.weather.age_note(scenes.weather.STALE_AFTER_S - 1) == ""
+
+
+def test_a_stale_round_face_says_how_old_it_is():
+    # CLAUDE.md: stale data is SHOWN, not hidden. The 800x480 panel carries
+    # `actualizado HH:MM`; the round face carried nothing, so a dead weather
+    # source would leave 32 degrees on the glass indefinitely.
+    assert scenes.weather.age_note(scenes.weather.STALE_AFTER_S) == "hace 1 h"
+    assert scenes.weather.age_note(7200) == "hace 2 h"
+    assert scenes.weather.age_note(90000) == "hace 1 d"
+
+
+def test_an_unreadable_age_is_silent_rather_than_wrong():
+    for bad in (None, "x", float("nan")):
+        assert scenes.weather.age_note(bad) == ""
+
+
+def test_the_age_reaches_the_round_panels_draw_list():
+    import pathlib
+    import tempfile
+    from homescreen.reading import Reading
+    envelope = {"temp": 32.0, "sky": "clear", "unit": "C", "place": "Madrid"}
+    ctx = scenes.SceneContext(
+        cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+        cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 240, "h": 240, "depth": 16, "shape": "round"},
+        now=1_788_290_000.0, device={},
+        options=scenes.clean_options("weather", {}),
+        data=lambda _r: Reading(data=envelope, ok=True, age_s=7200.0))
+    drawn = scenes.build("weather", ctx).components[0]["draw"]
+    assert any(d.get("v") == "hace 2 h" for d in drawn), drawn
+    assert any(d.get("slot") == "rim_top" for d in drawn)

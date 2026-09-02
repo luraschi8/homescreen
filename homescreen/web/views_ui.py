@@ -335,7 +335,13 @@ def editor(hw: str, views: dict, regions: dict, offered, template: str,
     # offered a different arrangement. The composed panel was unreachable from
     # the web UI entirely; the only way in was to PUT JSON at the API.
     choices = tuple(templates or ())
-    if len(regions) < 2 and len(choices) < 2:
+    # Also when the screen HAS more than one view, whatever its geometry. The
+    # round panel has one region and one template, so this returned "" -- while
+    # that same panel carries `tiempo` and `noche` and a 23:00-07:00 schedule
+    # switching between them. The schedule editor offered views this page could
+    # not create, rename or delete, and options are deliberately not edited
+    # here, so there is nothing for it to duplicate.
+    if len(regions) < 2 and len(choices) < 2 and len(views or {}) < 2:
         return ""
     blocks = []
     for view_name in sorted(views):
