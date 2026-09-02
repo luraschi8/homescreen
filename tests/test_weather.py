@@ -535,7 +535,7 @@ def test_the_component_pins_what_it_needs_rather_than_inheriting_a_default():
     from homescreen.scenes import weather
     cfg = {"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}}
     params = weather.needs({"source": "openmeteo"}, cfg)[0]["params"]
-    assert params["days"] == 6, params
+    assert params["days"] == 9, params
 
 
 def test_the_job_key_does_not_move_when_the_provider_default_changes():
@@ -615,7 +615,15 @@ def test_the_day_list_is_bounded_by_the_room_it_has():
     reading = Reading(data=dict(READING.data, tz_offset_s=7200, daily=daily),
                       ok=True, age_s=60.0)
     html = _panel(reading, day)
-    assert html.count('<div class="dy">') <= 6, html.count('<div class="dy">')
+    # Bounded by what is left UNDER the current block and the hour strip, not
+    # by the whole region -- asking `ctx.rows` gave fourteen rows for a column
+    # with room for six. A hard cap of six hid that, and also stopped the list
+    # ever filling a taller column: the panel ran out of forecast with 96 of
+    # its 335 pixels empty.
+    from homescreen.scenes import weather
+    fits = weather.day_rows(321, 335, "panel")
+    assert html.count('<div class="dy">') <= fits, html.count('<div class="dy">')
+    assert fits < 14, "the whole region's row count is not the day budget"
 
 
 def test_day_names_survive_a_spring_clock_change():
@@ -721,3 +729,40 @@ def test_the_age_reaches_the_round_panels_draw_list():
     drawn = scenes.build("weather", ctx).components[0]["draw"]
     assert any(d.get("v") == "hace 2 h" for d in drawn), drawn
     assert any(d.get("slot") == "rim_top" for d in drawn)
+
+
+def test_every_forecast_row_the_panel_emits_actually_fits():
+    # The arithmetic in `day_rows` has no browser behind it, so this renders
+    # the column and checks that the last row is whole rather than cut through
+    # its x-height by `overflow:hidden`.
+    import datetime
+    from homescreen import render
+    from homescreen.reading import Reading
+    now = datetime.datetime(2026, 9, 2, 13, 0, tzinfo=datetime.timezone.utc)
+    env = dict(READING.data, tz_offset_s=7200,
+               hourly=[{"time": now.timestamp() + i * 3600, "temp": 33.0,
+                        "sky": "clear"} for i in range(12)],
+               daily=[{"date": now.timestamp() + d * 86400, "sky": "clear",
+                       "precip_pct": d, "min": 17.0, "max": 35.0}
+                      for d in range(9)])
+    ctx = scenes.SceneContext(
+        cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+        cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 321, "h": 335, "depth": 1}, now=now.timestamp(), device={},
+        options=scenes.clean_options("weather", {}),
+        data=lambda _r: Reading(data=env, ok=True, age_s=30.0))
+    html = scenes.build("weather", ctx).html
+    emitted = html.count('class="dy"')
+    assert emitted >= 6, f"only {emitted} days in a full column"
+
+    out = pathlib.Path(tempfile.mkdtemp()) / "col.png"
+    try:
+        render.html_to_png(html, 321, 335, out)
+    except Exception:                                   # noqa: BLE001
+        pytest.skip("no renderer here")
+    from PIL import Image
+    grey = Image.open(out).convert("L")
+    rows = [r for r in range(335)
+            if any(grey.getpixel((c, r)) < 128 for c in range(321))]
+    # Nothing is touching the bottom edge, which is what clipping looks like.
+    assert max(rows) < 334, "the last row runs into the region's edge"

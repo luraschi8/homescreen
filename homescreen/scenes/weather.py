@@ -17,7 +17,7 @@ from homescreen.config import home_location, mapping
 from homescreen.scenes import Scene, SceneContext
 from homescreen.reading import Reading
 from homescreen.scenes import _icons
-from homescreen.scenes._style import esc, page
+from homescreen.scenes._style import esc, metrics, page
 
 
 def _nothing() -> Reading:
@@ -146,9 +146,13 @@ def needs(options: dict, cfg: dict) -> tuple:
         # Pinned by the COMPONENT, not inherited from the adapter's default.
         # Job keys are built from cleaned parameters, so a default that moves
         # takes every cached payload with it -- the panel showed "sin datos"
-        # while a good forecast sat on disk under the old name. Six because
-        # the panel lists five days from tomorrow.
-        params["days"] = 6
+        # while a good forecast sat on disk under the old name.
+        #
+        # Nine, so the ROOM decides how many days are listed rather than the
+        # request doing it. At six the column ran out of forecast with 96px of
+        # its 335 empty -- 29% of the right column white because the data
+        # stopped, not because the space did.
+        params["days"] = 9
         # Open-Meteo answers coordinates, not names, so the label has to be
         # ours. The operator's own beats the server's home, which beats
         # nothing -- and either beats whichever suburb a reverse lookup would
@@ -224,6 +228,28 @@ def _clock(stamp, offset, fmt: str, zone: str = "") -> str:
     if fmt == "day":
         return _DAYS[moment.weekday()]
     return moment.strftime(fmt)
+
+
+def day_rows(width: int, height: int, shape: str | None = None) -> int:
+    """How many forecast days fit UNDER the current block and the hour strip.
+
+    `ctx.rows` answers for the whole region, and the day list is the third
+    thing in it -- so asking that gave fourteen rows for a column that had
+    room for six, and `overflow:hidden` ate the rest. A hard cap of six hid
+    that, and also stopped the list ever filling a taller column: the panel
+    ran out of forecast with 96 of its 335 pixels empty.
+
+    Arithmetic rather than measurement, because the server has no browser at
+    this point; `tests/test_weather.py` renders it and counts what survives.
+    """
+    m = metrics(width, height, shape=shape)
+    inner = max(0, int(height) - 2 * m["pad"])
+    # The headline and its two-line caption, then the strip: an hour label, an
+    # icon and a temperature.
+    now_block = m["hero"] + m["fs"]
+    hour_strip = 3 * m["row_tight"] + m["pad_sm"]
+    left = inner - now_block - hour_strip
+    return max(1, left // max(1, m["row"]))
 
 
 def _body(variant: str, reading, place: str, temp: str, unit: str,
@@ -314,7 +340,7 @@ def _daily(reading, offset, rows: int, zone: str = "") -> str:
     # Bounded by the ROOM. `[1:]` made the count the length of the forecast:
     # fifteen days gave fourteen rows, of which the region drew five and
     # `overflow:hidden` ate the rest -- the last cut through its x-height.
-    days = (reading.get("daily") or [])[1:1 + max(1, min(rows, 6))]
+    days = (reading.get("daily") or [])[1:1 + max(1, rows)]
     if not days:
         return ""
     rows = []
@@ -436,7 +462,7 @@ def build(ctx: SceneContext) -> Scene:
                         draw.text("below", "sin datos del tiempo", "xs", "dim")]
 
     body = _body(ctx.variant, reading, place, temp, unit, description, span,
-                 ctx.now, ctx.rows, w)
+                 ctx.now, day_rows(w, h, ctx.variant), w)
     return Scene(layout="fill", components=({"c": "weather",
                                              "draw": instructions},),
                  poll_s=POLL_S, poll_max_s=POLL_S,
@@ -472,8 +498,11 @@ CSS = """
 
 /* The days ahead: name, sky, chance of rain, high and low. */
 .days{border-top:1px solid #000;padding-top:var(--pad-sm)}
+/* Fixed, and the same `--row` the count is made with. Padding on top of the
+   line box made the rendered row taller than the counted one, which is how a
+   list comes to emit rows that `overflow:hidden` then eats. */
 .dy{display:flex;align-items:center;gap:var(--pad-sm);
-  padding:var(--pad-sm) 0}
+  height:var(--row)}
 /* Dotted, and not on the first. Five solid black hairlines in a 150px stack
    is heavier than the design ever was -- and the design's own separators are
    #ececec, which thresholds to nothing at 1-bit anyway. */
