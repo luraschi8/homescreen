@@ -66,6 +66,20 @@ class SceneContext:
         return _style.rows(int(caps.get("w") or 0), int(caps.get("h") or 0),
                            shape=self.variant)
 
+    @property
+    def dense_rows(self) -> int:
+        """How many one-line LIST rows fit, at list leading rather than prose.
+
+        A second SHARED answer rather than a private one per component: the
+        point of `rows` was that `calendar`, `sport` and `quotes` must not each
+        invent their own arithmetic, so a component needing tighter leading
+        asks for it here instead of computing it locally.
+        """
+        from homescreen.scenes import _style
+        caps = self.caps if isinstance(self.caps, dict) else {}
+        return _style.rows(int(caps.get("w") or 0), int(caps.get("h") or 0),
+                           shape=self.variant, tight=True)
+
     def variant_of(self, name: str) -> str:
         """The shape `name` would take on this glass.
 

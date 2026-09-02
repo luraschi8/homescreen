@@ -78,6 +78,10 @@ def metrics(width: int, height: int, shape: str | None = None,
         "pad": pad,
         "pad_sm": max(1, round(pad * 0.4)),
         "row": row,
+        # A list of one-line rows does not need prose leading. 1.55 is right
+        # for a paragraph and airy for a fixture list: it fit three matches in
+        # a block that has room for five.
+        "row_tight": max(MIN_PX, round(fs * 1.25)),
         "hero": hero,
         "sub": max(MIN_PX, round(hero * 0.55)),     # SPEC: 31 on a full panel
         "lg": max(MIN_PX, round(fs * 1.25)),        # SPEC: 16, the ticker price
@@ -127,7 +131,8 @@ def empty(note: str, hint: str = "", shape: str | None = None) -> str:
     return f'<div class="nothing"><div>{note}</div>{tail}</div>'
 
 
-def rows(width: int, height: int, shape: str | None = None) -> int:
+def rows(width: int, height: int, shape: str | None = None,
+         tight: bool = False) -> int:
     """How many body lines fit in a region of this size.
 
     Shared, because `calendar`, `sport` and `quotes` all need the number and
@@ -137,7 +142,7 @@ def rows(width: int, height: int, shape: str | None = None) -> int:
     """
     m = metrics(width, height, shape=shape)
     usable = max(0, int(height) - 2 * m["pad"])
-    return max(0, usable // max(1, m["row"]))
+    return max(0, usable // max(1, m["row_tight" if tight else "row"]))
 
 
 def page(width: int, height: int, body: str, extra_css: str = "",

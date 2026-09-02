@@ -145,37 +145,27 @@ def _pick(matches, now: float):
     return parsed[-1]
 
 
-def _parse(matches) -> list:
-    """(datetime, match) for every readable fixture, in time order.
-
-    Shared with `_pick`, so a block and a cell agree on what the fixtures ARE
-    and differ only in how many they show.
-    """
-    parsed = []
-    for match in matches or ():
-        if not isinstance(match, dict):
-            continue
-        try:
-            when = datetime.fromisoformat(
-                str(match.get("when", "")).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            continue
-        parsed.append((when, match))
-    parsed.sort(key=lambda p: p[0])
-    return parsed
-
-
 def _when(when, now: float) -> str:
+    """When a fixture is, in the shortest form that is still unambiguous.
+
+    A weekday alone was not: "mar 18:45" on a panel you glance at could be
+    this Tuesday or the one after, and a fixture list is read to plan around.
+    Every form past tomorrow now carries the actual date.
+    """
+    local = when.astimezone()
     day = datetime.fromtimestamp(now, when.tzinfo).date()
     delta = (when.date() - day).days
-    clock = when.astimezone().strftime("%H:%M")
+    clock = local.strftime("%H:%M")
     if delta == 0:
         return f"hoy {clock}"
     if delta == 1:
         return f"mañana {clock}"
+    # No leading zeros: "8/9" is what a person writes, and the column is
+    # narrow enough that two saved characters are a word of team name kept.
+    date = f"{local.day}/{local.month}"
     if 0 < delta < 7:
-        return f"{WEEKDAYS[when.weekday()]} {clock}"
-    return when.astimezone().strftime("%d/%m %H:%M")
+        return f"{WEEKDAYS[when.weekday()]} {date} {clock}"
+    return f"{date} {clock}"
 
 
 def _parse(matches) -> list:
@@ -198,17 +188,85 @@ def _parse(matches) -> list:
     return parsed
 
 
-def _upcoming(matches, now: float, limit: int) -> list:
-    """The next `limit` fixtures as (when, home, away).
+def is_team(provider: str, params: dict) -> bool:
+    """Whether a follow names one club rather than a whole competition.
 
-    `_pick` answers with ONE, which is right for a cell and wrong for a block:
-    the design's DEPORTES section lists three.
+    `futbol:86` is a club and `futbol:CL` is every tie in the Champions
+    League; both arrive as fixtures and only this tells them apart. It is what
+    "relevance" means here -- a game your team is in outranks a game it is not.
     """
+    if provider == "f1":
+        return False                      # a season has no team to follow
+    return bool((params or {}).get("team"))
+
+
+def dedupe(entries: list) -> list:
+    """One row per fixture, however many sources returned it.
+
+    Following `Madrid = futbol:86` AND `Champions = futbol:CL` asks two
+    endpoints that both answer with the same Real Madrid tie; following
+    `euroliga:MAD` and `euroliga` does the same for the basketball. Measured
+    against the live caches, four of thirty-nine fixtures arrived twice, and
+    the block drew each of them as two rows.
+
+    The FIRST source keeps the label, so the config's line order decides what
+    a row is called -- but relevance is OR-ed across the duplicates, because
+    whether your team is playing is a fact about the fixture and must not
+    depend on which line the user happened to write first.
+    """
+    out, seen = [], {}
+    for when, match in entries:
+        key = (when, str(match.get("home") or "").strip().casefold(),
+               str(match.get("away") or "").strip().casefold())
+        if key in seen:
+            kept = out[seen[key]][1]
+            kept["followed"] = kept.get("followed") or match.get("followed")
+            continue
+        seen[key] = len(out)
+        out.append((when, dict(match)))
+    return out
+
+
+#: How much of a block is reserved for fixtures your own teams are in. The
+#: rest is kept for the competitions you follow wholesale, because a screen
+#: that shows nothing but Real Madrid is not what "and other games from
+#: champions and euroliga" asked for -- and over thirty days Madrid alone has
+#: more fixtures than any block has rows.
+_FOLLOWED_SHARE = 0.6
+
+
+def rank(entries: list, limit: int) -> list:
+    """The `limit` fixtures worth the space, in the order they happen.
+
+    Relevance decides WHICH are shown; time decides the order they are shown
+    IN. A list sorted by relevance reads as though the dates are shuffled,
+    which is worse than useless on something you glance at.
+    """
+    limit = max(1, int(limit))
+    mine = [e for e in entries if e[1].get("followed")]
+    rest = [e for e in entries if not e[1].get("followed")]
+    quota = min(len(mine), max(1, round(limit * _FOLLOWED_SHARE)))
+    chosen = mine[:quota] + rest[:limit - quota]
+    # One side short: the other fills the gap rather than leaving the block
+    # half empty next to fixtures it could have shown.
+    if len(chosen) < limit:
+        taken = set(map(id, chosen))
+        for entry in mine + rest:
+            if len(chosen) >= limit:
+                break
+            if id(entry) not in taken:
+                chosen.append(entry)
+    return sorted(chosen, key=lambda e: e[0])
+
+
+def _upcoming(matches, now: float, limit: int) -> list:
+    """The fixtures a block should show, as (when, home, away, source)."""
     moment = datetime.fromtimestamp(now, timezone.utc)
-    ahead = [(w, m) for w, m in _parse(matches) if w >= moment]
+    parsed = dedupe(_parse(matches))
+    ahead = [(w, m) for w, m in parsed if w >= moment]
     # Nothing ahead: the most recent results, so the block says something
     # rather than collapsing between seasons.
-    chosen = ahead[:limit] or _parse(matches)[-limit:]
+    chosen = rank(ahead, limit) if ahead else parsed[-limit:]
     return [(_when(w, now), str(m.get("home") or ""), str(m.get("away") or ""),
              str(m.get("source") or "")) for w, m in chosen]
 
@@ -221,13 +279,14 @@ def build(ctx: SceneContext) -> Scene:
     # Lakers game are on the same evening.
     followed = follows(ctx.options or {})
     readings, matches = [], []
-    for requirement, (name, _p, _q) in zip(wanted, followed):
+    for requirement, (name, provider, params) in zip(wanted, followed):
         one = ctx.data(requirement) if callable(ctx.data) else None
         one = one if one is not None else Reading.nothing()
         readings.append(one)
+        mine = is_team(provider, params)
         for entry in (one.get("matches") or ()):
             if isinstance(entry, dict):
-                matches.append({**entry, "source": name})
+                matches.append({**entry, "source": name, "followed": mine})
     reading = readings[0] if readings else Reading.nothing()
     # A marker on every row of a single-team block says the same thing three
     # times.
@@ -282,7 +341,7 @@ def build(ctx: SceneContext) -> Scene:
     elif ctx.variant in ("card", "panel"):
         # A fixture with no date is not information. The draw list has
         # computed the kickoff all along and the HTML threw it away.
-        upcoming = _upcoming(matches, ctx.now, max(1, ctx.rows))
+        upcoming = _upcoming(matches, ctx.now, max(1, ctx.dense_rows))
         inner = '<div class="list">' + "".join(
             f'<div class="row"><div class="t">{home} — {away}</div>'
             + (f'<div class="src">{src}</div>' if show_source and src else "")
@@ -304,8 +363,10 @@ CSS = """
 .big{font-size:var(--sub);font-weight:600;text-align:center}
 .list{display:flex;flex-direction:column;justify-content:center;
   width:100%;height:100%}
+/* List leading, not prose leading: these are one-line rows, and 1.55em of
+   line box fitted three fixtures in a block with room for five. */
 .row{display:flex;gap:var(--pad-sm);align-items:baseline;
-  padding:var(--pad-sm) 0;font-size:var(--fs)}
+  height:var(--row-tight);font-size:var(--fs)}
 .row .t{min-width:0;flex:1;font-weight:500;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 .row .k{flex:none;font-size:var(--sm)}

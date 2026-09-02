@@ -135,3 +135,90 @@ def test_the_provider_refuses_to_fetch_without_its_key():
 def test_a_team_that_is_not_a_team_is_refused(bad):
     with pytest.raises(ValueError):
         fetch.providers.clean_params("football", bad)
+
+
+# --- following a club AND its competition -----------------------------------
+
+def _fx(when, home, away, followed=False, source=""):
+    from datetime import datetime, timezone
+    return (datetime.fromisoformat(when).replace(tzinfo=timezone.utc),
+            {"home": home, "away": away, "followed": followed, "source": source})
+
+
+def test_a_fixture_returned_by_two_sources_is_one_row():
+    # Measured against the live caches: following `Madrid = futbol:86` and
+    # `Champions = futbol:CL` made four of thirty-nine fixtures arrive twice,
+    # and the block drew each of them as two rows.
+    entries = [_fx("2026-09-08T19:00", "Real Madrid", "Inter", True, "Madrid"),
+               _fx("2026-09-08T19:00", "Real Madrid", "Inter", False, "Champions"),
+               _fx("2026-09-09T19:00", "Club Brugge", "Aston Villa", False, "Champions")]
+    out = scenes.sport.dedupe(entries)
+    assert len(out) == 2
+
+
+def test_the_first_source_names_the_row_but_relevance_survives_either_order():
+    # Whether your team is playing is a fact about the FIXTURE. It must not
+    # depend on which line the user happened to write first.
+    both = [_fx("2026-09-08T19:00", "Real Madrid", "Inter", False, "Champions"),
+            _fx("2026-09-08T19:00", "Real Madrid", "Inter", True, "Madrid")]
+    out = scenes.sport.dedupe(both)
+    assert len(out) == 1
+    assert out[0][1]["source"] == "Champions", "the first line names it"
+    assert out[0][1]["followed"] is True, "and it is still my team's game"
+
+
+def test_a_club_follow_is_relevant_and_a_competition_follow_is_not():
+    assert scenes.sport.is_team("football", {"team": 86}) is True
+    assert scenes.sport.is_team("football", {"competition": "CL"}) is False
+    assert scenes.sport.is_team("euroleague", {"team": "MAD"}) is True
+    assert scenes.sport.is_team("euroleague", {"team": ""}) is False
+    assert scenes.sport.is_team("f1", {"season": "current"}) is False
+
+
+def test_the_block_keeps_room_for_games_my_team_is_not_in():
+    # Over thirty days Real Madrid alone has more fixtures than any block has
+    # rows, so a pure relevance sort would show nothing else -- which is not
+    # what "and other games from champions and euroliga" asked for.
+    mine = [_fx(f"2026-09-{d:02d}T19:00", "Real Madrid", f"Rival {d}", True)
+            for d in range(2, 12)]
+    rest = [_fx(f"2026-09-{d:02d}T17:00", f"A{d}", f"B{d}", False)
+            for d in range(2, 12)]
+    out = scenes.sport.rank(mine + rest, 5)
+    assert len(out) == 5
+    assert any(m[1]["followed"] for m in out)
+    assert any(not m[1]["followed"] for m in out), "no room left for anything else"
+
+
+def test_a_ranked_block_still_reads_in_date_order():
+    # Relevance decides WHICH are shown; time decides the order shown IN. A
+    # list sorted by relevance reads as though the dates are shuffled.
+    mine = [_fx("2026-09-20T19:00", "Real Madrid", "Late", True)]
+    rest = [_fx("2026-09-03T17:00", "Early", "Game", False)]
+    out = scenes.sport.rank(mine + rest, 2)
+    assert [m[1]["home"] for m in out] == ["Early", "Real Madrid"]
+
+
+def test_the_block_fills_up_when_one_side_is_short():
+    mine = [_fx("2026-09-02T19:00", "Real Madrid", "X", True)]
+    rest = [_fx(f"2026-09-{d:02d}T17:00", f"A{d}", f"B{d}", False)
+            for d in range(3, 9)]
+    assert len(scenes.sport.rank(mine + rest, 5)) == 5
+
+
+def test_a_fixture_past_tomorrow_carries_its_date():
+    # "mar 18:45" on a panel you glance at could be this Tuesday or the one
+    # after, and a fixture list is read to plan around.
+    import datetime as _dt
+    now = _dt.datetime(2026, 9, 1, 12, 0, tzinfo=_dt.timezone.utc)
+    def at(days, hour=18, minute=45):
+        return scenes.sport._when(
+            now + _dt.timedelta(days=days, hours=hour - 12, minutes=minute),
+            now.timestamp())
+    assert at(0).startswith("hoy ")
+    assert at(1).startswith("mañana ")
+    within = at(3)
+    assert "/" in within, f"no date in {within!r}"
+    assert "4/9" in within
+    beyond = at(20)
+    assert "21/9" in beyond
+    assert "0" not in beyond.split()[0], "no leading zeros in the date"
