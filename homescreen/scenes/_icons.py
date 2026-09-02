@@ -164,6 +164,32 @@ def sun_event(kind: str, px: int) -> str:
             f'stroke-linecap="round"/></svg>')
 
 
+#: The Obelisco, which is what the v6 design puts between the two clocks --
+#: not a rule. It stands where the panel changes city, and it is the one mark
+#: on the glass that says which city the second column is.
+#:
+#: v6 draws it in three greys, which this panel does not have, so it is a
+#: silhouette instead. Four 1-bit readings were rendered through the real 160
+#: threshold at 17x56, 20x66 and 24x78 and looked at: outlining the shaft (as
+#: v6 does) puts two strokes 3px apart and reads as a hollow tube, and cutting
+#: the collar into a filled shaft reads as a chimney with a band. A solid
+#: shaft on a plinth reads as a monument at every size.
+_OBELISK = ('<polygon points="14,122 16.6,24 20,5 23.4,24 26,122"/>'
+            '<rect x="11" y="122" width="18" height="8"/>')
+
+#: The drawing's own box. Taller than it is wide by a lot, which is the point.
+_OBELISK_BOX = (40, 130)
+
+
+def obelisk(height_px: int) -> str:
+    """The monument, sized to a height. Width follows from its proportions."""
+    height = max(MIN_PX, int(height_px))
+    w, h = _OBELISK_BOX
+    width = max(1, round(height * w / h))
+    return (f'<svg class="obel" viewBox="0 0 {w} {h}" width="{width}" '
+            f'height="{height}" aria-hidden="true" fill="#000">{_OBELISK}</svg>')
+
+
 def sky(name: str, px: int) -> str:
     """An inline SVG for a normalised sky, or "" if we have no picture.
 

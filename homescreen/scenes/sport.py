@@ -188,6 +188,45 @@ def _parse(matches) -> list:
     return parsed
 
 
+#: What a competition is called on the glass. The feeds answer with the legal
+#: name -- "Primera Division", "UEFA Champions League" -- and a row has about
+#: nine characters for it before the fixture loses its team names.
+_COMPETITION_NAMES = {
+    "primera division": "La Liga",
+    "uefa champions league": "Champions",
+    "uefa europa league": "Europa",
+    "uefa europa conference league": "Conference",
+    "premier league": "Premier",
+    "serie a": "Serie A",
+    "bundesliga": "Bundesliga",
+    "ligue 1": "Ligue 1",
+    "copa del rey": "Copa",
+    "campeonato brasileiro série a": "Brasileirão",
+    "euroleague": "Euroliga",
+    "eurocup": "Eurocup",
+    "f1": "F1",
+}
+
+
+def competition_name(raw: str) -> str:
+    """A competition's name, short enough to sit beside a fixture.
+
+    The block used to label every row with the FOLLOW's name, so a block
+    following `Madrid = futbol:86` said "MADRID" against Real Madrid — Betis,
+    which the row already says twice. Each fixture carries its own
+    competition, and that is the thing the row does not otherwise tell you.
+    """
+    text = " ".join(str(raw or "").split())
+    known = _COMPETITION_NAMES.get(text.casefold())
+    if known:
+        return known
+    # An unknown competition still beats no label. "UEFA" prefixes every
+    # European name and says nothing that distinguishes one from another.
+    if text.casefold().startswith("uefa "):
+        text = text[5:]
+    return text[:14]
+
+
 def is_team(provider: str, params: dict) -> bool:
     """Whether a follow names one club rather than a whole competition.
 
@@ -268,7 +307,8 @@ def _upcoming(matches, now: float, limit: int) -> list:
     # rather than collapsing between seasons.
     chosen = rank(ahead, limit) if ahead else parsed[-limit:]
     return [(_when(w, now), str(m.get("home") or ""), str(m.get("away") or ""),
-             str(m.get("source") or "")) for w, m in chosen]
+             competition_name(m.get("competition")) or str(m.get("source") or ""))
+            for w, m in chosen]
 
 
 def build(ctx: SceneContext) -> Scene:
@@ -288,9 +328,10 @@ def build(ctx: SceneContext) -> Scene:
             if isinstance(entry, dict):
                 matches.append({**entry, "source": name, "followed": mine})
     reading = readings[0] if readings else Reading.nothing()
-    # A marker on every row of a single-team block says the same thing three
-    # times.
-    show_source = len([n for n, _p, _q in followed if n]) > 1
+    # Shown when it DISCRIMINATES, not when there happens to be more than one
+    # follow. A block following only Real Madrid still mixes La Liga with the
+    # Champions League, and that is worth a label; a block that is all one
+    # competition would print the same word on every row.
     when, match = _pick(matches, ctx.now)
 
     w = int(ctx.caps.get("w") or 240)
@@ -342,6 +383,7 @@ def build(ctx: SceneContext) -> Scene:
         # A fixture with no date is not information. The draw list has
         # computed the kickoff all along and the HTML threw it away.
         upcoming = _upcoming(matches, ctx.now, max(1, ctx.dense_rows))
+        show_source = len({src for _k, _h, _a, src in upcoming if src}) > 1
         inner = '<div class="list">' + "".join(
             f'<div class="row"><div class="t">{home} — {away}</div>'
             + (f'<div class="src">{src}</div>' if show_source and src else "")

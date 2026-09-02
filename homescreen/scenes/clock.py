@@ -14,8 +14,9 @@ from zoneinfo import ZoneInfo
 
 from homescreen.scenes import Scene, SceneContext
 from homescreen import draw
+from homescreen.scenes._icons import obelisk
 from homescreen.scenes._icons import sun_event as sun_icon
-from homescreen.scenes._style import page
+from homescreen.scenes._style import metrics, page
 
 #: What an operator can set per assignment. The dashboard renders fields from
 #: this, the registry stores the values against the assignment, and
@@ -77,16 +78,16 @@ CSS = """
 /* Side by side: time over city, sun times, a rule, the second city. */
 .wrap.block{flex-direction:row;align-items:flex-end;gap:.7em;
   justify-content:space-between}
-/* Each group takes its share of the width so the block fills the region
-   instead of collapsing to the left and leaving half of it blank. */
-.wrap.block > *{flex:0 1 auto}
-.wrap.block .c{flex:1 1 auto}
+/* Natural widths, and `space-between` puts the slack BETWEEN the groups.
+   Letting the columns grow instead put it inside them -- each number is
+   left-aligned in its own stretched box, so the block ended 100px short of
+   its right edge with the gaps sitting after the numbers. */
+.wrap.block > *{flex:0 0 auto}
 .wrap.block .c{min-width:0}
 .wrap.block .big{line-height:1}
 .wrap.block .sub{margin-top:0}
-/* Where the mockup drew an obelisk. A 1px rule for a fiftieth of the ink. */
-.wrap.block .bar{width:1px;align-self:stretch;background:#000;
-  margin:0 .2em}
+/* The Obelisco itself, not the rule that stood in for it. */
+.wrap.block .obel{display:block;flex:none}
 .wrap.block .sun{display:flex;flex-direction:column;gap:2px;
   font-size:var(--sm);font-weight:500}
 .wrap.block .sun div{display:flex;align-items:center;gap:3px;
@@ -126,7 +127,7 @@ def _clocks(cfg: dict, now: float, options: dict) -> list[tuple[str, str]]:
 
 #: How much of the block the time may take, by shape. Generous, because a
 #: clock has nothing under it but its own city name.
-_HERO_SHARE = {"card": 0.62, "panel": 0.42, "badge": 0.44}
+_HERO_SHARE = {"card": 0.75, "panel": 0.42, "badge": 0.44}
 
 
 def _sun(ctx) -> str:
@@ -159,7 +160,8 @@ def _sun(ctx) -> str:
             f'<div>{sun_icon("sunset", 13)}<span>{clock(set_)}</span></div>')
 
 
-def _body(variant: str, primary, rest, sun: str = "") -> str:
+def _body(variant: str, primary, rest, sun: str = "",
+          hero: int = 0) -> str:
     """The arrangement for this SHAPE.
 
     It used to stack vertically at every size, and then append a rule and an
@@ -182,15 +184,17 @@ def _body(variant: str, primary, rest, sun: str = "") -> str:
         return f'<div class="wrap row">{"".join(parts)}</div>'
 
     # The design's clock block, side by side. Each city is its time with its
-    # name UNDER it, the sun times sit beside the first, and a 1px rule stands
-    # where the mockup drew a stone obelisk -- which is a grey illustration
-    # and thresholds to nothing, so it becomes the divider it was acting as.
+    # name UNDER it, the sun times sit beside the first, and the Obelisco
+    # stands where the panel changes city -- as v6 draws it. A 1px rule stood
+    # in for it on the reasoning that a grey illustration thresholds to
+    # nothing; a silhouette does not, and it is the one mark on the glass that
+    # says which city the second column belongs to.
     columns = [f'<div class="c"><div class="big">{primary[1]}</div>'
                f'<div class="lab">{primary[0]}</div></div>']
     if sun:
         columns.append(f'<div class="sun">{sun}</div>')
     for label, value in rest:
-        columns.append('<div class="bar"></div>')
+        columns.append(obelisk(round(hero * 1.15)) if hero else "")
         columns.append(f'<div class="c"><div class="sub">{value}</div>'
                        f'<div class="lab">{label}</div></div>')
     return f'<div class="wrap block">{"".join(columns)}</div>'
@@ -204,7 +208,10 @@ def build(ctx: SceneContext) -> Scene:
     if not clocks:
         clocks = [("", "--:--")]
     primary, rest = clocks[0], clocks[1:]
-    body = _body(ctx.variant, primary, rest, _sun(ctx))
+    # The obelisk is sized off the headline, as v6 sizes it off the clock.
+    _m = metrics(w, h, shape=ctx.variant,
+                 hero_share=_HERO_SHARE.get(ctx.variant))
+    body = _body(ctx.variant, primary, rest, _sun(ctx), _m["hero"])
 
     # The same clocks as instructions. A 240x240 round panel has room for one
     # time and its label plus a second city small at the rim -- deciding that

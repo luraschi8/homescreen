@@ -353,7 +353,7 @@ def test_the_clock_block_puts_each_city_under_its_own_time():
     assert columns[0][0] == "big" and columns[1][0] == "sub", \
         "the home city leads and the second is smaller"
     # And a rule between them, where the obelisk was.
-    assert '<div class="bar"></div>' in body
+    assert 'class="obel"' in body, "the Obelisco divides the cities"
 
 
 def test_the_masthead_clock_stays_on_one_line():
@@ -388,3 +388,26 @@ def test_the_clock_block_spreads_across_its_region():
     import re
     hero = int(re.search(r"--hero:(\d+)px", html).group(1))
     assert hero >= 40, f"the time is {hero}px in a 90px block"
+
+
+def test_the_clock_block_stands_the_obelisk_between_the_cities():
+    # v6 draws the Obelisco where the panel changes city. A 1px rule stood in
+    # for it on the reasoning that a grey illustration thresholds to nothing;
+    # a silhouette does not.
+    import pathlib
+    import tempfile
+    from homescreen import scenes
+    ctx = scenes.SceneContext(
+        cfg={"location": {"lat": 40.4, "lon": -3.7, "name": "Madrid"}},
+        cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        caps={"w": 417, "h": 85, "depth": 1}, now=1_788_290_000.0, device={},
+        options=scenes.clean_options("clock", {
+            "timezone": "Europe/Madrid", "second_label": "BS AS",
+            "second_timezone": "America/Argentina/Buenos_Aires"}))
+    html = scenes.build("clock", ctx).html
+    assert 'class="obel"' in html, "no obelisk between the cities"
+    assert "polygon" in html
+    css = html.split("<style>")[-1].split("</style>")[0].replace(" ", "")
+    # Stretching the columns put the slack inside them: the block ended 100px
+    # short of its right edge with the gaps sitting after each number.
+    assert "flex:11auto" not in css, "the columns stretch again"

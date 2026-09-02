@@ -77,10 +77,40 @@ def test_fixtures_from_several_sports_merge_in_time_order():
     assert html.index("Real Madrid") < html.index("LAL"), "18:00 before 20:00"
 
 
-def test_each_row_says_which_team_it_belongs_to():
+def test_each_row_says_which_competition_it_is():
+    # Not which FOLLOW it came from: a block following `Madrid = futbol:86`
+    # labelled every row "MADRID" against "Real Madrid — Betis", which the row
+    # already says. The competition is the thing the row does not tell you,
+    # and it differs per fixture -- Real Madrid plays La Liga and the
+    # Champions League in the same week.
     html = scenes.build("sport", _ctx(
         {"teams": "Madrid = futbol:86\nLakers = nba:LAL"}, _data)).html
-    assert "Madrid" in html and "Lakers" in html
+    assert "La Liga" in html and "NBA" in html
+    assert "Lakers" not in html, "the follow's name is not the label"
+
+
+def test_a_block_of_one_competition_does_not_repeat_it_on_every_row():
+    # The label is shown when it DISCRIMINATES, not when there is more than
+    # one follow.
+    def one_league(_req):
+        return Reading(data={"matches": [
+            _fixtures.match("2026-09-01T18:00:00+00:00", "Madrid", "Betis",
+                            competition="La Liga"),
+            _fixtures.match("2026-09-05T18:00:00+00:00", "Madrid", "Sevilla",
+                            competition="La Liga")]}, ok=True, age_s=10.0)
+    html = scenes.build("sport", _ctx(
+        {"teams": "A = futbol:86\nB = futbol:81"}, one_league)).html
+    assert 'class="src"' not in html
+
+
+def test_a_long_official_name_is_shortened_for_the_row():
+    from homescreen.scenes import sport
+    assert sport.competition_name("Primera Division") == "La Liga"
+    assert sport.competition_name("UEFA Champions League") == "Champions"
+    assert sport.competition_name("EuroLeague") == "Euroliga"
+    # Unknown still beats unlabelled, and UEFA distinguishes nothing.
+    assert sport.competition_name("UEFA Nations League") == "Nations League"
+    assert sport.competition_name("") == ""
 
 
 def test_one_team_alone_is_not_labelled():
