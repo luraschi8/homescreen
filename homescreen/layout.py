@@ -132,7 +132,7 @@ def regions(caps, template: str = DEFAULT_TEMPLATE) -> dict:
             for name, region in spec["regions"].items()}
 
 
-def slots(region: dict, count: int, weights=None) -> list:
+def slots(region: dict, count: int, weights=None, fixed=None) -> list:
     """`count` sub-rects tiling a region, laid out along its stack axis.
 
     `holds` and `stack` have described every region since the templates were
@@ -150,20 +150,56 @@ def slots(region: dict, count: int, weights=None) -> list:
     in it is the operator's choice and so how the height is shared has to be
     theirs. The original design's left column is five blocks of visibly
     different heights and equal fifths cannot express it.
+
+    `fixed` gives a slot an exact size instead of a share -- a per-slot list
+    where None means "take a share as usual". It is how a section with nothing
+    to show keeps only the line it needs to say so and hands the rest to its
+    siblings, which is CLAUDE.md's collapse rule. The reservation is dropped
+    wholesale if it would not leave room for the slots that remain: a region of
+    zero-height slots is worse than an uncollapsed one.
     """
     x, y, w, h = region["rect"]
     count = max(1, int(count))
-    if count == 1:
-        return [(x, y, w, h)]
     horizontal = region.get("stack") == "h"
     span = w if horizontal else h
-    sizes = _shares(span, count, weights, region.get("weights"))
+
+    fixed = list(fixed or ())[:count]
+    fixed += [None] * (count - len(fixed))
+    flexible = [i for i, size in enumerate(fixed) if not size]
+    reserved = sum(int(size) for size in fixed if size)
+    if not flexible or reserved >= span:
+        fixed, flexible, reserved = [None] * count, list(range(count)), 0
+
+    if count == 1 and not reserved:
+        return [(x, y, w, h)]
+    if reserved:
+        # Only the slots still sharing get shares, and only of what is left.
+        picked = _shares(span - reserved, len(flexible),
+                         [_at_index(weights, i) for i in flexible],
+                         [_at_index(region.get("weights"), i)
+                          for i in flexible])
+        sizes = list(fixed)
+        for slot, size in zip(flexible, picked):
+            sizes[slot] = size
+        sizes = [int(size) for size in sizes]
+    else:
+        sizes = _shares(span, count, weights, region.get("weights"))
     out, offset = [], 0
     for size in sizes:
         out.append((x + offset, y, size, h) if horizontal
                    else (x, y + offset, w, size))
         offset += size
     return out
+
+
+def _at_index(source, index):
+    """`source[index]`, or None for anything that is not a list with one."""
+    if source is None:
+        return None
+    try:
+        return list(source)[index]
+    except (IndexError, TypeError):
+        return None
 
 
 def _weights(asked, fallback, count: int) -> list:

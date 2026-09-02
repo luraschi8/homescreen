@@ -46,6 +46,16 @@ HEADING_PX = 18
 #: every labelled block.
 FRAGMENT_CLASS = "rg-frag"
 
+#: What a region that has nothing to show is allowed to keep: one line to say
+#: so, and its heading if it has one.
+#:
+#: CLAUDE.md §6: "Sections collapse when empty -- never an empty rectangle
+#: sitting on the panel for six hours." AGENDA with no calendar configured was
+#: 13.5% of the glass at 1.76% ink -- the largest block on the panel, reserved
+#: to say "sin calendario". The space goes back to the siblings that have
+#: something to put in it.
+COLLAPSED_PX = 20
+
 
 def scope_css(css: str, wrapper: str, root: str | None = None) -> str:
     """Prefix every selector so a fragment's styles cannot leave its region.
@@ -101,8 +111,23 @@ def fragment(html: str, wrapper: str) -> tuple:
             match.group("body"))
 
 
-def _placed(view, regions):
+def _collapsible(html: str) -> bool:
+    """Whether this fragment is a component saying it has nothing to show.
+
+    Read off the marker `_style.empty()` puts on its own output rather than
+    asked of the component, because `empty()` is the only place an empty state
+    is rendered -- so there is nowhere for a component to forget to say it.
+    """
+    from homescreen.scenes._style import EMPTY_CLASS
+    return EMPTY_CLASS in (html or "")
+
+
+def _placed(view, regions, collapsed=None):
     """(index, placement, rect) for each placement that has somewhere to go.
+
+    `collapsed` maps a placement's index to the exact size it should take
+    instead of its share -- how a section with nothing to show gives its space
+    back to the siblings that have something to put in it.
 
     Slots are assigned from the view rather than from what renders, so a
     component that fails leaves its slot empty instead of sliding the rest of
@@ -119,7 +144,14 @@ def _placed(view, regions):
     for _, placement in valid:
         asked.setdefault(placement["region"], []).append(
             placement.get("weight"))
-    cut = {name: layout.slots(regions[name], n, asked.get(name))
+    # Per region, in placement order, the sizes that are no longer shares.
+    collapsed = collapsed or {}
+    fixed = {}
+    for index, placement in valid:
+        fixed.setdefault(placement["region"], []).append(
+            collapsed.get(index))
+    cut = {name: layout.slots(regions[name], n, asked.get(name),
+                              fixed=fixed.get(name))
            for name, n in counts.items()}
     taken = {}
     for index, placement in valid:
@@ -137,8 +169,30 @@ def compose(view: dict, caps: dict, build_scene) -> str:
     """
     template = layout.template_of(view)
     regions = layout.regions(caps, template)
-    styles, bodies = [], []
+
+    # Built once to find out which regions have nothing to show, then again
+    # with those collapsed. A component is asked what it would draw at its
+    # provisional size; whether it has DATA does not depend on that size, and
+    # building a scene is arithmetic, not rendering.
+    collapsed, probes = {}, {}
     for index, placement, rect in _placed(view, regions):
+        heading = str(placement.get("label") or "")
+        inner = max(1, rect[3] - HEADING_PX) if heading else rect[3]
+        try:
+            probe = build_scene(placement.get("component"),
+                                placement.get("options") or {},
+                                {**caps, "w": rect[2], "h": inner})
+        except Exception:                               # noqa: BLE001
+            continue
+        # Kept against the rect it was built for, so the second pass rebuilds
+        # only what actually moved. When nothing collapses -- the common case
+        # -- every placement is built exactly once.
+        probes[index] = (rect, probe)
+        if _collapsible(probe):
+            collapsed[index] = COLLAPSED_PX + (HEADING_PX if heading else 0)
+
+    styles, bodies = [], []
+    for index, placement, rect in _placed(view, regions, collapsed):
         wrapper = f"rg-{_safe(placement.get('id') or index)}"
         x, y, w, h = rect
         heading = str(placement.get("label") or "")
@@ -146,12 +200,16 @@ def compose(view: dict, caps: dict, build_scene) -> str:
         # out for 335px and then rendered into 318 makes every one of its size
         # decisions against a rectangle that does not exist.
         inner = max(1, h - HEADING_PX) if heading else h
-        try:
-            html = build_scene(placement.get("component"),
-                               placement.get("options") or {},
-                               {**caps, "w": w, "h": inner})
-        except Exception:                               # noqa: BLE001
-            continue                                    # one region, not the page
+        was, ready = probes.get(index, (None, None))
+        if was == rect and ready is not None:
+            html = ready                                # unmoved: already built
+        else:
+            try:
+                html = build_scene(placement.get("component"),
+                                   placement.get("options") or {},
+                                   {**caps, "w": w, "h": inner})
+            except Exception:                           # noqa: BLE001
+                continue                                # one region, not the page
         css, body = fragment(html, wrapper)
         # The heading is drawn by the COMPOSER, not the component: a component
         # asked to render its own title would need to know it had one, and the

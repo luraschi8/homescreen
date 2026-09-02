@@ -123,10 +123,22 @@ html,body{background:#fff;color:#000;font-family:Inter,'DejaVu Sans',sans-serif;
 """
 
 
+#: The class the composer looks for to know a region has nothing in it.
+#: On the ONE function that renders an empty state, so a component cannot
+#: forget to declare itself empty -- there is nowhere else to declare it from.
+EMPTY_CLASS = "rg-empty"
+
 EMPTY_CSS = """
-.nothing{height:100%;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;text-align:center;font-size:var(--lg)}
-.nothing .hint{font-size:var(--fs);margin-top:var(--pad-sm)}
+/* One line, left-aligned with everything else in the column. It used to be a
+   centred two-line block at `--lg`: the only centred text on the panel, set
+   LARGER than the rows it stands in for, so the placeholder was louder than
+   the data. A thing that is not there should not shout. */
+.nothing{height:100%;display:flex;align-items:center;gap:.5em;
+  font-size:var(--fs)}
+.nothing .hint{font-size:var(--sm);margin-left:auto;text-align:right}
+.nothing.stack{flex-direction:column;align-items:flex-start;
+  justify-content:center;gap:2px}
+.nothing.stack .hint{margin-left:0}
 """
 
 
@@ -144,7 +156,10 @@ def empty(note: str, hint: str = "", shape: str | None = None) -> str:
     # helpful; in a cell it just overflows and gets clipped.
     tail = (f'<div class="hint">{hint}</div>'
             if hint and shape not in ("badge", "strip") else "")
-    return f'<div class="nothing"><div>{note}</div>{tail}</div>'
+    # A narrow cell has no room for note and hint side by side.
+    stack = " stack" if shape in ("badge", "strip") else ""
+    return (f'<div class="nothing {EMPTY_CLASS}{stack}">'
+            f'<div>{note}</div>{tail}</div>')
 
 
 def rows(width: int, height: int, shape: str | None = None,

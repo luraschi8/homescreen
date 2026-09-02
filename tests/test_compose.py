@@ -206,12 +206,14 @@ def test_a_placement_that_fails_does_not_shift_the_others_off_their_slots():
 
 # --- a view's own proportions and headings ------------------------------------
 
+#: Three blocks that all have something to show. A clock needs no feed, so
+#: none of these collapses and the weights are what is being measured.
 LABELLED = {"template": "dashboard", "placements": [
     {"id": "a", "region": "main_left", "component": "clock",
      "weight": 2, "label": "RELOJ", "options": {}},
-    {"id": "b", "region": "main_left", "component": "calendar",
+    {"id": "b", "region": "main_left", "component": "clock",
      "weight": 1, "label": "AGENDA", "options": {}},
-    {"id": "c", "region": "main_left", "component": "sport",
+    {"id": "c", "region": "main_left", "component": "clock",
      "weight": 1, "label": "DEPORTES", "options": {}}]}
 
 
@@ -416,3 +418,62 @@ def test_fixture_names_are_escaped_too():
     html = scenes.build("sport", ctx).html
     assert "<b>" not in html and "&lt;b&gt;" in html
     assert "&amp;E" in html
+
+
+# --- collapsing a section that has nothing to show ---------------------------
+
+def _heights(html):
+    return {rid: rect[3] for rid, rect in _rects(html).items()}
+
+
+def test_a_section_with_nothing_to_show_gives_its_space_back():
+    # CLAUDE.md §6: "Sections collapse when empty -- never an empty rectangle
+    # sitting on the panel for six hours." AGENDA with no calendar configured
+    # was 13.5% of the glass at 1.76% ink: the largest block on the panel,
+    # reserved to say "sin calendario".
+    view = {"template": "dashboard", "placements": [
+        {"id": "a", "region": "main_left", "component": "clock",
+         "label": "RELOJ", "options": {}},
+        {"id": "b", "region": "main_left", "component": "calendar",
+         "label": "AGENDA", "options": {}}]}
+    heights = _heights(compose.compose(view, EPAPER, _build))
+    assert heights["b"] == compose.COLLAPSED_PX + compose.HEADING_PX
+    _, _, _, column = layout.regions(EPAPER, "dashboard")["main_left"]["rect"]
+    assert heights["a"] + heights["b"] == column, "the column still tiles"
+    assert heights["a"] > heights["b"] * 4, "the space went to the sibling"
+
+
+def test_a_collapsed_section_still_says_why_it_is_empty():
+    # Collapsed, not hidden. A blank strip where AGENDA used to be teaches
+    # nothing; "sin calendario" tells you what to do about it.
+    view = {"template": "dashboard", "placements": [
+        {"id": "a", "region": "main_left", "component": "clock", "options": {}},
+        {"id": "b", "region": "main_left", "component": "calendar",
+         "label": "AGENDA", "options": {}}]}
+    html = compose.compose(view, EPAPER, _build)
+    assert "sin calendario" in html
+    assert "AGENDA" in html
+
+
+def test_every_section_empty_does_not_collapse_the_column_to_nothing():
+    # The reservation is dropped wholesale rather than leaving a region of
+    # zero-height slots.
+    view = {"template": "dashboard", "placements": [
+        {"id": "a", "region": "main_left", "component": "calendar",
+         "options": {}},
+        {"id": "b", "region": "main_left", "component": "sport",
+         "options": {}}]}
+    heights = _heights(compose.compose(view, EPAPER, _build))
+    _, _, _, column = layout.regions(EPAPER, "dashboard")["main_left"]["rect"]
+    assert sum(heights.values()) == column
+    assert all(h > compose.COLLAPSED_PX for h in heights.values())
+
+
+def test_a_section_with_data_is_never_collapsed():
+    view = {"template": "dashboard", "placements": [
+        {"id": "a", "region": "main_left", "component": "clock",
+         "label": "RELOJ", "options": {}},
+        {"id": "b", "region": "main_left", "component": "clock",
+         "label": "OTRO", "options": {}}]}
+    heights = _heights(compose.compose(view, EPAPER, _build))
+    assert all(h > compose.COLLAPSED_PX * 2 for h in heights.values())
