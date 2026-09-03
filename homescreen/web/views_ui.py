@@ -267,8 +267,13 @@ document.querySelectorAll('.view').forEach(function (view) {
     if (!sel) { return; }
     var label = box.querySelector('.mn');
     function sync() {
-      var value = sel.value || '';
-      label.textContent = value || label.dataset.empty || label.textContent;
+      // The option's TEXT, not its value. `sel.value` is the raw English
+      // identifier, so this ran on page load and replaced the server's
+      // Spanish labels: the map read "calendar" while the dropdown two
+      // centimetres below it read "agenda".
+      var picked = sel.selectedOptions && sel.selectedOptions[0];
+      var shown = sel.value ? (picked ? picked.textContent : sel.value) : '';
+      label.textContent = shown || label.dataset.empty || label.textContent;
       box.classList.toggle('filled', !!value);
     }
     label.dataset.empty = label.textContent;
@@ -372,7 +377,12 @@ def _map(view_name: str, regions: dict, by_region: dict, weights: dict,
                 f'width:{w / panel_w:.4%};height:{h / panel_h:.4%}">'
                 f'<span class="mn">{e(scene_label(current)) if current else VACANT}</span>'
                 f'{caption}</div>')
-    return (f'<div class="map" style="aspect-ratio:{panel_w}/{panel_h}">'
+    # Round glass is drawn round. The panel's 1-bit constraints do not apply
+    # in a browser, and a 544px square containing one box -- once per view --
+    # was a quarter of that page saying nothing.
+    circular = " round" if len(regions) == 1 and panel_w == panel_h else ""
+    return (f'<div class="map{circular}" '
+            f'style="aspect-ratio:{panel_w}/{panel_h}">'
             f'{"".join(boxes)}</div>')
 
 
