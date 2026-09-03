@@ -260,7 +260,7 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
                      f'reconoce. Elige un componente para reemplazarla.</div>')
 
     admission = ("" if approved else f"""<div class="panel"><div class="pad">
-  <p class="empty" style="margin-top:0">Esta pantalla ha llamado pero nadie la
+  <p class="lede">Esta pantalla ha llamado pero nadie la
   ha admitido todavía. Hasta entonces no recibe ninguna escena.</p>
   <form method="post" action="/device/{hw}/approval">
     <input type="hidden" name="approved" value="1">
@@ -273,7 +273,7 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     # normal ending rather than a destructive act.
     placeholder = ("" if not dev.get("placeholder") else f"""<div class="panel">
 <div class="pad">
-  <p class="empty" style="margin-top:0"><strong>Marcador de config.yaml.</strong>
+  <p class="lede"><strong>Marcador de config.yaml.</strong>
   Esta entrada la creó el fichero de configuración: ninguna placa ha llamado
   <strong>nunca</strong> con este identificador, y no lo hará, porque el
   identificador es sintético. Cuando la placa real aparezca se registrará sola
@@ -287,11 +287,11 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
 
     body = f"""<p class="crumb"><a href="/">Flota</a> / {hw}</p>
 <h1>{e(dev.get("name") or "sin nombre")}</h1>
-<div class="pills" style="margin-bottom:1.2rem">{state}
+<div class="pills">{state}
   {pill("muestra: " + showing_pill(dev))}
-  {pill(shape) if shape else ""}
-  {pill("cada " + str(dev.get("poll_seconds")) + "s")}
-  {pill("fw " + str(dev.get("fw"))) if dev.get("fw") else ""}</div>
+  <span class="facts-run">{e(shape) if shape else ""}
+    {"cada " + e(str(dev.get("poll_seconds"))) + "s"}
+    {"fw " + e(str(dev.get("fw"))) if dev.get("fw") else ""}</span></div>
 {admission}{placeholder}{unknown_scene}
 
 <h2>{heading}</h2>
@@ -327,7 +327,7 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
 
 <h2>Zona peligrosa</h2>
 <div class="panel danger-zone"><div class="pad">
-  <p class="empty" style="margin-top:0">Sacarla de la flota conserva su nombre y
+  <p class="lede">Sacarla de la flota conserva su nombre y
   su escena. Eliminarla borra el registro; si la pantalla sigue encendida
   volverá a aparecer como solicitud.</p>
   <div class="actions">{revoke}

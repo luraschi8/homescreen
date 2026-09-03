@@ -145,6 +145,11 @@ button.danger:hover{background:var(--bad-bg);filter:none}
 /* A credential group is a card of its own: provider, its fields, one save. */
 form.cred{border:1px solid var(--line);border-radius:var(--radius);
   padding:var(--s3) var(--s4);margin-bottom:var(--s3)}
+/* Facts are not states. A pill is a status shape; `800x480` and `cada 180s`
+   are not statuses, and wearing the same shape as "en línea" made the row read
+   as five things that might change. */
+.facts-run{font-family:var(--mono);font-size:var(--fs-xs);color:var(--faint);
+  display:inline-flex;gap:var(--s3);flex-wrap:wrap;align-items:center}
 .feed{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap;
   padding:var(--s2) 0;border-top:1px solid var(--line-soft)}
 .feed:first-of-type{border-top:0}

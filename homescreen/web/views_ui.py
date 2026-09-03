@@ -76,12 +76,13 @@ CSS = """
 .map.round{border-radius:50%;max-width:13rem}
 .mslot{position:absolute;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:.1rem;overflow:hidden;
-  box-sizing:border-box;border:1px dashed var(--line);border-radius:3px;
-  background:var(--panel);cursor:pointer;padding:2px;text-align:center;
+  box-sizing:border-box;border:1px dashed var(--line);
+  border-radius:var(--r-sm);
+  background:var(--panel);cursor:pointer;padding:0 2px;text-align:center;
   transition:background .12s,border-color .12s}
 .mslot:hover{border-color:var(--accent)}
 .mslot.filled{border-style:solid;border-color:var(--accent)}
-.mslot .mn{font-size:.7rem;font-weight:650;line-height:1.15;
+.mslot .mn{font-size:var(--fs-xs);font-weight:600;line-height:1.15;
   color:var(--faint);overflow:hidden;text-overflow:ellipsis;max-width:100%;
   white-space:nowrap}
 .mslot.filled .mn{color:var(--fg)}
@@ -90,15 +91,18 @@ CSS = """
    adding the next block, not a picture of space the panel will have. */
 .mslot.free{border-style:dotted;background:transparent;opacity:.75;
   z-index:2}
-.mslot.free .mn{font-size:.6rem}
-.mslot .mr{font-size:.58rem;color:var(--faint);font-family:var(--mono);
+/* 18px of box against an 11px line box, minus padding and two borders, left
+   12px for the word -- so "vacío" was sliced through the middle, six times,
+   and read as a rendering fault. */
+.mslot.free .mn{font-size:var(--fs-micro);line-height:1}
+.mslot .mr{font-size:var(--fs-micro);color:var(--faint);font-family:var(--mono);
   line-height:1;overflow:hidden;max-width:100%}
 @media (max-width:640px){.mslot .mr{display:none}}
 """
 
 #: How tall an unfilled slot is drawn in the map. Enough to be a click target
 #: and to fit the word "vacío"; the filled blocks give up the room.
-FREE_SLOT_PX = 18
+FREE_SLOT_PX = 24
 
 VACANT = "vacío"
 EMPTY = "—"
@@ -474,7 +478,7 @@ def editor(hw: str, views: dict, regions: dict, offered, template: str,
 
     return f"""<h2>Qué contiene cada vista</h2>
 <div class="panel"><div class="pad">
-  <p class="empty" style="margin-top:0">Distribución <strong>{e(dict(choices).get(template, template))}</strong>.
+  <p class="lede">Distribución <strong>{e(dict(choices).get(template, template))}</strong>.
   Cada región muestra su tamaño real en píxeles. Deja «{EMPTY}» para vaciarla.
   Cada hueco tiene sus propios ajustes: dos calendarios en una pantalla son dos
   calendarios distintos.</p>

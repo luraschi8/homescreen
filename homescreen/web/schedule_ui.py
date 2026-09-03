@@ -20,7 +20,11 @@ from homescreen.web.layout import e
 DAYS = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
 
 #: Distinct enough to tell apart at a glance, and legible in both themes.
-SWATCHES = ("#2563eb", "#0a7d33", "#b3261e", "#8a5a00", "#6d28d9",
+#: The schedule's own ramp, not the accent. `--accent` already means link,
+#: primary button, focus ring and filled slot; spending it here made a
+#: single-view grid the loudest object on the page while carrying no
+#: information at all -- every cell the same colour.
+SWATCHES = ("#93a4c8", "#7fb08a", "#c89aa0", "#c8b184", "#a99ac8",
             "#0e7490", "#be185d", "#4d7c0f")
 
 CSS = """
