@@ -1613,6 +1613,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # without a behaviour change to debug at the same time.
         showing = scheduling.active_view(rec.get("schedule") or {}, clock())
         placements = layout.view_for(rec, showing or None)["placements"]
+        # Before `showing` is overwritten with the component's name below: the
+        # credential scope is `{hw}/{view}/{placement}`, and a placement with
+        # its own key is a differently-keyed job to read back.
+        view_name = showing or "panel"
+        placement_id = placements[0].get("id") if placements else None
         showing = (placements[0]["component"] if placements
                    else rec.get("scene") or "unassigned")
         name = ("pending" if not registry.is_approved(rec) else showing)
@@ -1628,7 +1633,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 # and a device asking for its scene must never get a 500.
                 name, (placements[0].get("options") if placements
                        else rec.get("options")) or {}),
-            data=_scene_data,
+            data=(datasource.reader(cache_dir, clock,
+                                    f"{hw}/{view_name}/{placement_id}")
+                  if placement_id else _scene_data),
             now=clock(),
             device={"hw": hw, "id": rec.get("name") or hw,
                     "name": rec.get("name"), "feed": "adsb",
