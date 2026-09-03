@@ -713,7 +713,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             registry.set_layout(cache_dir, hw, views, plan)
         except (ValueError, OSError) as exc:
             return redirect(url_for("device_page", hw=hw, m=str(exc)))
-        _last_cold.pop(hw, None)
+        _forget_cold(hw)
         return redirect(url_for("device_page", hw=hw,
                                 m=f"vistas guardadas · {len(views)}"))
 
@@ -781,7 +781,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             registry.set_layout(cache_dir, hw, views, plan)
         except (ValueError, OSError) as exc:
             return redirect(url_for("device_page", hw=hw, m=str(exc)))
-        _last_cold.pop(hw, None)
+        _forget_cold(hw)
         return redirect(url_for("device_page", hw=hw,
                                 m=f"horario guardado · {len(plan['slots'])} franja(s)"))
 
@@ -958,12 +958,26 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 _peer_bucket.pop(key, None)
         return True
 
+    def _forget_cold(hw: str) -> None:
+        """Let this device render again NOW, whoever asked last.
+
+        An operator changing what a screen shows should see it without waiting
+        out a throttle. The key is (device, caller), so clearing has to sweep
+        every caller -- five call sites used to pop by device alone, and all
+        five stopped working the moment the key changed shape.
+        """
+        for key in [k for k in _last_cold if k[0] == hw]:
+            _last_cold.pop(key, None)
+
     def _cold_render_allowed(hw: str, rec: dict, peer: str) -> bool:
-        # Per-hw first: a device polling faster than half its own cadence is
-        # either broken or not the device, and either way the answer is cheap.
+        # Per hw AND CALLER. Keyed by hw alone, anyone checking a render by
+        # hand spent the panel's own allowance and the panel got a 429 -- the
+        # limit is about one client polling too fast, and starving the screen
+        # to punish somebody else's curl is not what it is for.
         interval = max(COLD_FLOOR_S, registry.poll_seconds(rec) * 0.5)
         now = time.monotonic()
-        last = _last_cold.get(hw)
+        who = (hw, peer)
+        last = _last_cold.get(who)
         if last is not None and now - last < interval:
             return False
         # Approved AND assigned. The exemption's whole justification is "an
@@ -974,9 +988,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                       and rec.get("scene") not in (None, "", "unassigned"))
         if not configured and not _peer_allows_cold(peer):
             return False
-        _last_cold[hw] = now
+        _last_cold[who] = now
         if len(_last_cold) > registry.MAX_DEVICES * 2:
-            for key in sorted(_last_cold, key=_last_cold.get)[:registry.MAX_DEVICES]:
+            for key in sorted(_last_cold,
+                              key=_last_cold.get)[:registry.MAX_DEVICES]:
                 _last_cold.pop(key, None)
         return True
 
@@ -1153,7 +1168,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # An operator just changed what this panel shows. That deliberately
         # costs one render: without this, switching a scene in the fleet view
         # leaves an e-paper on the old one for up to half a poll interval.
-        _last_cold.pop(hw, None)
+        _forget_cold(hw)
         return jsonify(_fleet_entry(hw, rec, clock()))
 
     @app.get("/api/devices/<hw>/preview.svg")
@@ -1253,7 +1268,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return "registry unavailable"
         # An operator just changed what this panel shows; that deliberately
         # costs one render rather than waiting out the throttle.
-        _last_cold.pop(hw, None)
+        _forget_cold(hw)
         who = rec.get("name") or hw
         return f"{who} muestra ahora {rec.get('scene') or 'sin asignar'}"
 
@@ -1434,7 +1449,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         except OSError as exc:
             log.error("registry write failed for %s: %s", hw, exc)
             return jsonify({"error": "registry unavailable"}), 503
-        _last_cold.pop(hw, None)
+        _forget_cold(hw)
         return jsonify({"hw": hw, "views": views, "schedule": plan,
                         "showing": scheduling.active_view(plan, clock())})
 
@@ -1569,21 +1584,38 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                     rec, scene_max_s=getattr(scene, "poll_max_s", None)))
         return resp
 
-    #: The last frame each device was served, for diffing the next one
-    #: against. Bounded by the fleet, one framebuffer each -- 48 KB for the
-    #: 800x480 panel -- and deliberately in memory: it is an optimisation, and
-    #: losing it on restart costs one full refresh, not correctness.
-    _last_frame: dict = {}
+    #: Frames we have served, keyed by device AND by the ETag that identifies
+    #: them, so the next diff can be taken against the one a device says it is
+    #: actually holding.
+    #:
+    #: Keyed by hw alone this was wrong the moment anything else touched the
+    #: route -- and something does, every time a render is checked by hand. The
+    #: sequence: the panel holds frame A; another caller fetches, and B becomes
+    #: "the last frame served"; the panel then polls, gets B, and is told
+    #: nothing changed, because B does equal the last frame served -- to
+    #: somebody else. It skips the draw and its glass stays on A. A clock stuck
+    #: at 11:47 while the server cheerfully served 12:09.
+    #:
+    #: In memory, and bounded: 48 KB a frame, a few frames a device.
+    _FRAMES_PER_DEVICE = 4
+    _served: dict = {}
 
-    def _dirty_header(hw: str, packed: bytes, w: int, h: int):
-        """`x,y,w,h;...` of what changed, or None to mean "refresh everything".
+    def _dirty_header(hw: str, packed: bytes, etag: str, w: int, h: int,
+                      holding: str | None):
+        """`x,y,w,h;...` of what changed since the frame the caller HOLDS.
 
-        None on the first frame after a restart, on a geometry change, and
-        whenever the diff cannot be trusted -- refreshing the whole panel is
-        always correct, only slower and foggier.
+        None means "refresh everything": no ETag offered, one we no longer
+        have, a geometry change, or any diff we cannot trust. Refreshing the
+        whole panel is always correct, only slower and foggier.
         """
-        previous = _last_frame.get(hw)
-        _last_frame[hw] = (w, h, packed)
+        kept = _served.setdefault(hw, {})
+        kept[etag] = (w, h, packed)
+        if len(kept) > _FRAMES_PER_DEVICE:
+            for stale in list(kept)[:-_FRAMES_PER_DEVICE]:
+                kept.pop(stale, None)
+        if not holding:
+            return None
+        previous = kept.get(holding)
         if not previous or previous[0] != w or previous[1] != h:
             return None
         rects = render.dirty_rects(previous[2], packed, w, h)
@@ -1812,7 +1844,8 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # What actually MOVED since this device's last frame. The Pi has both
         # frames and the CPU to diff them; the device has neither to spare,
         # which is the same division of labour as every other decision here.
-        dirty = _dirty_header(hw, packed, w, h)
+        dirty = _dirty_header(hw, packed, etag,
+                              w, h, request.headers.get("If-None-Match"))
         if dirty is not None:
             resp.headers["X-Dirty"] = dirty
         return _poll_header(resp, rec, scene, hw)

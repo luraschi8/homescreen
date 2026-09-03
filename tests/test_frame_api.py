@@ -374,10 +374,48 @@ def test_the_first_frame_asks_for_a_full_refresh(client, needs_chromium,
 
 def test_an_unchanged_frame_reports_nothing_dirty(client, needs_chromium,
                                                   tmp_path):
+    # The device says which frame it is holding; the diff is taken against
+    # THAT, not against whatever was served last to anyone.
+    _compose_a_dashboard(client, tmp_path)
+    first = client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    again = client.get(f"/api/devices/{HW}/frame?w=800&h=480",
+                       headers={"If-None-Match": first.headers["ETag"]})
+    # Identical pixels come back as a 304; either way nothing is dirty.
+    assert again.status_code == 304 or again.headers.get("X-Dirty") == ""
+
+
+def test_a_caller_that_says_nothing_is_told_to_refresh_everything(
+        client, needs_chromium, tmp_path):
+    # No ETag means we do not know what is on its glass, and refreshing the
+    # whole panel is always correct -- only slower.
     _compose_a_dashboard(client, tmp_path)
     client.get(f"/api/devices/{HW}/frame?w=800&h=480")
     resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480")
-    assert resp.headers.get("X-Dirty") == ""
+    assert "X-Dirty" not in resp.headers
+
+
+def test_another_caller_cannot_make_a_device_skip_its_draw(client,
+                                                           needs_chromium,
+                                                           tmp_path):
+    # Keyed by device alone, this was the bug: the panel holds A; somebody else
+    # fetches and B becomes "the last frame served"; the panel then polls, gets
+    # B, and is told nothing changed -- because B does equal the last frame
+    # served, to somebody else. It skipped the draw and its glass stayed on A.
+    _compose_a_dashboard(client, tmp_path)
+    held = client.get(f"/api/devices/{HW}/frame?w=800&h=480").headers["ETag"]
+    # Change what the panel shows, then let a DIFFERENT caller fetch it first.
+    client.put(f"/api/devices/{HW}/schedule", json={
+        "views": {"panel": {"template": "dashboard", "placements": [
+            {"id": "m", "region": "masthead", "component": "date",
+             "options": {}},
+            {"id": "c", "region": "main_left", "component": "blank",
+             "options": {}}]}},
+        "schedule": {"tz": "Europe/Madrid", "default": "panel", "slots": []}})
+    client.get(f"/api/devices/{HW}/frame?w=800&h=480")          # somebody else
+    resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480",
+                      headers={"If-None-Match": held})          # the device
+    assert resp.status_code == 200
+    assert resp.headers.get("X-Dirty") != "", "told to skip a real change"
 
 
 def test_a_geometry_change_asks_for_a_full_refresh(client, needs_chromium,
@@ -392,7 +430,7 @@ def test_the_dirty_header_is_parseable_and_bounded(client, needs_chromium,
                                                    tmp_path):
     from homescreen import render as _render
     _compose_a_dashboard(client, tmp_path)
-    client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    before = client.get(f"/api/devices/{HW}/frame?w=800&h=480").headers["ETag"]
     # Change what is on the glass, then look at what the device is told.
     client.put(f"/api/devices/{HW}/schedule", json={
         "views": {"panel": {"template": "dashboard", "placements": [
@@ -401,7 +439,8 @@ def test_the_dirty_header_is_parseable_and_bounded(client, needs_chromium,
             {"id": "c", "region": "main_left", "component": "blank",
              "options": {}}]}},
         "schedule": {"tz": "Europe/Madrid", "default": "panel", "slots": []}})
-    resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480")
+    resp = client.get(f"/api/devices/{HW}/frame?w=800&h=480",
+                      headers={"If-None-Match": before})
     header = resp.headers.get("X-Dirty")
     assert header, "nothing reported dirty after the view changed"
     rects = [tuple(int(n) for n in part.split(","))
