@@ -31,16 +31,46 @@ class _Resp:
 
 
 class _Session:
-    """One page of orders, or a canned error."""
+    """One page of orders, or a canned error.
 
-    def __init__(self, payload, status=200):
+    Answers the token endpoint and the GraphQL endpoint differently, because
+    a client-credentials fetch is two requests and the interesting bugs live
+    in how they relate.
+    """
+
+    def __init__(self, payload, status=200, token_status=200,
+                 expires_in=86399, graphql_statuses=None):
         self._payload = payload
         self._status = status
+        self._token_status = token_status
+        self._expires_in = expires_in
+        # A queue of statuses for successive GraphQL calls, so a 401 can be
+        # followed by a success.
+        self._graphql_statuses = list(graphql_statuses or [])
         self.calls = 0
+        self.token_calls = 0
 
-    def post(self, *a, **k):
+    def post(self, url, *a, **k):
+        if "oauth/access_token" in url:
+            self.token_calls += 1
+            return _Resp({"access_token": f"shpat_fresh{self.token_calls}",
+                          "scope": "read_orders",
+                          "expires_in": self._expires_in},
+                         self._token_status)
         self.calls += 1
-        return _Resp(self._payload, self._status)
+        status = (self._graphql_statuses.pop(0) if self._graphql_statuses
+                  else self._status)
+        return _Resp(self._payload, status)
+
+
+CREDS = {"client_id": "abc123", "client_secret": "shpss_secret"}
+
+
+@pytest.fixture(autouse=True)
+def _no_token_carried_between_tests():
+    provider._TOKENS.clear()
+    yield
+    provider._TOKENS.clear()
 
 
 def _order(stamp, amount, fulfilled="UNFULFILLED", test=False, cancelled=None):
@@ -76,18 +106,102 @@ def test_a_domain_that_is_not_a_domain_is_refused(bad):
         provider.clean_params({"shop": bad})
 
 
-def test_the_token_is_a_secret_not_a_parameter():
-    # A store's whole order history is behind it, so it must never become part
-    # of a job key or be stored beside the layout.
-    assert provider.SECRETS == ("access_token",)
-    assert "access_token" not in provider.clean_params(
-        {"shop": "x.myshopify.com", "access_token": "shpat_leak"})
+def test_the_credentials_are_secrets_not_parameters():
+    # A store's whole order history is behind them, so they must never become
+    # part of a job key or be stored beside the layout.
+    assert set(provider.SECRETS) >= {"client_id", "client_secret"}
+    cleaned = provider.clean_params({"shop": "x.myshopify.com",
+                                     "client_secret": "shpss_leak",
+                                     "access_token": "shpat_leak"})
+    assert cleaned == {"shop": "x.myshopify.com"}
 
 
-def test_no_token_is_an_error_rather_than_an_empty_day():
+def test_no_credentials_is_an_error_rather_than_an_empty_day():
     with pytest.raises(ValueError):
         provider.fetch({"shop": "x.myshopify.com"}, session=_Session({}),
                        secrets={})
+    with pytest.raises(ValueError):
+        provider.fetch({"shop": "x.myshopify.com"}, session=_Session({}),
+                       secrets={"client_id": "abc"})   # secret missing
+
+
+# --- the client credentials grant ---------------------------------------------
+
+def test_the_app_credentials_are_exchanged_for_a_token():
+    # Admin-created custom apps were deprecated in January 2026 and no longer
+    # issue a static shpat_ token; an app has an id and a secret, and Shopify
+    # hands back one that lives 24 hours.
+    session = _Session(_payload([]))
+    provider.fetch({"shop": "x.myshopify.com"}, session=session, secrets=CREDS)
+    assert session.token_calls == 1
+    assert session.calls == 1
+
+
+def test_a_live_token_is_reused_rather_than_re_exchanged():
+    # It is good for a day and the panel fetches every five minutes. Exchanging
+    # each time would be a second request every five minutes for nothing.
+    session = _Session(_payload([]))
+    for _ in range(3):
+        provider.fetch({"shop": "x.myshopify.com"}, session=session,
+                       secrets=CREDS)
+    assert session.token_calls == 1
+    assert session.calls == 3
+
+
+def test_a_token_near_expiry_is_renewed_early():
+    # A token that expires between the check and the request is a failed fetch
+    # for no reason.
+    session = _Session(_payload([]), expires_in=provider.TOKEN_MARGIN_S - 1)
+    provider.fetch({"shop": "x.myshopify.com"}, session=session, secrets=CREDS)
+    provider.fetch({"shop": "x.myshopify.com"}, session=session, secrets=CREDS)
+    assert session.token_calls == 2
+
+
+def test_a_refused_token_is_exchanged_once_and_retried():
+    # It expired early, or the secret was rotated.
+    session = _Session(_payload([]), graphql_statuses=[401, 200])
+    provider.fetch({"shop": "x.myshopify.com"}, session=session, secrets=CREDS)
+    assert session.token_calls == 2, "no fresh token was fetched"
+    assert session.calls == 2, "the request was not retried"
+
+
+def test_a_token_refused_twice_says_something_useful():
+    # This message reaches the status page, so it has to name what an operator
+    # should go and check -- not a bare internal exception class.
+    session = _Session(_payload([]), graphql_statuses=[401, 401])
+    with pytest.raises(ValueError, match="read_orders"):
+        provider.fetch({"shop": "x.myshopify.com"}, session=session,
+                       secrets=CREDS)
+
+
+def test_rejected_app_credentials_say_so():
+    session = _Session(_payload([]), token_status=401)
+    with pytest.raises(ValueError, match="id o el secreto"):
+        provider.fetch({"shop": "x.myshopify.com"}, session=session,
+                       secrets=CREDS)
+
+
+def test_an_absurd_lifetime_is_not_trusted_forever():
+    # A stale token is a dead panel; re-exchanging hourly is cheap.
+    session = _Session(_payload([]), expires_in=10 ** 9)
+    provider.fetch({"shop": "x.myshopify.com"}, session=session, secrets=CREDS)
+    _token, expiry = provider._TOKENS[("x.myshopify.com", "abc123")]
+    import time
+    assert expiry - time.time() <= 3600 + 5
+
+
+def test_a_legacy_static_token_is_still_accepted():
+    session = _Session(_payload([]))
+    provider.fetch({"shop": "x.myshopify.com"}, session=session,
+                   secrets={"access_token": "shpat_legacy"})
+    assert session.token_calls == 0, "it exchanged when it did not need to"
+
+
+def test_two_shops_do_not_share_a_token():
+    session = _Session(_payload([]))
+    provider.fetch({"shop": "a.myshopify.com"}, session=session, secrets=CREDS)
+    provider.fetch({"shop": "b.myshopify.com"}, session=session, secrets=CREDS)
+    assert session.token_calls == 2
 
 
 # --- the day ------------------------------------------------------------------
@@ -103,7 +217,7 @@ def test_todays_orders_are_summed():
              _order(_today_at(11).isoformat(), "12.98")]
     got = provider.fetch({"shop": "x.myshopify.com"},
                          session=_Session(_payload(edges)),
-                         secrets={"access_token": "t"})
+                         secrets=CREDS)
     assert got["orders"] == 3
     assert got["total"] == pytest.approx(101.73)
     assert got["average"] == pytest.approx(33.91)
@@ -120,7 +234,7 @@ def test_an_order_just_after_local_midnight_counts_as_today():
         {"shop": "x.myshopify.com"},
         session=_Session(_payload([_order(
             as_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), "32.00")])),
-        secrets={"access_token": "t"})
+        secrets=CREDS)
     assert got["orders"] == 1, "the midnight order fell into yesterday"
     assert got["total"] == pytest.approx(32.00)
 
@@ -132,7 +246,7 @@ def test_test_and_cancelled_orders_are_not_takings():
                     cancelled=_today_at(12).isoformat())]
     got = provider.fetch({"shop": "x.myshopify.com"},
                          session=_Session(_payload(edges)),
-                         secrets={"access_token": "t"})
+                         secrets=CREDS)
     assert got["orders"] == 1 and got["total"] == pytest.approx(50.00)
 
 
@@ -148,7 +262,7 @@ def test_yesterday_is_counted_only_to_the_same_time_of_day():
              _order(late.isoformat(), "500.00")]
     got = provider.fetch({"shop": "x.myshopify.com"},
                          session=_Session(_payload(edges)),
-                         secrets={"access_token": "t"})
+                         secrets=CREDS)
     assert got["prev_total"] == pytest.approx(40.00), "late orders leaked in"
 
 
@@ -158,7 +272,7 @@ def test_unfulfilled_orders_are_counted():
              _order(_today_at(11).isoformat(), "10.00", "PARTIALLY_FULFILLED")]
     got = provider.fetch({"shop": "x.myshopify.com"},
                          session=_Session(_payload(edges)),
-                         secrets={"access_token": "t"})
+                         secrets=CREDS)
     assert got["unfulfilled"] == 2
 
 
@@ -167,7 +281,7 @@ def test_an_unreadable_amount_does_not_lose_the_day():
              _order(_today_at(10).isoformat(), None)]
     got = provider.fetch({"shop": "x.myshopify.com"},
                          session=_Session(_payload(edges)),
-                         secrets={"access_token": "t"})
+                         secrets=CREDS)
     assert got["total"] == pytest.approx(10.00)
 
 
@@ -177,21 +291,14 @@ def test_a_graphql_error_is_raised_not_drawn_as_zero():
     session = _Session({"errors": [{"message": "Access denied"}]})
     with pytest.raises(ValueError, match="Access denied"):
         provider.fetch({"shop": "x.myshopify.com"}, session=session,
-                       secrets={"access_token": "t"})
-
-
-def test_a_rejected_token_says_so():
-    session = _Session({}, status=401)
-    with pytest.raises(ValueError, match="token"):
-        provider.fetch({"shop": "x.myshopify.com"}, session=session,
-                       secrets={"access_token": "bad"})
+                       secrets=CREDS)
 
 
 def test_paging_stops_rather_than_walking_a_whole_history():
     session = _Session(_payload([_order(_today_at(9).isoformat(), "1.00")],
                                 has_next=True))
     provider.fetch({"shop": "x.myshopify.com"}, session=session,
-                   secrets={"access_token": "t"})
+                   secrets=CREDS)
     assert session.calls == provider.MAX_PAGES
 
 

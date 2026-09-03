@@ -40,15 +40,34 @@ DEFAULT_INTERVAL_S = 300
 
 MIN_SPACING_S = 1.0
 
-#: The Admin API token from a custom app with `read_orders`. A store's whole
-#: order history is behind it, so it is a credential and never a parameter.
-SECRETS = ("access_token",)
+#: The app's own credentials, exchanged for a token per the CLIENT CREDENTIALS
+#: grant. Admin-created custom apps were deprecated in January 2026 and no
+#: longer issue a static `shpat_` token, so there is nothing to paste: an app
+#: in the Dev Dashboard has an id and a secret, and Shopify hands back a token
+#: that lives 24 hours.
+#:
+#: `access_token` is still accepted for a store that has a legacy one.
+#:
+#: A store's whole order history is behind these, so they are credentials and
+#: never parameters -- job keys are built from parameters.
+SECRETS = ("client_id", "client_secret", "access_token")
 
 TIMEOUT_S = (3.05, 12)
 
 #: Shopify dates this; pinned so a new release cannot change the response shape
 #: under a panel nobody is watching.
 API_VERSION = "2024-10"
+
+#: Shopify's own figure for a client-credentials token is `expires_in: 86399`.
+#: Renewed early by this margin, because a token that expires between the
+#: check and the request is a failed fetch for no reason.
+TOKEN_MARGIN_S = 600
+
+#: Live tokens, by (shop, client id). In memory ONLY, and deliberately: it is
+#: valid for a day, the fetch daemon is long-lived, and a token written to disk
+#: is a second credential at rest to protect. Losing it on restart costs one
+#: extra request.
+_TOKENS: dict = {}
 
 #: Orders per page, and how many pages we will walk. 250 is the API's own
 #: ceiling; five pages is 1250 orders in two days, past which a dashboard
@@ -96,17 +115,63 @@ def clean_params(raw: dict) -> dict:
 _ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789.-")
 
 
-def fetch(params: dict, *, session=None, secrets=None) -> dict:
-    token = (secrets or {}).get("access_token")
+def access_token(shop: str, secrets: dict, session, *, force: bool = False) -> str:
+    """A live Admin API token for this shop.
+
+    A legacy static token is used as given. Otherwise the app's id and secret
+    are exchanged for one, and the result is kept until shortly before it
+    expires -- re-exchanging on every fetch would be a second request every
+    five minutes for a credential good for a day.
+    """
+    secrets = secrets or {}
+    static = str(secrets.get("access_token") or "").strip()
+    if static:
+        return static
+
+    client_id = str(secrets.get("client_id") or "").strip()
+    client_secret = str(secrets.get("client_secret") or "").strip()
+    if not (client_id and client_secret):
+        raise ValueError("faltan las credenciales de la app de Shopify")
+
+    import time
+    key = (shop, client_id)
+    held = _TOKENS.get(key)
+    if held and not force and held[1] - time.time() > TOKEN_MARGIN_S:
+        return held[0]
+
+    resp = session.post(
+        f"https://{shop}/admin/oauth/access_token",
+        json={"client_id": client_id, "client_secret": client_secret,
+              "grant_type": "client_credentials"},
+        headers={"Content-Type": "application/json"}, timeout=TIMEOUT_S)
+    if resp.status_code in (400, 401, 403):
+        raise ValueError("Shopify rechazó el id o el secreto de la app")
+    resp.raise_for_status()
+    body = resp.json()
+    token = (body or {}).get("access_token") if isinstance(body, dict) else None
     if not token:
-        raise ValueError("falta el token de la app de Shopify")
+        raise ValueError("Shopify no devolvió un token")
+    try:
+        lifetime = float((body or {}).get("expires_in") or 0)
+    except (TypeError, ValueError):
+        lifetime = 0.0
+    # An absent or absurd lifetime is treated as one hour rather than as
+    # forever: re-exchanging hourly is cheap, and a stale token is a dead panel.
+    if not 60.0 <= lifetime <= 172800.0:
+        lifetime = 3600.0
+    _TOKENS[key] = (str(token), time.time() + lifetime)
+    return str(token)
+
+
+def fetch(params: dict, *, session=None, secrets=None) -> dict:
     if session is None:
         import requests
         session = requests.Session()
 
     shop = params["shop"]
+    token = access_token(shop, secrets, session)
     url = f"https://{shop}/admin/api/{API_VERSION}/graphql.json"
-    headers = {"X-Shopify-Access-Token": str(token),
+    headers = {"X-Shopify-Access-Token": token,
                "Content-Type": "application/json"}
 
     # The window has to be built in the shop's zone, which the first response
@@ -119,7 +184,21 @@ def fetch(params: dict, *, session=None, secrets=None) -> dict:
 
     orders, shop_info = [], {}
     for _page in range(MAX_PAGES):
-        body = _call(session, url, headers, variables)
+        try:
+            body = _call(session, url, headers, variables)
+        except _Unauthorised:
+            # The token expired early, or the secret was rotated. Exchange a
+            # fresh one and try once more; a second refusal is a real problem
+            # and becomes a message an operator can act on, because this one
+            # reaches the status page.
+            headers["X-Shopify-Access-Token"] = access_token(
+                shop, secrets, session, force=True)
+            try:
+                body = _call(session, url, headers, variables)
+            except _Unauthorised:
+                raise ValueError(
+                    "Shopify rechazó el token recién emitido "
+                    "(¿falta el permiso read_orders?)") from None
         shop_info = body.get("shop") or shop_info
         block = body.get("orders") or {}
         orders.extend(edge.get("node") or {}
@@ -202,11 +281,15 @@ def _zone(name):
         return datetime.now().astimezone().tzinfo
 
 
+class _Unauthorised(Exception):
+    """The token was refused. Recoverable exactly once, by getting a new one."""
+
+
 def _call(session, url, headers, variables) -> dict:
     resp = session.post(url, json={"query": _QUERY, "variables": variables},
                         headers=headers, timeout=TIMEOUT_S)
-    if resp.status_code == 401 or resp.status_code == 403:
-        raise ValueError("Shopify rechazó el token (¿permiso read_orders?)")
+    if resp.status_code in (401, 403):
+        raise _Unauthorised()
     resp.raise_for_status()
     body = resp.json()
     if not isinstance(body, dict):
