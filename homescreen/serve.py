@@ -429,6 +429,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         template = layout.chosen_template(rec)
         return Response(
             web.render_device(_fleet_entry(hw, rec, now), options=opts,
+                              feeds=_feeds_for(hw),
                               # Re-judged per slot: a region that divides four
                               # ways must not offer what only fits whole.
                               fits=lambda name, slot: scenes.supports(
@@ -575,6 +576,28 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         return (page, min(polls) if polls else None,
                 min(ceilings) if ceilings else None, showing or None)
 
+    def _feeds_for(hw: str) -> list:
+        """How the fetches THIS screen depends on are doing.
+
+        The only health signal in the product lived on `/settings`, in a list
+        of every job in the fleet, identified by a hex id. "Why is this block
+        empty?" is asked on the screen's own page and was answerable nowhere
+        near it -- and because CLAUDE.md has empty sections COLLAPSE, a dead
+        fetcher is invisible on the glass by design. The web UI is the only
+        place it can surface.
+        """
+        out = []
+        for job in _job_report():
+            if not any(str(w).startswith(f"{hw}/")
+                       for w in (job.get("wanted_by") or ())):
+                continue
+            out.append({"provider": job.get("provider"),
+                        "ok": job.get("ok"),
+                        "error": job.get("error"),
+                        "fetched_at": job.get("fetched_at"),
+                        "params": job.get("params") or {}})
+        return out
+
     def _screen_credentials(hw: str, rec: dict) -> list:
         """Which credentials THIS screen could hold its own copy of.
 
@@ -609,6 +632,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                         # Which one, in words. Five ticker cells gave five
                         # boxes labelled identically; a raw placement id
                         # ("k3") is no better to read than none.
+                        # Whether the key it would FALL BACK to actually
+                        # exists. "usa la del servidor" could silently mean
+                        # "uses nothing at all".
+                        state["global_set"] = secrets.has(
+                            cache_dir, provider, name)
                         state["seat"] = (
                             placement.get("label")
                             or f"{web.views_ui.region_label(region)}"
@@ -719,13 +747,20 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                 views.setdefault(name, {"template": template,
                                         "placements": []})
         plan = scheduling.clean_schedule(rec.get("schedule") or {}, views)
+        # What was actually stored, not how many views there are: "vistas
+        # guardadas · 1" was byte-identical whether or not `clean_placement`
+        # had silently dropped three blocks for not fitting.
+        blocks = sum(len(v.get("placements") or ()) for v in views.values())
         try:
             registry.set_layout(cache_dir, hw, views, plan)
         except (ValueError, OSError) as exc:
             return redirect(url_for("device_page", hw=hw, m=str(exc)))
         _forget_cold(hw)
         return redirect(url_for("device_page", hw=hw,
-                                m=f"vistas guardadas · {len(views)}"))
+                                m=(f"{blocks} bloque{'s' if blocks != 1 else ''} "
+                                   f"en {len(views)} vista"
+                                   f"{'s' if len(views) != 1 else ''}"
+                                   f"{_when_visible(rec)}")))
 
     @app.post("/device/<hw>/secrets")
     def device_page_secret(hw: str):
@@ -826,7 +861,10 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             return redirect(url_for("device_page", hw=hw, m=str(exc)))
         _forget_cold(hw)
         return redirect(url_for("device_page", hw=hw,
-                                m=f"horario guardado · {len(plan['slots'])} franja(s)"))
+                                m=(f"horario guardado · "
+                                   f"{len(plan['slots'])} franja"
+                                   f"{'s' if len(plan['slots']) != 1 else ''}"
+                                   f"{_when_visible(rec)}")))
 
     @app.post("/device/<hw>/approval")
     def device_page_approval(hw: str):
@@ -1279,6 +1317,22 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # A preview is cheap to rebuild and always reflects live data.
         resp.headers["Cache-Control"] = "no-store"
         return resp
+
+    def _when_visible(rec: dict) -> str:
+        """" · se verá en la pantalla en menos de N min", or "".
+
+        An e-paper panel redraws every few minutes, so a save is followed by
+        nothing happening -- and the natural next move is to press Save again.
+        Nothing on the page said so except a note about panel wear.
+        """
+        try:
+            seconds = int(registry.poll_seconds(rec))
+        except (TypeError, ValueError):
+            return ""
+        if seconds <= 60:
+            return " · se verá enseguida"
+        minutes = max(1, round(seconds / 60))
+        return f" · se verá en la pantalla en menos de {minutes} min"
 
     def _apply_device_form(hw: str, form) -> str:
         """Apply a dashboard edit and say what happened, in one sentence.

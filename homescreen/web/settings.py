@@ -12,6 +12,15 @@ from __future__ import annotations
 from .layout import dash, e, page, when
 
 
+#: Deleting a credential cannot be undone -- no route can read one back -- and
+#: it had no confirmation while removing a whole DEVICE, which re-registers
+#: itself the moment the screen polls, had one.
+CLEAR_BUTTON = (
+    '<button class="danger" type="submit" name="action" value="clear" '
+    'onclick="return confirm(\'Se borra esta credencial del servidor. '
+    'No se puede deshacer.\')">Borrar</button>')
+
+
 def _job_row(job: dict) -> str:
     """One fetch, and how it is doing."""
     if job.get("fetched_at") is None:
@@ -79,8 +88,7 @@ def _secret_field(provider: str, state: dict) -> str:
     <span class="hint">{hint} Nunca se muestra.</span></label>
   <div class="actions">
     <button type="submit">Guardar esta clave</button>
-    {'<button class="danger" type="submit" name="action" value="clear">Borrar</button>'
-     if stored else ''}
+    {CLEAR_BUTTON if stored else ''}
   </div>
 </form>"""
 

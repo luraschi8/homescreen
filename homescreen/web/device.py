@@ -75,16 +75,23 @@ def _credentials(hw: str, creds) -> str:
             name = e(state.get("name"))
             boxes.append(f"""  <label class="field">{name}
     <input type="password" name="v.{name}" autocomplete="off"
-      placeholder="{'\u2022' * 12 if stored else 'usa la del servidor'}">
+      placeholder="{'\u2022' * 12 if stored else
+                    ('usa la global de Ajustes' if state.get('global_set')
+                     else 'sin configurar aquí ni en Ajustes')}">
     <span class="hint">{"Esta pantalla usa su propia clave."
                         if stored else
-                        "En blanco usa la clave global de Ajustes."}</span>
+                        ("En blanco usa la clave global de Ajustes."
+                         if state.get("global_set") else
+                         "Ojo: tampoco hay clave global, así que "
+                         "ahora mismo no hay ninguna.")}</span>
   </label>""")
             if stored:
                 boxes.append(
                     f'  <div class="actions"><button class="ghost" '
                     f'type="submit" name="clear" value="{name}" '
-                    f'onsubmit="return true">Volver a la global · {name}'
+                    f'onclick="return confirm(\'Se borra la clave de esta '
+                    f'pantalla y vuelve a usar la global. No se puede '
+                    f'deshacer.\')">Volver a la global · {name}'
                     f'</button></div>')
         fields.append(f"""<form class="stack cred" method="post"
       action="/device/{e(hw)}/secrets">
@@ -98,10 +105,55 @@ def _credentials(hw: str, creds) -> str:
             f'<div class="panel"><div class="pad">{"".join(fields)}</div></div>')
 
 
+def showing_pill(dev: dict) -> str:
+    """What the screen is showing, for the pill under its name.
+
+    It read `scene` -- the legacy field, which nothing has rendered from since
+    views existed -- so a screen carrying eleven blocks said "muestra: fecha".
+    """
+    blocks = dev.get("blocks") or 0
+    if blocks > 1:
+        return f"{dev.get('showing') or 'panel'} · {blocks} bloques"
+    return scene_label(dev.get("showing_label") or dev.get("scene"))
+
+
+def _feeds(feeds) -> str:
+    """What this screen's blocks are waiting on, and whether it is arriving.
+
+    Empty sections collapse on the glass by design, so a block that shows
+    nothing looks the same whether it has nothing to say or its fetch has been
+    failing for a day. This is where that difference lives.
+    """
+    if not feeds:
+        return ""
+    rows = []
+    for f in feeds:
+        if f.get("fetched_at") is None:
+            state, kind = "nunca consultado", "bad"
+        elif f.get("ok"):
+            state, kind = "al día", "ok"
+        else:
+            state, kind = (f"fallando — {f.get('error')}"
+                           if f.get("error") else "fallando"), "bad"
+        detail = ", ".join(f"{k}={v}" for k, v in
+                           sorted((f.get("params") or {}).items())
+                           if k not in ("endpoint", "secret_scope"))
+        rows.append(f'<div class="feed"><span class="fp">'
+                    f'{e(f.get("provider"))}</span>'
+                    f'{pill(state, kind)}'
+                    f'<span class="fd">{e(detail)}</span></div>')
+    return ('<h2>De dónde saca los datos</h2><div class="panel"><div class="pad">'
+            '<p class="lede" style="margin-top:0">Si un bloque sale vacío, '
+            'aquí se ve si es que no hay nada que contar o que la descarga '
+            'está fallando.</p>'
+            f'{"".join(rows)}</div></div>')
+
+
 def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
                   notice: str = "", plan=None, views=(), now: float = 0.0,
                   credentials=(), view_bodies=None, regions=None,
-                  template: str = "", fits=None, templates=()) -> str:
+                  template: str = "", fits=None, templates=(),
+                  feeds=()) -> str:
     """`options` is [(scene, drawable, why)] for THIS device; `schemas` maps a
     scene to its option schema, so every component's settings travel with it."""
     hw = e(dev.get("hw"))
@@ -189,7 +241,10 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     # What the screen would do if this box is left blank, and what the panel's
     # own firmware will do with a number that is too small for its glass.
     depth = int((dev.get("caps") or {}).get("depth") or 16)
-    poll_hint = str(dev.get("poll_seconds") or "automático")
+    # The value in force, in the box, so "blank" is legible as "inherited"
+    # rather than as "empty".
+    poll_hint = (f"{dev.get('poll_seconds')} (en uso)"
+                 if dev.get("poll_seconds") else "lo decide el componente")
     poll_help = (
         "En blanco lo decide el componente. Cada actualización de esta pantalla "
         "es un refresco completo (~3,7 s y un parpadeo), y eso es lo que "
@@ -233,10 +288,10 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     body = f"""<p class="crumb"><a href="/">Flota</a> / {hw}</p>
 <h1>{e(dev.get("name") or "sin nombre")}</h1>
 <div class="pills" style="margin-bottom:1.2rem">{state}
-  {pill("muestra: " + scene_label(dev.get("scene")))}
+  {pill("muestra: " + showing_pill(dev))}
   {pill(shape) if shape else ""}
   {pill("cada " + str(dev.get("poll_seconds")) + "s")}
-  {pill("fw " + str(dev.get("fw") or "?"))}</div>
+  {pill("fw " + str(dev.get("fw"))) if dev.get("fw") else ""}</div>
 {admission}{placeholder}{unknown_scene}
 
 <h2>{heading}</h2>
@@ -253,11 +308,12 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     <div class="actions"><button type="submit">Guardar nombre y cadencia</button></div>
   </form>
 </div></div>
+{f'<h2>Vista previa</h2><div class="panel"><div class="pad"><div class="pvs">{thumbs}</div></div></div>' if thumbs else ""}
 {views_ui.editor(dev.get("hw") or "", view_bodies or {}, regions or {},
                  options, template, schemas, fits, caps, templates)}
+{_feeds(feeds)}
 {_credentials(dev.get("hw") or "", credentials)}
 {schedule_ui.editor(dev.get("hw") or "", plan or {}, views, now) if views else ""}
-{f'<h2>Vista previa</h2><div class="panel"><div class="pad"><div class="pvs">{thumbs}</div></div></div>' if thumbs else ""}
 
 <h2>Detalles</h2>
 <div class="panel"><div class="pad"><dl class="facts">

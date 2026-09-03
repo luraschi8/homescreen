@@ -145,6 +145,11 @@ button.danger:hover{background:var(--bad-bg);filter:none}
 /* A credential group is a card of its own: provider, its fields, one save. */
 form.cred{border:1px solid var(--line);border-radius:var(--radius);
   padding:var(--s3) var(--s4);margin-bottom:var(--s3)}
+.feed{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap;
+  padding:var(--s2) 0;border-top:1px solid var(--line-soft)}
+.feed:first-of-type{border-top:0}
+.feed .fp{font-weight:600;font-size:var(--fs-sm);min-width:7rem}
+.feed .fd{font-family:var(--mono);font-size:var(--fs-xs);color:var(--faint)}
 form.cred .cred-h{margin:0 0 var(--s2);font-size:var(--fs-sm);
   font-weight:600;color:var(--dim)}
 /* A form with unsaved edits says so, and says which of the several buttons on
