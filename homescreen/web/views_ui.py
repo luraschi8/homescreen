@@ -33,13 +33,18 @@ CSS = """
    equal the gap between two fields of the same one, so eleven placements read
    as a single four-thousand-pixel list with nothing marking where a block
    began. */
-.slot{border:1px solid var(--line);border-radius:var(--radius);
+/* `pslot`, not `slot`: `schedule_ui` already owns `.slot` for a week-grid row
+   and styles it `display:grid` with four columns. Two files, one class name,
+   and every placement card came out as a three-column scatter -- the select
+   at the bottom left, Titulo and Tamano in the middle, the component's own
+   options on the right. Page CSS living in three files is exactly how that
+   happens, and a prefix is the cheap half of the fix. */
+.pslot{border:1px solid var(--line);border-radius:var(--radius);
   padding:var(--s3) var(--s4);margin-bottom:var(--s3);background:var(--panel)}
-.slot > select{font-weight:600}
 /* An empty slot is one line, not a full card of controls for a block that
    does not exist. */
-.slot.vacant{background:transparent;border-style:dashed}
-.slot.vacant .slot-extra,.slot.vacant .p-opts{display:none}
+.pslot.vacant{background:transparent;border-style:dashed}
+.pslot.vacant .slot-extra,.pslot.vacant .p-opts{display:none}
 /* Side by side, and each with its own label. */
 .slot-extra{display:flex;gap:var(--s3);margin:var(--s2) 0 0;flex-wrap:wrap}
 .slot-extra .field{flex:1 1 12rem;margin:0}
@@ -241,7 +246,7 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
             if spec["holds"] > 1 else region_label(region)
         field = f"v.{e(view_name)}.{e(region)}.{index}"
         rows.append(
-            f'<div class="slot{"" if current else " vacant"}">'
+            f'<div class="pslot{"" if current else " vacant"}">'
             f'<label class="field" for="{field}"><span>{e(seat)}</span>'
             f'<select name="{field}" id="{field}">{picks}</select></label>'
             + trim
