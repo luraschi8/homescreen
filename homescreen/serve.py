@@ -584,8 +584,11 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         """
         out, seen = [], set()
         for view_name in layout.view_names(rec):
-            view = layout.view_for(rec, view_name)
+            view = layout.stored_view(rec, view_name)
+            nth: dict = {}
             for placement in view.get("placements") or ():
+                region = placement.get("region") or ""
+                nth[region] = nth.get(region, 0) + 1
                 component = placement.get("component")
                 for need in scenes.needs(component, placement.get("options"),
                                          _live()) or ():
@@ -603,6 +606,13 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                         # rather than one that silently governs both.
                         state["placement"] = placement.get("id") or ""
                         state["view"] = view_name
+                        # Which one, in words. Five ticker cells gave five
+                        # boxes labelled identically; a raw placement id
+                        # ("k3") is no better to read than none.
+                        state["seat"] = (
+                            placement.get("label")
+                            or f"{web.views_ui.region_label(region)}"
+                               f" {nth[region]}")
                         out.append(state)
         return out
 

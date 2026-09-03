@@ -66,9 +66,8 @@ def _credentials(hw: str, creds) -> str:
 
     fields = []
     for (provider, scope), members in groups.items():
-        where = members[0].get("placement") or ""
-        view = members[0].get("view") or ""
-        seat = f" — {e(view)} · {e(where)}" if where else ""
+        seat_of = members[0].get("seat") or members[0].get("placement") or ""
+        seat = f" — {e(seat_of)}" if seat_of else ""
         boxes, any_stored = [], False
         for state in members:
             stored = state.get("set")
@@ -93,7 +92,7 @@ def _credentials(hw: str, creds) -> str:
   <input type="hidden" name="scope" value="{e(scope)}">
   <h3 class="cred-h">{e(provider)}{seat}</h3>
 {"".join(boxes)}
-  <div class="actions"><button type="submit">Guardar {e(provider)}</button></div>
+  <div class="actions"><button type="submit">Guardar {e(provider)}{seat}</button></div>
 </form>""")
     return ('<h2>Credenciales de esta pantalla</h2>'
             f'<div class="panel"><div class="pad">{"".join(fields)}</div></div>')
