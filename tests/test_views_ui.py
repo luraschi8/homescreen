@@ -321,7 +321,7 @@ def test_a_slot_is_judged_at_the_size_it_will_actually_get(ctx):
     client, cache = ctx
     _dashboard(client, cache)
     html = client.get(f"/device/{EPD}").get_data(as_text=True)
-    rows = re.findall(r'<select name="v\.panel\.main_left\.(\d)">(.*?)</select>',
+    rows = re.findall(r'<select name="v\.panel\.main_left\.(\d)"[^>]*>(.*?)</select>',
                       html, re.S)
     assert rows, "the column offers its slots"
     by_index = dict(rows)
@@ -584,7 +584,7 @@ def test_a_slot_is_judged_at_the_size_its_own_weight_buys_it(ctx):
         "v.panel.main_left.1": "status", "wt.panel.main_left.1": "1"})
     html = client.get(f"/device/{EPD}").get_data(as_text=True)
     rows = dict(re.findall(
-        r'<select name="v\.panel\.main_left\.(\d)">(.*?)</select>', html, re.S))
+        r'<select name="v\.panel\.main_left\.(\d)"[^>]*>(.*?)</select>', html, re.S))
 
     def refused(markup):
         return set(re.findall(r'<option value="(\w+)"[^>]*\sdisabled', markup))

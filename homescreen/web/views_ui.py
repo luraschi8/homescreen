@@ -21,28 +21,49 @@ from homescreen import layout
 from homescreen.web.layout import e, scene_label
 
 CSS = """
-.p-opts{margin:.35rem 0 .8rem 0;padding-left:.8rem;
-  border-left:2px solid var(--line-soft)}
+/* The card border already says "these belong together"; the left rule said it
+   a second time, and only around HALF the group -- Titulo and Tamano sat
+   outside the indent while the component's own options sat inside it. */
+.p-opts{margin:var(--s3) 0 0}
 .p-opts label.field{max-width:100%}
-.view{border:1px solid var(--line);border-radius:9px;padding:.9rem 1rem;
-  margin-bottom:.8rem}
-.view h3{margin:0 0 .7rem;font-size:.9rem;font-weight:650}
+.view{border:1px solid var(--line);border-radius:var(--radius);
+  padding:var(--s4);margin-bottom:var(--s3)}
+.view h3{margin:0 0 var(--s3);font-size:var(--fs-base);font-weight:600}
+/* Each placement is a CARD. The gap between two different components used to
+   equal the gap between two fields of the same one, so eleven placements read
+   as a single four-thousand-pixel list with nothing marking where a block
+   began. */
+.slot{border:1px solid var(--line);border-radius:var(--radius);
+  padding:var(--s3) var(--s4);margin-bottom:var(--s3);background:var(--panel)}
+.slot > select{font-weight:600}
+/* An empty slot is one line, not a full card of controls for a block that
+   does not exist. */
+.slot.vacant{background:transparent;border-style:dashed}
+.slot.vacant .slot-extra,.slot.vacant .p-opts{display:none}
 /* Side by side, and each with its own label. */
-.slot-extra{display:flex;gap:.6rem;margin:.35rem 0 .1rem}
-.slot-extra .field{flex:1;margin:0}
-.slot-extra .field span:first-child{font-size:.72rem;font-weight:600;
-  display:block;margin-bottom:.15rem}
-.slot-extra .field:last-child{flex:0 0 11rem}
-.slot-row{display:grid;grid-template-columns:9rem 1fr;gap:.6rem;
-  align-items:center;margin-bottom:.5rem}
-.slot-row .rg{font-size:.8rem;color:var(--dim);font-family:var(--mono)}
-.slot-row .cap{font-size:.7rem;color:var(--faint)}
+.slot-extra{display:flex;gap:var(--s3);margin:var(--s2) 0 0;flex-wrap:wrap}
+.slot-extra .field{flex:1 1 12rem;margin:0}
+/* No fixed 11rem inside a column that can be 150px wide: that, with the
+   9rem gutter below, is why the page overflowed a phone by 55px and clipped
+   every paragraph on it. */
+.slot-extra .field:last-child{flex:1 1 10rem}
+/* A heading above its slots, not a note in a gutter. `align-items:center`
+   against a group two thousand pixels tall put the label for `main_left` six
+   hundred pixels below the first field it named -- and the 9rem gutter never
+   collapsed, which is half of why a phone had to scroll sideways. */
+.slot-row{display:block;margin-bottom:var(--s6)}
+.slot-row .rg{display:block;font-size:var(--fs-sm);font-weight:600;
+  color:var(--fg);margin:0 0 var(--s2)}
+.slot-row .cap{font-family:var(--mono);font-size:var(--fs-xs);
+  color:var(--faint);font-weight:400}
 
 /* The panel, to scale. Boxes are positioned as percentages of the real
    rectangles, so the picture cannot drift from the geometry it describes. */
-.map{position:relative;width:100%;max-width:34rem;margin:0 0 1rem;
-  background:var(--bg);border:1px solid var(--line);border-radius:6px;
-  overflow:hidden}
+.map{position:relative;width:100%;max-width:26rem;margin:0 0 var(--s4);
+  background:var(--bg);border:1px solid var(--line);
+  border-radius:var(--radius);overflow:hidden}
+/* A round panel is round. The 1-bit rules do not apply in a browser. */
+.map.round{border-radius:50%;max-width:13rem}
 .mslot{position:absolute;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:.1rem;overflow:hidden;
   box-sizing:border-box;border:1px dashed var(--line);border-radius:3px;
@@ -134,6 +155,25 @@ def _for_slot(offered, slot_caps: dict, fits):
     return out
 
 
+#: What a region is called to a person. The template's own keys are English
+#: identifiers -- `main_left`, `masthead` -- and they were printed raw, in
+#: monospace, in a gutter: the only clue to which slot you were editing, in a
+#: language the rest of the page is not written in.
+REGION_LABELS = {
+    "masthead": "cabecera",
+    "main_left": "columna izquierda",
+    "main_right": "columna derecha",
+    "markets": "banda inferior",
+    "full": "toda la pantalla",
+    "top": "mitad de arriba",
+    "bottom": "mitad de abajo",
+}
+
+
+def region_label(name: str) -> str:
+    return REGION_LABELS.get(str(name), str(name))
+
+
 def _region_row(view_name: str, region: str, spec: dict, chosen: list,
                 offered, schemas=None, options=None, fits=None,
                 extras=None) -> str:
@@ -194,13 +234,22 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
                 f'<span class="hint">Cuánto ocupa frente a sus vecinos: 2 es '
                 f'el doble que 1. En blanco, a partes iguales.</span>'
                 f'</label></div>')
+        # A card per placement, and a labelled select: fifteen bare dropdowns
+        # with the region named once in a gutter left "which slot am I in?"
+        # answerable only by counting.
+        seat = f"{region_label(region)} · bloque {index + 1}" \
+            if spec["holds"] > 1 else region_label(region)
+        field = f"v.{e(view_name)}.{e(region)}.{index}"
         rows.append(
-            f'<select name="v.{e(view_name)}.{e(region)}.{index}">{picks}</select>'
+            f'<div class="slot{"" if current else " vacant"}">'
+            f'<label class="field" for="{field}"><span>{e(seat)}</span>'
+            f'<select name="{field}" id="{field}">{picks}</select></label>'
             + trim
             + _placement_options(view_name, region, index, current, schemas,
-                                 (options or {}).get((region, index)) or {}))
-    return (f'<div class="slot-row"><span class="rg">{e(region)}'
-            f'<span class="cap"><br>{w}&times;{h}</span></span>'
+                                 (options or {}).get((region, index)) or {})
+            + '</div>')
+    return (f'<div class="slot-row"><span class="rg">{e(region_label(region))} '
+            f'<span class="cap">{w}&times;{h}</span></span>'
             f'<div>{"".join(rows)}</div></div>')
 
 

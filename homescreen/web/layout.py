@@ -22,7 +22,16 @@ CSS = """
   --ok:#0a7d33; --ok-bg:#e9f7ee; --bad:#b3261e; --bad-bg:#fdecea;
   --warn:#8a5a00; --warn-bg:#fff5e0;
   --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
-  --radius:10px;
+  /* Three radii for four kinds of object. There were eight, nesting 10 -> 9
+     -> 8 -> 7, which reads as sloppiness rather than as nesting. */
+  --r-sm:4px; --radius:8px; --r-pill:999px;
+  /* A 4px base. There were about twenty margin values in use and thirteen
+     inline `style=` overrides, which is what a spacing system looks like when
+     it does not cover its own cases. */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s6:24px; --s8:32px;
+  /* Five sizes. There were fourteen, some differing by a quarter of a pixel
+     and all meaning "small text". */
+  --fs-micro:11px; --fs-xs:12px; --fs-sm:13px; --fs-base:15px; --fs-h1:22px;
 }
 @media(prefers-color-scheme:dark){:root{
   --bg:#0f1113; --panel:#17191d; --fg:#e7e9ec; --dim:#9aa1ab; --faint:#6b7280;
@@ -90,25 +99,43 @@ dl.facts dt{color:var(--dim)}
 dl.facts dd{margin:0;font-family:var(--mono);word-break:break-word}
 
 form.stack{display:flex;flex-direction:column;gap:.9rem}
-label.field{display:flex;flex-direction:column;gap:.28rem;font-size:.82rem;
-  color:var(--dim);max-width:32rem}
+/* ONE label style. There were three -- 13px/400/dim, 11.5px/600/fg and 13px
+   mono/dim -- all meaning "this names the control below", within a few
+   centimetres of each other on the same page. */
+label.field{display:flex;flex-direction:column;gap:var(--s1);
+  font-size:var(--fs-sm);font-weight:600;color:var(--dim);max-width:32rem}
+label.field .hint{font-weight:400}
 label.field .hint{font-size:.75rem;color:var(--faint);margin-top:.1rem}
 form.stack>label.field,form.stack>label.check{margin-bottom:.15rem}
 fieldset.optgroup .stack{gap:1rem}
-input[type=text],input[type=number],input[type=url],select,textarea{
-  font:inherit;font-size:.9rem;padding:.45rem .6rem;color:var(--fg);
-  background:var(--bg);border:1px solid var(--line);border-radius:7px;width:100%}
-textarea{font:inherit;width:100%;resize:vertical;min-height:4.2em;
-  padding:.45rem .6rem;border:1px solid var(--line);border-radius:7px;
-  background:var(--panel);color:var(--fg);box-sizing:border-box}
+/* Every control, by exclusion rather than by enumeration. The old rule listed
+   text, number and url -- so `password` and `time` matched nothing, and 19
+   credential boxes and 6 schedule times rendered as raw browser defaults
+   beside styled ones: square, 2px inset border, 10px shorter. In dark mode
+   they came out as light slabs on a dark panel. Enumerating the types you
+   remember is a list that silently stops covering the form. */
+input:not([type=checkbox]):not([type=radio]):not([type=hidden]):not([type=submit]),
+select,textarea{
+  font:inherit;font-size:var(--fs-base);height:36px;padding:0 10px;
+  color:var(--fg);background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--radius);width:100%}
+/* One fill for every control. Inputs were `--bg` and textareas `--panel`, four
+   lines apart, so the sport block showed a white textarea above a grey input
+   in the same form. */
+textarea{height:auto;padding:8px 10px;min-height:4.5em;resize:vertical}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
-label.check{display:flex;flex-direction:row;align-items:center;gap:.5rem;
-  font-size:.86rem;color:var(--fg)}
+/* Grid, not flex: `fields.py` puts the hint INSIDE the label, so as a flex
+   sibling it ran on the same line as the text -- and at 430px collapsed into
+   two ragged word-per-line columns beside each other. */
+label.check{display:grid;grid-template-columns:auto 1fr;column-gap:var(--s2);
+  align-items:start;font-size:var(--fs-sm);color:var(--fg)}
+label.check .hint{grid-column:2;display:block;margin-top:2px}
 label.check input{width:auto}
 
-button{font:inherit;font-size:.88rem;padding:.45rem 1rem;border-radius:7px;
+button{font:inherit;font-size:var(--fs-sm);padding:0 var(--s4);height:36px;
+  border-radius:var(--radius);
   border:1px solid transparent;background:var(--accent);color:var(--accent-fg);
-  cursor:pointer;font-weight:550}
+  cursor:pointer;font-weight:600}
 button:hover{filter:brightness(1.08)}
 button.ghost{background:transparent;color:var(--fg);border-color:var(--line)}
 button.ghost:hover{background:var(--line-soft);filter:none}
@@ -119,7 +146,8 @@ button.danger:hover{background:var(--bad-bg);filter:none}
 .pvs{display:flex;gap:.8rem;flex-wrap:wrap}
 figure.pv{margin:0;text-align:center}
 figure.pv img{width:108px;height:auto;aspect-ratio:var(--pv-aspect,1);
-  border-radius:9px;background:#000;display:block;border:1px solid var(--line)}
+  border-radius:var(--radius);background:#000;display:block;
+  border:1px solid var(--line)}
 
 /* The composed panel, rendered by the operator's own browser at the panel's
    real size and scaled down. Not a drawing of the page -- the page. */
