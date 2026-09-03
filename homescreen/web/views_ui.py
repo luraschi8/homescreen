@@ -438,7 +438,8 @@ def _map(view_name: str, regions: dict, by_region: dict, weights: dict,
             # The region names itself ONCE. Repeating it in all six cells of
             # the markets band labels the container six times and the contents
             # never, which is the opposite of what the picture is for.
-            caption = (f'<span class="mr">{e(region)}</span>' if index == 0
+            caption = (f'<span class="mr">{e(region_label(region))}</span>'
+                   if index == 0
                        else "")
             boxes.append(
                 f'<div class="mslot{"" if index < filled else " free"}" '
