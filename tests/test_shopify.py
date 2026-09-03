@@ -441,3 +441,28 @@ def test_an_unscoped_payload_is_still_the_fallback():
                {"total": 12.0, "orders": 1})
     aware = datasource.reader(cache, time.time, "hw/view/placement")
     assert aware({"provider": "shopify", "params": params}).get("total") == 12.0
+
+
+def test_the_shop_names_the_figure_on_every_surface():
+    # In the band that makes the label what a ticker's is -- the source, not
+    # the metric -- and on the round face there is no section heading, so
+    # without it "870 EUR" is a number with nothing saying whose.
+    for w, h in ((764, 62), (127, 62), (417, 150), (321, 335)):
+        html = scenes.build("shopify", _ctx(w, h)).html
+        assert "MYALMA" in html, (w, h)
+    drawn = scenes.build("shopify", _ctx(240, 240)).components[0]["draw"]
+    assert any(str(d.get("v")) == "MYALMA" for d in drawn), drawn
+
+
+def test_a_shop_with_no_name_still_labels_the_figure():
+    env = dict(ENV, shop="")
+    assert "VENTAS" in scenes.build("shopify", _ctx(417, 150, env=env)).html
+
+
+def test_the_shop_name_is_escaped():
+    # It comes from Shopify, so it is feed text like any other and reaches a
+    # document Chromium rasterises. One "<" collapsed a whole block elsewhere.
+    env = dict(ENV, shop='Ma<b>lma</div><div style="height:400px">')
+    html = scenes.build("shopify", _ctx(417, 150, env=env)).html
+    assert "<b>" not in html and "&lt;B&gt;" in html
+    assert '</div><div style=' not in html

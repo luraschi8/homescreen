@@ -12,7 +12,7 @@ from homescreen import draw
 from homescreen.reading import Reading
 from homescreen.scenes import Scene, SceneContext
 from homescreen.scenes._icons import arrow
-from homescreen.scenes._style import EMPTY_CSS, empty, page
+from homescreen.scenes._style import EMPTY_CSS, empty, esc, page
 
 #: Takings read at any size: at the smallest it is one number, and the
 #: supporting figures are added as the room appears.
@@ -118,24 +118,33 @@ def build(ctx: SceneContext) -> Scene:
                                shape=ctx.variant))
 
     takings = money(total, currency)
+    # The shop names the figure. In the band that makes the label exactly what
+    # a ticker's is -- the source, not the metric -- and on the round face
+    # there is no section heading, so without it "870 EUR" is a number with
+    # nothing saying whose. Falls back to a word when the shop has no name.
+    # ESCAPED: the name comes from Shopify, so it is feed text like any other
+    # and reaches a document Chromium rasterises.
+    title = esc(str(reading.get("shop") or "").strip().upper()) or "VENTAS"
     direction, change = delta(total, reading.get("prev_total")) \
         if options.get("show_compare", True) else ("", "")
     orders_line = f"{count} pedido{'' if count == 1 else 's'}"
 
     # One big figure and one line under it. A round face has a single place the
     # eye lands, and a third number competes for it rather than adding to it.
-    instructions = [draw.text("center", takings, "xl", "accent"),
+    instructions = [draw.text("above", title, "xs", "dim"),
+                    draw.text("center", takings, "xl", "accent"),
                     draw.text("below", orders_line, "sm", "dim")]
 
     return Scene(layout="fill", poll_s=POLL_S, poll_max_s=POLL_S,
                  components=({"c": "shopify", "draw": instructions},),
                  html=page(w, h, _body(ctx, reading, takings, orders_line,
-                                       direction, change, currency),
+                                       direction, change, currency, title),
                            CSS, shape=ctx.variant,
                            hero_share=_HERO_SHARE.get(ctx.variant)))
 
 
-def _body(ctx, reading, takings, orders_line, direction, change, currency):
+def _body(ctx, reading, takings, orders_line, direction, change, currency,
+          title):
     options = ctx.options or {}
     variant = ctx.variant
     change_html = (f'<span class="chg">{arrow(direction, 10)}'
@@ -145,7 +154,8 @@ def _body(ctx, reading, takings, orders_line, direction, change, currency):
         parts = [takings, orders_line]
         if change:
             parts.append(f"{change} vs ayer")
-        return (f'<div class="wrap row"><span class="big">{takings}</span>'
+        return (f'<div class="wrap row"><span class="sh-sym">{title}</span>'
+                f'<span class="big">{takings}</span>'
                 f'<span class="sub">{orders_line}</span>{change_html}</div>')
 
     if variant == "badge":
@@ -154,7 +164,7 @@ def _body(ctx, reading, takings, orders_line, direction, change, currency):
         # ticker beside it, at the same sizes. A cell that invents its own
         # shape reads as a mistake in a row of five that agree.
         return (f'<div class="wrap badge"><div class="q">'
-                f'<div class="sh-sym">VENTAS</div>'
+                f'<div class="sh-sym">{title}</div>'
                 f'<div class="sh-px">{takings}</div>'
                 f'<div class="sh-ch">{orders_line}</div></div></div>')
 
@@ -174,6 +184,7 @@ def _body(ctx, reading, takings, orders_line, direction, change, currency):
     lines = "".join(f'<div class="ln"><span class="k">{k}</span>'
                     f'<span class="v">{v}</span></div>' for k, v in rows)
     return (f'<div class="wrap"><div class="head">'
+            f'<div class="sh-title">{title}</div>'
             f'<div class="big">{takings}</div>'
             f'<div class="sh-lab">{orders_line} · hoy</div></div>'
             f'<div class="rows">{lines}</div></div>')
@@ -188,6 +199,10 @@ CSS = """
    redefines it reaches every other component on the same composed
    page -- `compose.scope_css` isolates a fragment's selectors, not
    the shared ones it overrides. */
+/* Above the number, so the block says whose money this is before it says how
+   much. Small: it is a caption, and the figure is the reason to look. */
+.sh-title{font-size:var(--xs);letter-spacing:.14em;text-transform:uppercase;
+  font-weight:500;margin-bottom:1px}
 .sh-lab{font-size:var(--xs);letter-spacing:.06em;
   text-transform:uppercase;margin-top:2px}
 /* A markets cell: the same three lines, at the same sizes, as the tickers it
