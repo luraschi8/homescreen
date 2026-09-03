@@ -746,6 +746,24 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             for name in names:
                 views.setdefault(name, {"template": template,
                                         "placements": []})
+        # A view the operator asked to drop. Done here rather than by
+        # emptying its slots, which is how it used to happen -- silently, and
+        # reported as a success.
+        dropped = web.views_ui.safe_view_name(request.form.get("drop") or "") \
+            if (request.form.get("drop") or "").strip() else ""
+        if dropped and dropped in views and len(views) > 1:
+            views.pop(dropped, None)
+        # Renames. The placements travel with the name, and a rename that
+        # would collide is refused rather than merging two views.
+        for old in list(views):
+            asked = (request.form.get(f"rn.{old}") or "").strip()
+            if not asked:
+                continue
+            new_name = web.views_ui.safe_view_name(asked)
+            if new_name == old or new_name in views:
+                continue
+            views = {new_name if k == old else k: v for k, v in views.items()}
+
         plan = scheduling.clean_schedule(rec.get("schedule") or {}, views)
         # What was actually stored, not how many views there are: "vistas
         # guardadas · 1" was byte-identical whether or not `clean_placement`

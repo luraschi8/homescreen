@@ -28,7 +28,11 @@ CSS = """
 .p-opts label.field{max-width:100%}
 .view{border:1px solid var(--line);border-radius:var(--radius);
   padding:var(--s4);margin-bottom:var(--s3)}
-.view h3{margin:0 0 var(--s3);font-size:var(--fs-base);font-weight:600}
+.view h3{margin:0;font-size:var(--fs-base);font-weight:600}
+.view-h{display:flex;align-items:end;gap:var(--s3);flex-wrap:wrap;
+  margin-bottom:var(--s3)}
+.view-h .vh-rn{flex:0 1 14rem;margin:0}
+.view-h button{margin-left:auto}
 /* Each placement is a CARD. The gap between two different components used to
    equal the gap between two fields of the same one, so eleven placements read
    as a single four-thousand-pixel list with nothing marking where a block
@@ -301,6 +305,15 @@ function markStale(sel) {
   }
 }
 
+document.querySelectorAll('.drop-view').forEach(function (btn) {
+  btn.addEventListener('click', function (ev) {
+    var name = btn.dataset.view || '';
+    if (!window.confirm('¿Borrar la vista "' + name + '" y sus bloques?')) {
+      ev.preventDefault();
+    }
+  });
+});
+
 document.querySelectorAll('.view').forEach(function (view) {
   var boxes = view.querySelectorAll('.mslot');
   boxes.forEach(function (box) {
@@ -473,7 +486,23 @@ def editor(hw: str, views: dict, regions: dict, offered, template: str,
         panel = _map(view_name, regions, by_region, weights,
                      int((caps or {}).get("w") or 0),
                      int((caps or {}).get("h") or 0))
-        blocks.append(f'<div class="view"><h3>{e(view_name)}</h3>'
+        # Renaming and deleting a view had no path at all -- a typo was
+        # permanent, and it polluted the arrangement list and every schedule
+        # dropdown. Deletion DID exist, unlabelled: clearing a view's last slot
+        # destroyed it and reported success.
+        # The name goes in a DATA ATTRIBUTE, escaped, and the confirmation is
+        # attached by script. Interpolated into an inline `onclick` it is
+        # operator input inside a JavaScript string inside an HTML attribute --
+        # three quoting contexts deep, and a view named `x"><script>` walked
+        # straight out of all three. The escaping test caught it immediately.
+        head = (f'<div class="view-h"><h3>{e(view_name)}</h3>'
+                f'<label class="field vh-rn"><span>Renombrar</span>'
+                f'<input type="text" name="rn.{e(view_name)}" maxlength="40"'
+                f' placeholder="{e(view_name)}"></label>'
+                f'<button class="ghost drop-view" type="submit" name="drop"'
+                f' value="{e(view_name)}" data-view="{e(view_name)}"'
+                f'>Borrar vista</button></div>')
+        blocks.append(f'<div class="view">{head}'
                       f'{panel}{rows}</div>')
 
     return f"""<h2>Qué contiene cada vista</h2>

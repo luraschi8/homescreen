@@ -938,3 +938,71 @@ def test_a_single_region_screen_with_several_views_has_one_editor(ctx):
     html = client.get(f"/device/{ROUND}").get_data(as_text=True)
     assert "Qué contiene cada vista" in html, "the real editor is missing"
     assert 'name="scene"' not in html, "the inert picker is still offered"
+
+
+def test_a_view_can_be_renamed(ctx):
+    # There was no rename path at all: a typo'd view name was permanent, and
+    # it polluted the arrangement list and every schedule dropdown.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "template": "dashboard", "v.panel.masthead.0": "clock",
+        "rn.panel": "principal"})
+    views = client.get(f"/api/devices/{EPD}/schedule").get_json()["views"]
+    assert "principal" in views and "panel" not in views
+
+
+def test_a_rename_that_would_collide_is_refused(ctx):
+    client, cache = ctx
+    client.put(f"/api/devices/{EPD}/schedule", json={
+        "views": {"a": {"template": "dashboard", "placements": [
+                      {"id": "x", "region": "masthead", "component": "clock"}]},
+                  "b": {"template": "dashboard", "placements": [
+                      {"id": "y", "region": "masthead", "component": "date"}]}},
+        "schedule": {"default": "a", "slots": []}})
+    client.post(f"/device/{EPD}/views", data={
+        "template": "dashboard", "v.a.masthead.0": "clock",
+        "v.b.masthead.0": "date", "rn.a": "b"})
+    views = client.get(f"/api/devices/{EPD}/schedule").get_json()["views"]
+    assert set(views) == {"a", "b"}, "two views were merged into one"
+
+
+def test_a_view_can_be_deleted_deliberately(ctx):
+    # Deletion existed, unlabelled: clearing a view's last slot destroyed it
+    # and reported success.
+    client, cache = ctx
+    client.put(f"/api/devices/{EPD}/schedule", json={
+        "views": {"a": {"template": "dashboard", "placements": [
+                      {"id": "x", "region": "masthead", "component": "clock"}]},
+                  "b": {"template": "dashboard", "placements": [
+                      {"id": "y", "region": "masthead", "component": "date"}]}},
+        "schedule": {"default": "a", "slots": []}})
+    client.post(f"/device/{EPD}/views", data={
+        "template": "dashboard", "v.a.masthead.0": "clock",
+        "v.b.masthead.0": "date", "drop": "b"})
+    views = client.get(f"/api/devices/{EPD}/schedule").get_json()["views"]
+    assert set(views) == {"a"}
+
+
+def test_the_last_view_cannot_be_deleted(ctx):
+    # A screen with no views has nothing to render.
+    client, cache = ctx
+    _dashboard(client, cache)
+    client.post(f"/device/{EPD}/views", data={
+        "template": "dashboard", "v.panel.masthead.0": "clock",
+        "drop": "panel"})
+    views = client.get(f"/api/devices/{EPD}/schedule").get_json()["views"]
+    assert views, "the screen was left with nothing to show"
+
+
+def test_deleting_a_view_never_puts_its_name_in_a_script(ctx):
+    # The confirmation was an inline `onclick`: operator input inside a
+    # JavaScript string inside an HTML attribute, three quoting contexts deep.
+    client, cache = ctx
+    client.put(f"/api/devices/{EPD}/schedule", json={
+        "views": {'x"><script>alert(1)</script>': {
+            "template": "dashboard", "placements": [
+                {"id": "x", "region": "masthead", "component": "clock"}]}},
+        "schedule": {"default": 'x"><script>alert(1)</script>', "slots": []}})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert "<script>alert(1)</script>" not in html
