@@ -45,6 +45,11 @@ CSS = """
    does not exist. */
 .pslot.vacant{background:transparent;border-style:dashed}
 .pslot.vacant .slot-extra,.pslot.vacant .p-opts{display:none}
+/* A slot whose component has just been changed: its old settings are hidden,
+   because they are named for the component that was stored and would post
+   into nothing. */
+.pslot.changed{border-color:var(--warn)}
+.pslot .stale{color:var(--warn);margin:var(--s2) 0 0}
 /* Side by side, and each with its own label. */
 .slot-extra{display:flex;gap:var(--s3);margin:var(--s2) 0 0;flex-wrap:wrap}
 .slot-extra .field{flex:1 1 12rem;margin:0}
@@ -248,7 +253,9 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
         rows.append(
             f'<div class="pslot{"" if current else " vacant"}">'
             f'<label class="field" for="{field}"><span>{e(seat)}</span>'
-            f'<select name="{field}" id="{field}">{picks}</select></label>'
+            f'<select name="{field}" id="{field}" '
+            f'data-stored="{e(current)}">{picks}</select></label>'
+            f'<p class="stale hint" hidden></p>'
             + trim
             + _placement_options(view_name, region, index, current, schemas,
                                  (options or {}).get((region, index)) or {})
@@ -265,6 +272,31 @@ _BUILDER_SCRIPT = """<script>
 // The picture follows the form. Clicking a box focuses the select that fills
 // it, and changing a select relabels the box -- so the arrangement can be read
 // as a shape and edited as a list without either going stale.
+// A slot whose component has just been changed is showing the OLD one's
+// settings: they are still editable and they post into nothing, because the
+// fields are named for the component that was stored. Rather than ship every
+// component's schema for every slot -- eleven times eleven on this page --
+// the stale fields are hidden and the slot says what to do about it.
+function markStale(sel) {
+  var slot = sel.closest('.pslot');
+  if (!slot) { return; }
+  var was = sel.dataset.stored;
+  if (was === undefined) { return; }
+  var changed = sel.value !== was;
+  slot.classList.toggle('changed', changed);
+  var opts = slot.querySelector('.p-opts');
+  if (opts) { opts.hidden = changed; }
+  var note = slot.querySelector('.stale');
+  if (note) {
+    note.hidden = !changed;
+    var picked = sel.selectedOptions && sel.selectedOptions[0];
+    note.textContent = sel.value
+      ? 'Guarda la distribución para configurar «'
+        + (picked ? picked.textContent : sel.value) + '».'
+      : 'Guarda la distribución para vaciar este hueco.';
+  }
+}
+
 document.querySelectorAll('.view').forEach(function (view) {
   var boxes = view.querySelectorAll('.mslot');
   boxes.forEach(function (box) {
@@ -279,7 +311,8 @@ document.querySelectorAll('.view').forEach(function (view) {
       var picked = sel.selectedOptions && sel.selectedOptions[0];
       var shown = sel.value ? (picked ? picked.textContent : sel.value) : '';
       label.textContent = shown || label.dataset.empty || label.textContent;
-      box.classList.toggle('filled', !!value);
+      box.classList.toggle('filled', !!sel.value);
+      markStale(sel);
     }
     label.dataset.empty = label.textContent;
     box.addEventListener('click', function () {
