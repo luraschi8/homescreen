@@ -5,6 +5,19 @@ from __future__ import annotations
 from .layout import dash, duration, e, page, pill, scene_label, when
 
 
+def showing_of(d: dict) -> str:
+    """What this screen is showing, as a person would say it.
+
+    Not `scene`: that is the legacy field, and nothing has rendered from it
+    since views existed. A composed dashboard of eleven blocks was listed here
+    as "fecha" -- the component that happens to sit in its first placement.
+    """
+    blocks = d.get("blocks") or 0
+    if blocks > 1:
+        return f"{d.get('showing') or 'panel'} · {blocks} bloques"
+    return scene_label(d.get("showing_label") or d.get("scene"))
+
+
 def _state(dev: dict) -> str:
     if not dev.get("approved", True):
         return pill("esperando aprobación", "warn")
@@ -52,7 +65,7 @@ def render_fleet(st: dict, notice: str = "") -> str:
 
     rows = "".join(f"""<tr>
   {_name_cell(d)}
-  <td>{e(scene_label(d.get("scene")))}</td>
+  <td>{e(showing_of(d))}</td>
   <td>{_state(d)}</td>
   <td class="meta">{when(d.get("last_seen"))}</td>
   <td class="meta">{e(d.get("poll_seconds"))}s</td>

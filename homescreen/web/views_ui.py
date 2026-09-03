@@ -452,7 +452,7 @@ def editor(hw: str, views: dict, regions: dict, offered, template: str,
       <input type="text" name="new_view" maxlength="40"
         placeholder="p. ej. mañana">
       <span class="hint">Se crea vacía y se rellena aquí mismo.</span></label>
-    <div class="actions"><button type="submit">Guardar vistas</button></div>
+    <div class="actions"><button type="submit">Guardar la distribución</button></div>
   </form>
 </div></div>
 {_BUILDER_SCRIPT}"""

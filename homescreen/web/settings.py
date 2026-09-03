@@ -78,7 +78,7 @@ def _secret_field(provider: str, state: dict) -> str:
       placeholder="{'\u2022' * 12 if stored else 'sin configurar'}">
     <span class="hint">{hint} Nunca se muestra.</span></label>
   <div class="actions">
-    <button type="submit">Guardar</button>
+    <button type="submit">Guardar esta clave</button>
     {'<button class="danger" type="submit" name="action" value="clear">Borrar</button>'
      if stored else ''}
   </div>
@@ -113,7 +113,7 @@ def render_settings(feed: dict, *, jobs=None, providers=None,
         '<span class="hint">Segundos entre consultas al endpoint. Es distinto de'
         ' cada cuánto una pantalla pregunta al Pi: eso lo decide su'
         ' componente.</span></label>'
-        '<div class="actions"><button type="submit">Guardar</button></div>'
+        '<div class="actions"><button type="submit">Guardar la fuente</button></div>'
         '</form>')
     read_only = (
         '<dl class="facts">'

@@ -722,20 +722,48 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         if hw not in registry.load(cache_dir):
             return redirect(url_for("home", m=f"no existe ninguna pantalla {hw}"))
         provider = (request.form.get("provider") or "").strip()
-        secret = (request.form.get("secret") or "").strip()
         scope = (request.form.get("scope") or "").strip()
-        if fetch.providers.get(provider) is None or \
-                secret not in fetch.providers.secrets_for(provider):
+        if fetch.providers.get(provider) is None:
+            return redirect(url_for("device_page", hw=hw,
+                                    m="esa credencial no existe"))
+        known = fetch.providers.secrets_for(provider)
+        # One POST per PROVIDER, not per field. Shopify needs a client id and
+        # a client secret; as three separate forms with three separate saves,
+        # filling all three and pressing one discarded the other two -- and
+        # five placements of the same component gave five boxes labelled
+        # identically, each with its own button.
+        clearing = (request.form.get("clear") or "").strip()
+        secret = (request.form.get("secret") or "").strip()
+        if clearing and clearing not in known:
+            return redirect(url_for("device_page", hw=hw,
+                                    m="esa credencial no existe"))
+        if secret and secret not in known:
             return redirect(url_for("device_page", hw=hw,
                                     m="esa credencial no existe"))
         try:
-            if request.form.get("action") == "clear":
-                secrets.clear(cache_dir, provider, secret, scope)
+            if clearing or request.form.get("action") == "clear":
+                secrets.clear(cache_dir, provider, clearing or secret, scope)
                 message = "vuelve a usar la clave global"
-            else:
+            elif secret:
+                # The single-field form, still posted by `/settings`.
                 secrets.set_secret(cache_dir, provider, secret,
                                    request.form.get("value"), scope)
                 message = "esta pantalla usa su propia clave"
+            else:
+                wrote = 0
+                for name in known:
+                    value = request.form.get(f"v.{name}")
+                    if value is None or not value.strip():
+                        continue         # blank means "leave it alone"
+                    secrets.set_secret(cache_dir, provider, name, value, scope)
+                    wrote += 1
+                if not wrote:
+                    return redirect(url_for(
+                        "device_page", hw=hw,
+                        m="no había nada que guardar en esa credencial"))
+                message = (f"{wrote} credencial{'es' if wrote > 1 else ''} "
+                           f"de {provider} guardada"
+                           f"{'s' if wrote > 1 else ''}")
         except ValueError as exc:
             return redirect(url_for("device_page", hw=hw, m=str(exc)))
         except OSError:
@@ -1098,7 +1126,17 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         return out
 
     def _fleet_entry(hw: str, rec: dict, now: float) -> dict:
+        # What it is actually SHOWING. `rec["scene"]` is the legacy field, and
+        # nothing has rendered from it since views existed -- so the one page
+        # whose whole job is "what is each screen doing" listed a composed
+        # dashboard of eleven blocks as "fecha", its first placement.
+        showing_now = scheduling.active_view(rec.get("schedule") or {}, clock())
+        blocks = layout.stored_view(rec, showing_now or "").get("placements") or []
         entry = {"hw": hw, "name": rec.get("name"), "scene": rec.get("scene"),
+                 "showing": showing_now or None, "blocks": len(blocks),
+                 "showing_label": (showing_now if len(blocks) > 1
+                                   else (blocks[0].get("component")
+                                         if blocks else rec.get("scene"))),
                  "fw": rec.get("fw"),
                  # Membership, not health: a pending device can be perfectly
                  # online and still be served nothing.
@@ -1275,7 +1313,9 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         # costs one render rather than waiting out the throttle.
         _forget_cold(hw)
         who = rec.get("name") or hw
-        return f"{who} muestra ahora {rec.get('scene') or 'sin asignar'}"
+        # The label, not the identifier: this said "muestra ahora date".
+        return (f"{who} muestra ahora "
+                f"{web.layout.scene_label(rec.get('scene')) or 'sin asignar'}")
 
     @app.post("/home/device")
     def home_device():

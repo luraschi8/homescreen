@@ -460,7 +460,12 @@ def test_the_first_panels_heading_describes_what_is_actually_in_it(ctx):
     _dashboard(client, cache)
     arranged = client.get(f"/device/{EPD}").get_data(as_text=True)
     simple = client.get(f"/device/{ROUND}").get_data(as_text=True)
-    assert "Esta pantalla" in arranged and "Qué muestra" not in arranged
+    # On a composed screen the card holds a name and a cadence and nothing
+    # else, so it says so. "Esta pantalla" named no action, and the identical
+    # card was titled differently on the two pages -- which reads as
+    # inconsistency because it is. A single-region screen's card really does
+    # decide what it shows, so there it keeps its old name.
+    assert "Nombre y cadencia" in arranged and "Qué muestra" not in arranged
     assert "Qué muestra" in simple
 
 

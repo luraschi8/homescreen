@@ -55,24 +55,45 @@ def _credentials(hw: str, creds) -> str:
     """
     if not creds:
         return ""
-    fields = []
+    # Grouped by provider AND scope: one form, one save. Nine separate forms
+    # meant nine buttons reading the same word, and five of them labelled
+    # character-for-character "quotes · api_key" -- the placement each belonged
+    # to was computed by the server and then thrown away before rendering.
+    groups: dict = {}
     for state in creds:
-        stored = state.get("set")
-        fields.append(f"""<form class="stack" method="post"
-      action="/device/{e(hw)}/secrets" style="margin-bottom:.9rem">
-  <input type="hidden" name="provider" value="{e(state.get("provider"))}">
-  <input type="hidden" name="secret" value="{e(state.get("name"))}">
-  <input type="hidden" name="scope" value="{e(state.get("scope"))}">
-  <label class="field">{e(state.get("provider"))} · {e(state.get("name"))}
-    <input type="password" name="value" autocomplete="off"
+        key = (state.get("provider"), state.get("scope"))
+        groups.setdefault(key, []).append(state)
+
+    fields = []
+    for (provider, scope), members in groups.items():
+        where = members[0].get("placement") or ""
+        view = members[0].get("view") or ""
+        seat = f" — {e(view)} · {e(where)}" if where else ""
+        boxes, any_stored = [], False
+        for state in members:
+            stored = state.get("set")
+            any_stored = any_stored or stored
+            name = e(state.get("name"))
+            boxes.append(f"""  <label class="field">{name}
+    <input type="password" name="v.{name}" autocomplete="off"
       placeholder="{'\u2022' * 12 if stored else 'usa la del servidor'}">
     <span class="hint">{"Esta pantalla usa su propia clave."
                         if stored else
                         "En blanco usa la clave global de Ajustes."}</span>
-  </label>
-  <div class="actions"><button type="submit">Guardar</button>
-    {'<button class="danger" type="submit" name="action" value="clear">'
-     'Volver a la global</button>' if stored else ''}</div>
+  </label>""")
+            if stored:
+                boxes.append(
+                    f'  <div class="actions"><button class="ghost" '
+                    f'type="submit" name="clear" value="{name}" '
+                    f'onsubmit="return true">Volver a la global · {name}'
+                    f'</button></div>')
+        fields.append(f"""<form class="stack cred" method="post"
+      action="/device/{e(hw)}/secrets">
+  <input type="hidden" name="provider" value="{e(provider)}">
+  <input type="hidden" name="scope" value="{e(scope)}">
+  <h3 class="cred-h">{e(provider)}{seat}</h3>
+{"".join(boxes)}
+  <div class="actions"><button type="submit">Guardar {e(provider)}</button></div>
 </form>""")
     return ('<h2>Credenciales de esta pantalla</h2>'
             f'<div class="panel"><div class="pad">{"".join(fields)}</div></div>')
@@ -134,7 +155,10 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
 
     # The heading has to describe what is under it. Once the arrangement owns
     # what the screen shows, this panel is just the screen's name.
-    heading = "Esta pantalla" if arranged else "Qué muestra"
+    # One name for one card. The identical panel -- name, cadence, save -- was
+    # titled "Esta pantalla" on a composed screen and "Qué muestra" on a
+    # single-region one, which reads as inconsistency because it is.
+    heading = "Nombre y cadencia" if arranged else "Qué muestra"
 
     # An arranged screen is previewed as the PAGE it is served, in an iframe:
     # the operator's browser renders the same document `/frame` rasterises, so
@@ -227,7 +251,7 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
         value="{e(dev.get("poll_seconds") or "")}" placeholder="{poll_hint}">
       <span class="hint">{poll_help}</span></label>
     {picker}
-    <div class="actions"><button type="submit">Guardar</button></div>
+    <div class="actions"><button type="submit">Guardar nombre y cadencia</button></div>
   </form>
 </div></div>
 {views_ui.editor(dev.get("hw") or "", view_bodies or {}, regions or {},

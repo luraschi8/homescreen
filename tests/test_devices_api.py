@@ -957,3 +957,51 @@ def test_an_absurd_interval_is_refused_not_stored(ctx):
     registry.set_approval(cache, HW, True)
     client.post(f"/device/{HW}", data={"name": "Panel", "poll_seconds": "0"})
     assert registry.load(cache)[HW].get("poll_seconds") in (None, )
+
+
+def test_a_providers_credentials_save_together(ctx):
+    # Three separate forms meant three separate saves: filling Shopify's id
+    # and secret and pressing one button discarded the other. And five
+    # placements of one component gave five boxes labelled identically.
+    client, cache, _ = ctx
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
+    registry.set_approval(cache, HW, True)
+    client.post(f"/device/{HW}/secrets", data={
+        "provider": "shopify", "scope": f"{HW}/panel/s/shopify",
+        "v.client_id": "abc", "v.client_secret": "shh"})
+    from homescreen import secrets as sec
+    scope = f"{HW}/panel/s/shopify"
+    assert sec.has(cache, "shopify", "client_id", scope)
+    assert sec.has(cache, "shopify", "client_secret", scope)
+
+
+def test_a_blank_credential_box_leaves_the_stored_one_alone(ctx):
+    # Blank means "I did not touch this", not "erase it" -- otherwise saving
+    # one field of a provider wipes its siblings.
+    client, cache, _ = ctx
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
+    registry.set_approval(cache, HW, True)
+    scope = f"{HW}/panel/s/shopify"
+    client.post(f"/device/{HW}/secrets", data={
+        "provider": "shopify", "scope": scope,
+        "v.client_id": "abc", "v.client_secret": "shh"})
+    client.post(f"/device/{HW}/secrets", data={
+        "provider": "shopify", "scope": scope,
+        "v.client_id": "new", "v.client_secret": ""})
+    from homescreen import secrets as sec
+    assert sec.has(cache, "shopify", "client_secret", scope), "the sibling died"
+
+
+def test_one_credential_can_still_be_cleared_on_its_own(ctx):
+    client, cache, _ = ctx
+    client.get(f"/api/devices/{HW}/scene?w=800&h=480&depth=1")
+    registry.set_approval(cache, HW, True)
+    scope = f"{HW}/panel/s/shopify"
+    client.post(f"/device/{HW}/secrets", data={
+        "provider": "shopify", "scope": scope,
+        "v.client_id": "abc", "v.client_secret": "shh"})
+    client.post(f"/device/{HW}/secrets", data={
+        "provider": "shopify", "scope": scope, "clear": "client_id"})
+    from homescreen import secrets as sec
+    assert not sec.has(cache, "shopify", "client_id", scope)
+    assert sec.has(cache, "shopify", "client_secret", scope), "cleared too much"

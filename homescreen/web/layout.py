@@ -141,7 +141,22 @@ button.ghost{background:transparent;color:var(--fg);border-color:var(--line)}
 button.ghost:hover{background:var(--line-soft);filter:none}
 button.danger{background:transparent;color:var(--bad);border-color:var(--bad)}
 button.danger:hover{background:var(--bad-bg);filter:none}
-.actions{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+.actions{display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center}
+/* A credential group is a card of its own: provider, its fields, one save. */
+form.cred{border:1px solid var(--line);border-radius:var(--radius);
+  padding:var(--s3) var(--s4);margin-bottom:var(--s3)}
+form.cred .cred-h{margin:0 0 var(--s2);font-size:var(--fs-sm);
+  font-weight:600;color:var(--dim)}
+/* A form with unsaved edits says so, and says which of the several buttons on
+   the page commits it. Every panel here is a separate transaction posting to a
+   different route, so pressing one Save re-renders the others from disk and
+   whatever was typed in them is gone. */
+form.dirty{position:relative}
+form.dirty::before{content:"sin guardar";position:absolute;top:-9px;left:12px;
+  background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn);
+  border-radius:var(--r-pill);font-size:var(--fs-micro);font-weight:600;
+  padding:1px 8px}
+form.dirty button[type=submit]{box-shadow:0 0 0 3px var(--warn-bg)}
 
 .pvs{display:flex;gap:.8rem;flex-wrap:wrap}
 figure.pv{margin:0;text-align:center}
@@ -261,6 +276,35 @@ def pill(text: str, kind: str = "") -> str:
     return f'<span class="pill{" " + kind if kind else ""}">{e(text)}</span>'
 
 
+#: Marks a form as having unsaved edits, and stops a navigation that would
+#: lose them. Progressive enhancement: with JavaScript off every form still
+#: posts exactly as before, which is the test for whether it belongs here.
+#:
+#: This page is many forms posting to many routes, and the complaint that
+#: prompted it was precise: "the save buttons are per field and it is
+#: counterintuitive when filling multiple, it is not clear which you need for
+#: what you are doing". Per-section saving is right -- writing a secret,
+#: clearing one irreversibly and moving a block are different transactions --
+#: but nothing said which section you were in or that another had unsaved work.
+DIRTY_SCRIPT = """<script>
+(function(){
+  var forms = document.querySelectorAll('form');
+  forms.forEach(function(f){
+    if (!f.querySelector('button[type=submit]')) return;
+    var mark = function(){ f.classList.add('dirty'); };
+    f.addEventListener('input', mark);
+    f.addEventListener('change', mark);
+    f.addEventListener('submit', function(){ f.classList.remove('dirty'); });
+  });
+  window.addEventListener('beforeunload', function(ev){
+    if (!document.querySelector('form.dirty')) return;
+    ev.preventDefault();
+    ev.returnValue = '';
+  });
+})();
+</script>"""
+
+
 def page(title: str, body: str, *, active: str = "", meta: str = "",
          notice: str = "", script: str = "") -> str:
     """The whole document. One place decides what a dashboard page looks like."""
@@ -296,4 +340,5 @@ def page(title: str, body: str, *, active: str = "", meta: str = "",
 <footer>API: <a href="/api/status">/api/status</a> &middot;
 <a href="/api/devices">/api/devices</a></footer>
 {script_html}
+{DIRTY_SCRIPT}
 </html>"""
