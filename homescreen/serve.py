@@ -550,10 +550,16 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         oldest = _oldest_fetch(view)
         built = []
 
-        def build_scene(component, options, region_caps):
+        def build_scene(component, options, region_caps, placement_id=None):
+            # Scoped exactly as `fetch.plan` scopes a job: a placement with its
+            # own credential is a different fetch, so it is also a different
+            # cached payload to read back.
+            reader = (datasource.reader(
+                cache_dir, clock, f"{hw}/{showing or 'panel'}/{placement_id}")
+                if placement_id else _scene_data)
             scene = scenes.safe_build(component, scenes.SceneContext(
                 cfg=_live(), cache_dir=cache_dir, caps=region_caps,
-                now=clock(), data=_scene_data, oldest_fetch=oldest,
+                now=clock(), data=reader, oldest_fetch=oldest,
                 options=scenes.clean_options(component, options),
                 device={"hw": hw, "id": rec.get("name") or hw,
                         "name": rec.get("name"), "feed": "adsb",

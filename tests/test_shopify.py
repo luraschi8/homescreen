@@ -398,3 +398,46 @@ def test_it_needs_nothing_until_a_shop_is_named():
     from homescreen.scenes import shopify as scene
     assert scene.needs({}, {}) == ()
     assert scene.needs({"shop": "x.myshopify.com"}, {})[0]["provider"] == "shopify"
+
+
+# --- reading back what a scoped credential fetched ----------------------------
+
+def test_a_placement_with_its_own_credential_reads_its_own_payload():
+    # `fetch.plan` puts the credential scope into a job's PARAMETERS, so a
+    # placement with its own key is a differently-keyed job. Reading without
+    # the scope looked up a job that had never run: the panel said "sin datos"
+    # while a perfectly good payload sat on disk under the scoped name.
+    import time
+    from homescreen import datasource
+    from homescreen.fetch import providers, store
+
+    cache = pathlib.Path(tempfile.mkdtemp())
+    params = {"shop": "x.myshopify.com"}
+    scope = "4827e2b78214/tienda/t"
+    scoped = providers.clean_params(
+        "shopify", {**params, "secret_scope": f"{scope}/shopify"})
+    store.save(cache, providers.key("shopify", scoped),
+               {"total": 870.06, "orders": 19})
+
+    requirement = {"provider": "shopify", "params": params}
+    blind = datasource.reader(cache, time.time)
+    assert blind(requirement).missing, "the unscoped job has never run"
+
+    aware = datasource.reader(cache, time.time, scope)
+    assert aware(requirement).get("total") == 870.06
+
+
+def test_an_unscoped_payload_is_still_the_fallback():
+    # Mirrors `secrets.for_provider`: a screen with its own key uses it, one
+    # without falls back rather than failing.
+    import time
+    from homescreen import datasource
+    from homescreen.fetch import providers, store
+
+    cache = pathlib.Path(tempfile.mkdtemp())
+    params = {"shop": "x.myshopify.com"}
+    store.save(cache, providers.key("shopify",
+                                    providers.clean_params("shopify", params)),
+               {"total": 12.0, "orders": 1})
+    aware = datasource.reader(cache, time.time, "hw/view/placement")
+    assert aware({"provider": "shopify", "params": params}).get("total") == 12.0

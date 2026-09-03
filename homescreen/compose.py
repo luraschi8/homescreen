@@ -127,6 +127,23 @@ def fragment(html: str, wrapper: str) -> tuple:
             match.group("body"))
 
 
+def _build(build_scene, placement, caps):
+    """Call the injected builder, telling it WHICH placement this is.
+
+    The id decides which credential a component's data was fetched under, and
+    therefore which cached payload to read back. Passed as an optional argument
+    so a caller that does not care -- every test, and the preview -- keeps its
+    three-argument builder.
+    """
+    component = placement.get("component")
+    options = placement.get("options") or {}
+    try:
+        return build_scene(component, options, caps,
+                           placement_id=placement.get("id"))
+    except TypeError:
+        return build_scene(component, options, caps)
+
+
 def _collapsible(html: str) -> bool:
     """Whether this fragment is a component saying it has nothing to show.
 
@@ -197,9 +214,8 @@ def compose(view: dict, caps: dict, build_scene) -> str:
         heading = str(placement.get("label") or "")
         inner = max(1, rect[3] - HEADING_PX) if heading else rect[3]
         try:
-            probe = build_scene(placement.get("component"),
-                                placement.get("options") or {},
-                                {**caps, "w": rect[2], "h": inner})
+            probe = _build(build_scene, placement,
+                           {**caps, "w": rect[2], "h": inner})
         except Exception:                               # noqa: BLE001
             continue
         # Kept against the rect it was built for, so the second pass rebuilds
@@ -244,9 +260,8 @@ def compose(view: dict, caps: dict, build_scene) -> str:
             html = ready                                # unmoved: already built
         else:
             try:
-                html = build_scene(placement.get("component"),
-                                   placement.get("options") or {},
-                                   {**caps, "w": w, "h": inner})
+                html = _build(build_scene, placement,
+                              {**caps, "w": w, "h": inner})
             except Exception:                           # noqa: BLE001
                 continue                                # one region, not the page
         css, body = fragment(html, wrapper)
