@@ -122,12 +122,10 @@ def build(ctx: SceneContext) -> Scene:
         if options.get("show_compare", True) else ("", "")
     orders_line = f"{count} pedido{'' if count == 1 else 's'}"
 
+    # One big figure and one line under it. A round face has a single place the
+    # eye lands, and a third number competes for it rather than adding to it.
     instructions = [draw.text("center", takings, "xl", "accent"),
                     draw.text("below", orders_line, "sm", "dim")]
-    if change:
-        instructions.append(
-            draw.text("rim_bottom", f"{'+' if direction == 'up' else '-'}{change}"
-                      " vs ayer", "xs", "good" if direction == "up" else "dim"))
 
     return Scene(layout="fill", poll_s=POLL_S, poll_max_s=POLL_S,
                  components=({"c": "shopify", "draw": instructions},),
@@ -151,8 +149,14 @@ def _body(ctx, reading, takings, orders_line, direction, change, currency):
                 f'<span class="sub">{orders_line}</span>{change_html}</div>')
 
     if variant == "badge":
-        return (f'<div class="wrap"><div class="big">{takings}</div>'
-                f'<div class="sh-lab">{orders_line}</div></div>')
+        # A cell of the markets band, so it keeps that band's rhythm: a small
+        # label, the number, a small line under it -- the same three lines as a
+        # ticker beside it, at the same sizes. A cell that invents its own
+        # shape reads as a mistake in a row of five that agree.
+        return (f'<div class="wrap badge"><div class="q">'
+                f'<div class="sh-sym">VENTAS</div>'
+                f'<div class="sh-px">{takings}</div>'
+                f'<div class="sh-ch">{orders_line}</div></div></div>')
 
     # A block: the takings, then the figures that qualify them.
     rows = []
@@ -186,6 +190,17 @@ CSS = """
    the shared ones it overrides. */
 .sh-lab{font-size:var(--xs);letter-spacing:.06em;
   text-transform:uppercase;margin-top:2px}
+/* A markets cell: the same three lines, at the same sizes, as the tickers it
+   sits beside. */
+.wrap.badge{flex-direction:column;align-items:flex-start;
+  justify-content:center}
+.badge .q{min-width:0;width:100%;text-align:left}
+.sh-sym{font-size:var(--xs);font-weight:500;letter-spacing:.03em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sh-px{font-size:var(--lg);font-weight:500;font-variant-numeric:tabular-nums;
+  line-height:1.15}
+.sh-ch{font-size:var(--xs);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
 .wrap.row{flex-direction:row;align-items:baseline;gap:.7em}
 .wrap.row .big{font-size:var(--lg)}
 .wrap.row .sub{font-size:var(--fs)}
