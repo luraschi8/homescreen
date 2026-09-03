@@ -746,6 +746,30 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             for name in names:
                 views.setdefault(name, {"template": template,
                                         "placements": []})
+        # A block the operator asked to move. Done on the PARSED placements,
+        # so the title, the share and every per-placement option travel with
+        # it: the fields are keyed by slot index, so swapping two blocks by
+        # hand meant re-picking both dropdowns and moving everything else too.
+        asked_move = (request.form.get("move") or "").strip()
+        if asked_move:
+            parts = asked_move.rsplit(".", 3)
+            if len(parts) == 4 and parts[3] in ("up", "down"):
+                vname, region, idx, way = parts
+                body = views.get(vname) or {}
+                seats = [p for p in (body.get("placements") or ())
+                         if p.get("region") == region]
+                others = [p for p in (body.get("placements") or ())
+                          if p.get("region") != region]
+                try:
+                    here = int(idx)
+                except ValueError:
+                    here = -1
+                there = here - 1 if way == "up" else here + 1
+                if 0 <= here < len(seats) and 0 <= there < len(seats):
+                    seats[here], seats[there] = seats[there], seats[here]
+                    body["placements"] = others + seats
+                    views[vname] = body
+
         # A view the operator asked to drop. Done here rather than by
         # emptying its slots, which is how it used to happen -- silently, and
         # reported as a success.

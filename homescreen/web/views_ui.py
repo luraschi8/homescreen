@@ -54,6 +54,11 @@ CSS = """
    into nothing. */
 .pslot.changed{border-color:var(--warn)}
 .pslot .stale{color:var(--warn);margin:var(--s2) 0 0}
+/* Swapping two blocks meant re-picking both dropdowns AND hand-moving their
+   titles, sizes and every per-placement option, because the fields are keyed
+   by slot index. */
+.moves{display:flex;gap:var(--s1);margin-top:var(--s2)}
+.moves button{height:28px;padding:0 10px;font-size:var(--fs-sm)}
 /* Side by side, and each with its own label. */
 .slot-extra{display:flex;gap:var(--s3);margin:var(--s2) 0 0;flex-wrap:wrap}
 .slot-extra .field{flex:1 1 12rem;margin:0}
@@ -264,6 +269,16 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
             f'<select name="{field}" id="{field}" '
             f'data-stored="{e(current)}">{picks}</select></label>'
             f'<p class="stale hint" hidden></p>'
+            + (f'<div class="moves">'
+               f'<button class="ghost" type="submit" name="move"'
+               f' value="{e(view_name)}.{e(region)}.{index}.up"'
+               f' title="subir"{" disabled" if index == 0 else ""}'
+               f'>&uarr;</button>'
+               f'<button class="ghost" type="submit" name="move"'
+               f' value="{e(view_name)}.{e(region)}.{index}.down"'
+               f' title="bajar"'
+               f'{" disabled" if index >= spec["holds"] - 1 else ""}'
+               f'>&darr;</button></div>' if spec["holds"] > 1 else "")
             + trim
             + _placement_options(view_name, region, index, current, schemas,
                                  (options or {}).get((region, index)) or {})

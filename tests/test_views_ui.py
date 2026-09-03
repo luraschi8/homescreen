@@ -1006,3 +1006,51 @@ def test_deleting_a_view_never_puts_its_name_in_a_script(ctx):
         "schedule": {"default": 'x"><script>alert(1)</script>', "slots": []}})
     html = client.get(f"/device/{EPD}").get_data(as_text=True)
     assert "<script>alert(1)</script>" not in html
+
+
+def test_a_block_can_be_moved_without_retyping_it(ctx):
+    # Swapping two blocks meant re-picking both dropdowns AND hand-moving
+    # their titles, sizes and every per-placement option, because the fields
+    # are keyed by slot index.
+    client, cache = ctx
+    client.put(f"/api/devices/{EPD}/schedule", json={
+        "views": {"panel": {"template": "dashboard", "placements": [
+            {"id": "a", "region": "main_left", "component": "clock",
+             "label": "ARRIBA", "weight": 2},
+            {"id": "b", "region": "main_left", "component": "date",
+             "label": "ABAJO", "weight": 1}]}},
+        "schedule": {"default": "panel", "slots": []}})
+    client.post(f"/device/{EPD}/views", data={
+        "template": "dashboard",
+        "v.panel.main_left.0": "clock", "l.panel.main_left.0": "ARRIBA",
+        "wt.panel.main_left.0": "2",
+        "v.panel.main_left.1": "date", "l.panel.main_left.1": "ABAJO",
+        "wt.panel.main_left.1": "1",
+        "move": "panel.main_left.1.up"})
+    got = client.get(f"/api/devices/{EPD}/schedule").get_json()
+    left = [p for p in got["views"]["panel"]["placements"]
+            if p["region"] == "main_left"]
+    assert [p["component"] for p in left] == ["date", "clock"]
+    # The title and the share travelled with the block, not with the slot.
+    assert left[0]["label"] == "ABAJO" and left[1]["label"] == "ARRIBA"
+
+
+def test_moving_past_the_end_does_nothing(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    before = client.get(f"/api/devices/{EPD}/schedule").get_json()["views"]
+    client.post(f"/device/{EPD}/views", data={
+        "template": "dashboard", "v.panel.masthead.0": "clock",
+        "move": "panel.masthead.0.up"})
+    after = client.get(f"/api/devices/{EPD}/schedule").get_json()["views"]
+    assert list(after) == list(before)
+
+
+def test_a_malformed_move_is_ignored_rather_than_raising(ctx):
+    client, cache = ctx
+    _dashboard(client, cache)
+    for bad in ("", "junk", "panel.main_left.x.up", "panel.main_left.0.sideways"):
+        resp = client.post(f"/device/{EPD}/views", data={
+            "template": "dashboard", "v.panel.masthead.0": "clock",
+            "move": bad})
+        assert resp.status_code in (302, 303), bad
