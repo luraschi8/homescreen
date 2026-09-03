@@ -875,3 +875,61 @@ def test_a_screen_with_several_views_can_edit_them_whatever_its_geometry(ctx):
     html = client.get(f"/device/{ROUND}").get_data(as_text=True)
     assert "Qué contiene cada vista" in html
     assert "tiempo" in html and "noche" in html
+
+
+def test_a_stored_weight_does_not_make_the_form_unsubmittable(ctx):
+    # `step="0.25"` against a stored 1.4 made the browser refuse the whole
+    # arrangement, with the complaint pointing at a field thousands of pixels
+    # away -- and in English, in a Spanish UI. The range is enforced server
+    # side, where it can explain itself.
+    client, cache = ctx
+    client.put(f"/api/devices/{EPD}/schedule", json={
+        "views": {"panel": {"template": "dashboard", "placements": [
+            {"id": "a", "region": "main_left", "component": "clock",
+             "weight": 1.4},
+            {"id": "b", "region": "main_left", "component": "clock",
+             "weight": 2.6}]}},
+        "schedule": {"default": "panel", "slots": []}})
+    html = client.get(f"/device/{EPD}").get_data(as_text=True)
+    assert 'step="0.25"' not in html
+    assert 'step="any"' in html
+
+
+def test_saving_the_schedule_leaves_the_views_alone(ctx):
+    # Deriving views through `view_for` made this form rewrite a section it
+    # does not own: an empty view is filtered out of `usable`, so the lookup
+    # missed and fell through to the DEFAULT view's body -- adding a view and
+    # saving the schedule filled the new one with a copy of the old.
+    client, cache = ctx
+    client.put(f"/api/devices/{ROUND}/schedule", json={
+        "views": {"dia": {"template": "single", "placements": [
+                      {"id": "d", "region": "full", "component": "weather"}]}},
+        "schedule": {"default": "dia", "tz": "Europe/Madrid", "slots": []}})
+    # Added the way a person adds one: through the editor's own field, which
+    # is what leaves it empty in the first place.
+    client.post(f"/device/{ROUND}/views", data={
+        "template": "single", "new_view": "manana",
+        "v.dia.full.0": "weather"})
+    before = client.get(f"/api/devices/{ROUND}/schedule").get_json()["views"]
+    client.post(f"/device/{ROUND}/schedule", data={"default": "dia"})
+    after = client.get(f"/api/devices/{ROUND}/schedule").get_json()["views"]
+    assert after == before, "saving the schedule rewrote the views"
+    if "manana" in after:
+        assert not (after["manana"].get("placements") or []), \
+            "the new view was filled with a copy of another"
+
+
+def test_a_single_region_screen_with_several_views_has_one_editor(ctx):
+    # It kept the legacy component picker AND got the view editor: two forms
+    # claiming to decide what it shows, and the picker is inert because
+    # `layout.view_for` reads views and never `scene`.
+    client, cache = ctx
+    client.put(f"/api/devices/{ROUND}/schedule", json={
+        "views": {"a": {"template": "single", "placements": [
+                      {"id": "x", "region": "full", "component": "weather"}]},
+                  "b": {"template": "single", "placements": [
+                      {"id": "y", "region": "full", "component": "blank"}]}},
+        "schedule": {"default": "a", "tz": "Europe/Madrid", "slots": []}})
+    html = client.get(f"/device/{ROUND}").get_data(as_text=True)
+    assert "Qué contiene cada vista" in html, "the real editor is missing"
+    assert 'name="scene"' not in html, "the inert picker is still offered"

@@ -183,7 +183,13 @@ def _region_row(view_name: str, region: str, spec: dict, chosen: list,
                 f' value="{e(held.get("label") or "")}"></label>'
                 f'<label class="field"><span>Tamaño</span>'
                 f'<input type="number" name="wt.{e(view_name)}.{e(region)}.'
-                f'{index}" min="0.25" max="20" step="0.25" placeholder="1"'
+                # `step="any"`, because the browser refuses to submit a form whose
+                # number is not a multiple of `step` -- and a weight of 1.4,
+                # perfectly valid and set through the API, made the whole
+                # arrangement unsubmittable with the complaint pointing at a
+                # field thousands of pixels away. The range is enforced where it
+                # can explain itself: `layout._weights`.
+                f'{index}" min="0.25" max="20" step="any" placeholder="1"'
                 f' value="{e(held.get("weight") or "")}">'
                 f'<span class="hint">Cuánto ocupa frente a sus vecinos: 2 es '
                 f'el doble que 1. En blanco, a partes iguales.</span>'

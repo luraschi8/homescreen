@@ -450,7 +450,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
                                      if rec.get("views") else ()),
                               now=now,
                               credentials=_screen_credentials(hw, rec),
-                              view_bodies={n: layout.view_for(rec, n)
+                              view_bodies={n: layout.stored_view(rec, n)
                                            for n in layout.view_names(rec)},
                               regions=layout.regions(caps, template),
                               template=template),
@@ -684,7 +684,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             # settings.
             previous = {(p.get("region"), i): p.get("options")
                         for i, p in enumerate(
-                            layout.view_for(rec, name).get("placements") or ())}
+                            layout.stored_view(rec, name).get("placements") or ())}
             for index, placement in enumerate(cleaned["placements"]):
                 posted_options = None
                 for candidate in (body.get("placements") or ()):
@@ -760,7 +760,12 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         rec = registry.load(cache_dir).get(hw)
         if rec is None:
             return redirect(url_for("home", m=f"no existe ninguna pantalla {hw}"))
-        views = {name: layout.view_for(rec, name)
+        # The STORED views, verbatim. Deriving them through `view_for` made
+        # this form rewrite a section it does not own: an empty view is
+        # filtered out of `usable`, so the lookup missed and fell through to
+        # the DEFAULT view's body -- adding a view and then saving the schedule
+        # silently filled the new view with a copy of the old one.
+        views = {name: layout.stored_view(rec, name)
                  for name in layout.view_names(rec)}
         slots = []
         for index in range(len(request.form) + 1):
@@ -1397,7 +1402,7 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
         caps = registry.clean_caps(rec.get("caps") or {})
         return jsonify({
             "hw": hw,
-            "views": {name: layout.view_for(rec, name)
+            "views": {name: layout.stored_view(rec, name)
                       for name in layout.view_names(rec)},
             "schedule": rec.get("schedule") or {
                 "default": (layout.view_names(rec) or ("unassigned",))[0],

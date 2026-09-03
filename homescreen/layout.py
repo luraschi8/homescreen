@@ -350,6 +350,34 @@ def single(component: str, options=None, region: str = "full") -> dict:
                             "options": dict(options or {})}]}
 
 
+def stored_view(rec: dict, name: str) -> dict:
+    """Exactly what is stored under `name`, empty if that is what it is.
+
+    `view_for` answers a different question -- "what should this screen
+    RENDER" -- and for a view with no placements the honest answer there is
+    the default, because a screen must never render an empty view: it would
+    show nothing while looking configured.
+
+    That fallback is a LIE to every other question. Asked what is stored under
+    a name, it handed back a DIFFERENT view's body -- so adding a view
+    reported it as a copy of the one you already had, the editor drew one
+    view's blocks under another view's heading, and saving the schedule wrote
+    that copy to disk. Editors and reports ask this; only the renderer asks
+    `view_for`.
+
+    A record with no views at all is legacy, and is still read as the single
+    view it has always meant.
+    """
+    rec = rec if isinstance(rec, dict) else {}
+    views = rec.get("views")
+    if not isinstance(views, dict) or not views:
+        return view_for(rec, name)
+    body = views.get(name)
+    if isinstance(body, dict):
+        return body
+    return {"placements": [], "template": template_of(view_for(rec))}
+
+
 def view_for(rec: dict, name: str | None = None) -> dict:
     """The view a record is showing, whatever shape the record is in."""
     rec = rec if isinstance(rec, dict) else {}

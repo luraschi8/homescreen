@@ -94,7 +94,12 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     # here would be two forms writing one value -- and this is the one that
     # silently loses, because the arrangement is what the renderer reads.
     # A single full-bleed screen has no arrangement editor, so it keeps it.
-    arranged = len(regions or {}) > 1
+    # ...or when the screen has more than one VIEW, whatever its geometry. The
+    # round panel has one region and three views, so it kept the legacy picker
+    # AND got the view editor: two forms claiming to decide what it shows, and
+    # the picker is inert, because `layout.view_for` reads views and never
+    # `scene`. Changing it reported success while the glass ignored it.
+    arranged = len(regions or {}) > 1 or len(views or ()) > 1
 
     state = (pill("esperando aprobación", "warn") if not approved
              else pill("en línea", "ok") if dev.get("online")
