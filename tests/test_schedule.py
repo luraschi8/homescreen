@@ -253,3 +253,139 @@ def test_stored_data_is_still_read_leniently():
             {"view": "d", "days": [0, 1], "from": "23:00", "to": "07:00"}]},
         {"d"})
     assert got["slots"][0]["days"] == [1]
+
+
+# --- rotations ----------------------------------------------------------------
+
+ALL_DAYS = [1, 2, 3, 4, 5, 6, 7]
+
+
+def _rotation(views=("a", "b", "c"), every=20, frm="09:00", to="23:00"):
+    return {"kind": "rotation", "views": list(views), "every_minutes": every,
+            "days": ALL_DAYS, "from": frm, "to": to}
+
+
+def _at(hhmm, day=4):
+    """(weekday, minutes-from-midnight)."""
+    h, m = (int(x) for x in hhmm.split(":"))
+    return day, h * 60 + m
+
+
+def test_a_rule_with_no_kind_is_the_original_slot():
+    # Today's devices.json must load unchanged.
+    assert schedule.kind_of({"view": "a"}) == "fixed"
+    assert schedule.kind_of({"kind": "rotation"}) == "rotation"
+    assert schedule.kind_of("nonsense") == "fixed"
+
+
+def test_a_rotation_turns_over_on_its_own_interval():
+    rule = _rotation()
+    assert schedule.turn_at(rule, *_at("09:00")) == "a"
+    assert schedule.turn_at(rule, *_at("09:19")) == "a"
+    assert schedule.turn_at(rule, *_at("09:20")) == "b"
+    assert schedule.turn_at(rule, *_at("09:40")) == "c"
+    assert schedule.turn_at(rule, *_at("10:00")) == "a", "it comes round again"
+
+
+def test_a_rotation_is_anchored_to_its_own_window_not_to_midnight():
+    # A rotation starting at 09:10 shows its FIRST view at 09:10, whatever the
+    # interval divides into.
+    rule = _rotation(frm="09:10")
+    assert schedule.turn_at(rule, *_at("09:10")) == "a"
+    assert schedule.turn_at(rule, *_at("09:30")) == "b"
+
+
+def test_a_rotation_across_midnight_keeps_counting():
+    rule = _rotation(frm="23:00", to="01:00", every=20)
+    assert schedule.turn_at(rule, *_at("23:00")) == "a"
+    assert schedule.turn_at(rule, *_at("23:40")) == "c"
+    assert schedule.turn_at(rule, *_at("00:00")) == "a"
+    assert schedule.turn_at(rule, *_at("00:20")) == "b"
+
+
+def test_the_showing_view_needs_no_stored_cursor():
+    # Derived from the wall clock, so a panel that reboots mid-cycle lands on
+    # the view it would have reached rather than resuming a lost position.
+    rule = _rotation()
+    first = schedule.turn_at(rule, *_at("14:25"))
+    again = schedule.turn_at(rule, *_at("14:25"))
+    assert first == again == schedule.turn_at(rule, *_at("14:39"))
+
+
+def test_a_rotation_drives_active_view():
+    plan = {"default": "off", "tz": "Europe/Madrid", "slots": [_rotation()]}
+    import datetime, zoneinfo
+    mad = zoneinfo.ZoneInfo("Europe/Madrid")
+    def at(hhmm):
+        h, m = (int(x) for x in hhmm.split(":"))
+        return schedule.active_view(
+            plan, datetime.datetime(2026, 9, 4, h, m, tzinfo=mad).timestamp())
+    assert at("08:59") == "off"
+    assert at("09:00") == "a"
+    assert at("09:20") == "b"
+    assert at("23:00") == "off"
+
+
+def test_the_panel_wakes_for_every_turn_not_just_the_window():
+    # Without the ticks as boundaries a screen would sleep through its own
+    # changes and only wake when the window closed.
+    import datetime, zoneinfo
+    mad = zoneinfo.ZoneInfo("Europe/Madrid")
+    plan = {"default": "off", "tz": "Europe/Madrid", "slots": [_rotation()]}
+    now = datetime.datetime(2026, 9, 4, 9, 5, tzinfo=mad).timestamp()
+    secs = schedule.seconds_to_next_change(plan, now)
+    assert secs is not None and 14 * 60 <= secs <= 15 * 60, secs
+
+
+def test_a_rotation_survives_cleaning_and_keeps_its_shape():
+    plan = schedule.clean_schedule(
+        {"default": "a", "slots": [_rotation()]}, {"a", "b", "c"})
+    kept = plan["slots"][0]
+    assert kept["kind"] == "rotation"
+    assert kept["views"] == ["a", "b", "c"]
+    assert kept["every_minutes"] == 20
+
+
+def test_a_rotation_whose_views_vanish_degrades_rather_than_disappearing():
+    # A rule that VANISHES falls through to the default, which looks exactly
+    # like a rule that did not match -- an hour of somebody's evening.
+    plan = schedule.clean_schedule(
+        {"default": "a", "slots": [_rotation()]}, {"a"})
+    assert len(plan["slots"]) == 1
+    assert plan["slots"][0].get("kind") is None, "it became a fixed rule"
+    assert plan["slots"][0]["view"] == "a"
+
+
+def test_a_rotation_with_no_surviving_view_is_dropped():
+    plan = schedule.clean_schedule(
+        {"default": "z", "slots": [_rotation()]}, {"z"})
+    assert plan["slots"] == []
+
+
+def test_an_absurd_interval_is_clamped_rather_than_dividing_by_zero():
+    for bad in (0, -5, None, "x", 99999):
+        rule = _rotation(every=bad)
+        assert schedule.MIN_ROTATION_MINUTES <= schedule.rotation_minutes(rule) \
+            <= schedule.MAX_ROTATION_MINUTES
+        assert schedule.turn_at(rule, *_at("12:00")) in ("a", "b", "c")
+
+
+def test_problems_names_what_a_rotation_got_wrong():
+    said = schedule.problems(
+        {"slots": [_rotation(views=("a",))]}, {"a", "b"})
+    assert any("al menos" in m for m in said), said
+    said = schedule.problems(
+        {"slots": [_rotation(views=("a", "zzz"))]}, {"a", "b"})
+    assert any("zzz" in m for m in said), said
+    said = schedule.problems({"slots": [_rotation(every=0)]}, {"a", "b", "c"})
+    assert any("intervalo" in m for m in said), said
+
+
+def test_too_many_rules_is_refused_aloud_rather_than_sliced():
+    # `clean_schedule` slices to the cap, so without this the 65th rule is
+    # discarded with nothing said -- and a schedule that silently lost its
+    # night rule looks exactly like one that never had it.
+    many = [{"view": "a", "days": ALL_DAYS, "from": "00:00", "to": "01:00"}
+            for _ in range(schedule.MAX_SLOTS + 1)]
+    said = schedule.problems({"slots": many}, {"a"})
+    assert any(str(schedule.MAX_SLOTS) in m for m in said), said
