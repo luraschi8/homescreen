@@ -894,9 +894,17 @@ def create_app(cfg: dict, cache_dir: Path, *, clock=time.time,
             slots.append({"view": view, "days": days,
                           "from": request.form.get(f"slot{index}.from") or "",
                           "to": request.form.get(f"slot{index}.to") or ""})
-        plan = scheduling.clean_schedule(
-            {"default": request.form.get("default"), "slots": slots,
-             "tz": (rec.get("schedule") or {}).get("tz")}, views)
+        asked = {"default": request.form.get("default"), "slots": slots,
+                 "tz": (rec.get("schedule") or {}).get("tz")}
+        # `problems()` was written for exactly this form, is already in
+        # Spanish and per-rule, and was wired only to the JSON route -- so the
+        # page a person actually uses dropped malformed rules in silence and
+        # reported success.
+        refused = scheduling.problems(asked, views)
+        if refused:
+            return redirect(url_for("device_page", hw=hw,
+                                    m="; ".join(refused[:3])))
+        plan = scheduling.clean_schedule(asked, views)
         try:
             registry.set_layout(cache_dir, hw, views, plan)
         except (ValueError, OSError) as exc:

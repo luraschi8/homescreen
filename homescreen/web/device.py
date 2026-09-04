@@ -105,6 +105,22 @@ def _credentials(hw: str, creds) -> str:
             f'<div class="panel"><div class="pad">{"".join(fields)}</div></div>')
 
 
+def composes_html(caps) -> str:
+    """Whether the SERVER renders this screen's pixels.
+
+    A device that declares `draw_list` executes an instruction list itself; a
+    1-bit panel takes a rasterised framebuffer. The two are previewed
+    differently because they are produced differently.
+    """
+    caps = caps if isinstance(caps, dict) else {}
+    if int(caps.get("depth") or 0) == 1:
+        return True                     # 1-bit glass takes a framebuffer
+    # A device that declares components EXECUTES them, whatever they are
+    # called -- `draw_list` is one such name, not the test. One that declares
+    # none has nothing to execute with, so the server composes for it.
+    return not (caps.get("components") or ())
+
+
 def showing_pill(dev: dict) -> str:
     """What the screen is showing, for the pill under its name.
 
@@ -211,13 +227,19 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
     # single-region one, which reads as inconsistency because it is.
     heading = "Nombre y cadencia" if arranged else "Qué muestra"
 
-    # An arranged screen is previewed as the PAGE it is served, in an iframe:
-    # the operator's browser renders the same document `/frame` rasterises, so
-    # there is no second layout engine to disagree with the first and no
-    # Chromium on the Pi. A single-component screen keeps the SVG thumbnails,
-    # because a data-push panel executes that instruction list itself -- the
-    # SVG is what it will draw rather than a picture of it.
-    if arranged:
+    # Chosen by RENDER MODE, not by how many views or regions there are.
+    #
+    # A screen the SERVER composes is previewed as the page it is served, in an
+    # iframe: the operator's browser renders the same document `/frame`
+    # rasterises, so there is no second layout engine to disagree with the
+    # first. A screen that executes a DRAW LIST gets the SVG, because that SVG
+    # is what the device itself will draw rather than a picture of it.
+    #
+    # Keying off `arranged` conflated the two. `arranged` became true for a
+    # screen with several VIEWS, and `view.html` only exists for a view with
+    # several PLACEMENTS -- so the round panel, one block per view, showed
+    # `{"error":"not a composed view"}` where its preview should be.
+    if composes_html(caps):
         pw = int((caps or {}).get("w") or 800)
         ph = int((caps or {}).get("h") or 480)
         # Scaled server-side because the server knows the panel's real size:
@@ -231,12 +253,16 @@ def render_device(dev: dict, *, options: list, schemas: dict, name_max: int,
                   f'</div>'
                   f'<figcaption>la pantalla, como se ve</figcaption></figure>')
     else:
+        # The screen's own VIEWS, not every component it could hold. It used
+        # to draw eleven pictures -- one per assignable component -- so there
+        # was no way to see what "noche" looks like before 23:00.
+        shown = list(views) or [name for name, ok, _ in options if ok]
         thumbs = "".join(
             f'<figure class="pv">'
             f'<img src="/api/devices/{hw}/preview.svg?view={e(name)}" '
             f'alt="{e(name)} en esta pantalla" loading="lazy">'
-            f'<figcaption>{e(scene_label(name))}</figcaption></figure>'
-            for name, ok, _ in options if ok)
+            f'<figcaption>{e(name)}</figcaption></figure>'
+            for name in shown)
 
     # What the screen would do if this box is left blank, and what the panel's
     # own firmware will do with a number that is too small for its glass.

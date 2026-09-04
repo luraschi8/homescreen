@@ -154,3 +154,32 @@ def test_a_bad_slot_is_dropped_rather_than_stored(ctx, bad):
     plan = registry.load(cache)[HW]["schedule"]
     assert all(s["view"] in {"dia", "noche"} for s in plan["slots"])
     assert plan["default"] in {"dia", "noche"}
+
+
+def test_the_schedule_form_says_what_it_refused(ctx):
+    # `problems()` was written for this form, is in Spanish and per-rule, and
+    # was wired only to the JSON route -- so the page a person actually uses
+    # dropped malformed rules silently and reported success.
+    client, _, _ = ctx
+    resp = client.post(f"/device/{HW}/schedule", data={
+        "default": "noche",
+        "slot0.view": "dia", "slot0.day": "1",
+        "slot0.from": "nonsense", "slot0.to": "09:00"})
+    assert resp.status_code in (302, 303)
+    where = resp.headers["Location"]
+    assert "HH" in where or "hora" in where, where
+    # ...and nothing was written.
+    plan = client.get(f"/api/devices/{HW}/schedule").get_json()["schedule"]
+    assert plan["slots"][0]["from"] == "09:00", "the bad post was stored anyway"
+
+
+def test_a_valid_schedule_still_saves(ctx):
+    client, _, _ = ctx
+    resp = client.post(f"/device/{HW}/schedule", data={
+        "default": "noche",
+        "slot0.view": "dia", "slot0.day": "1",
+        "slot0.from": "10:00", "slot0.to": "20:00"})
+    assert resp.status_code in (302, 303)
+    plan = client.get(f"/api/devices/{HW}/schedule").get_json()["schedule"]
+    assert plan["slots"] == [{"view": "dia", "days": [1],
+                              "from": "10:00", "to": "20:00"}]
